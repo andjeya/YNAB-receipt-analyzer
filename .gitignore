@@ -4,10 +4,13 @@
 
 # Environment files
 *.env
-*.env.*
 
 # PDF receipts
 *.pdf
 
 # Backup directory
 backups/
+
+# Python cache files
+__pycache__/
+*.pyc
