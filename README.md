@@ -1,136 +1,153 @@
-# Receipt → Gemini 3 Flash → YNAB
+# Receipt -> YNAB Local Web App (MVP)
 
-A standalone Python tool to:
+This project re-architects the original receipt CLI prototype into a local, single-user web app with a long-running backend service, background workers, persistent storage, and mobile-first UI.
 
-1. Read a receipt PDF.
-2. Pull available YNAB categories from your selected budget.
-3. Ask Gemini (`gemini-3-flash-preview`) to classify receipt line items into YNAB categories.
-4. Create a YNAB transaction, including split-category subtransactions when needed.
+The original CLI (`main.py`) is preserved for reference; reusable logic was extracted into `shared/receipt_shared`.
 
-This project is isolated in `receipt_ynab_tool/` and does not modify other repository code.
+## Project Structure
 
-## Features
+```text
+backend/
+  app/
+    api/                # FastAPI routes
+    jobs/               # RQ queue helpers + background tasks
+    services/           # ingestion, validation, ynab sync logic
+    config.py           # env-based settings
+    db.py               # SQLAlchemy engine/session
+    models.py           # DB models
+    schemas.py          # API schemas
+    main.py             # FastAPI app entrypoint
+  alembic/
+    versions/0001_mvp_init.py
+frontend/
+  src/app/              # Next.js app routes
+  src/components/       # mobile-first UI components
+  src/lib/              # API client + shared types
+worker/
+  scanner.py            # ingest folder polling loop
+  worker.py             # RQ worker
+shared/
+  receipt_shared/
+    gemini.py           # prompt + strict JSON extraction
+    ynab_client.py      # YNAB API client
+    money.py            # milliunit conversion
+    contracts.py        # pydantic contracts
+```
 
-- Direct PDF multimodal analysis via `google-genai` file upload.
-- Gemini analysis via `google-genai`.
-- YNAB API integration for:
-  - listing budgets (`GET /budgets`),
-  - listing categories (`GET /budgets/{budget_id}/categories`),
-  - creating transactions (`POST /budgets/{budget_id}/transactions`).
-- Dry-run mode to preview payload before posting.
+## MVP Lifecycle
 
-## Requirements
+`ingested -> extracting -> needs_review -> syncing -> synced`
 
-- Python 3.10+
-- Environment variables:
-  - `GEMINI_API_KEY`
-  - `YNAB_ACCESS_TOKEN`
+Error states:
 
-Install dependencies:
+- `error_extract`
+- `error_sync`
+
+State transitions are persisted on `receipts.status` and visible in the API/UI.
+
+## Core Design
+
+- Backend is a long-running FastAPI service.
+- Gemini calls happen only in RQ background jobs.
+- SQLite is source of truth.
+- Receipt files are immutable blobs after ingest.
+- DB stores `storage_key`; original filename is display-only.
+- Ingestion deduplicates by SHA-256 hash and waits for stable file size.
+- YNAB sync is idempotent via `ynab_sync.idempotency_key`.
+
+## Database
+
+Tables:
+
+- `receipts`
+- `extraction_runs`
+- `validations`
+- `ynab_cache`
+- `ynab_sync`
+- `timing_metrics`
+
+Create schema with Alembic:
+
+```bash
+alembic -c backend/alembic.ini upgrade head
+```
+
+## Local Run
+
+1. Install Python dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Quick start
+2. Configure environment:
 
 ```bash
-cd receipt_ynab_tool
 cp .env.example .env
-# edit .env with your keys (or export env vars directly)
-python main.py list-budgets
-python main.py list-categories --budget-id <budget_id>
-python main.py list-accounts --budget-id <budget_id>
-python main.py process-receipt \
-  --budget-id <budget_id> \
-  --account-id <account_id> \
-  --pdf ./example_receipt.pdf \
-  --dry-run
 ```
 
-When you're satisfied with the dry-run output, remove `--dry-run` to create the transaction in YNAB.
-
-## Local Backup (Raw JSON)
-
-Create a raw snapshot from `GET /budgets/{budget_id}` before making changes:
+3. Run backend API:
 
 ```bash
-cd receipt_ynab_tool
-set -a; source .env; set +a
-./backup_ynab_budget.sh <budget_id>
+PYTHONPATH=backend:shared uvicorn app.main:app --reload --port 8000
 ```
 
-Optional output directory:
+4. Run RQ worker:
 
 ```bash
-./backup_ynab_budget.sh <budget_id> ./backups
+PYTHONPATH=backend:shared python worker/worker.py
 ```
 
-## CLI commands
+5. Run scanner:
 
-### `list-budgets`
-Lists accessible YNAB budgets.
-
-### `list-categories --budget-id ...`
-Lists category groups and categories for a budget.
-
-### `list-accounts --budget-id ...`
-Lists accounts (including account IDs) for a budget.
-
-### `process-receipt ...`
-Pipeline command:
-
-1. Uploads the PDF to Gemini.
-2. Downloads categories for the budget.
-3. Sends PDF + category context + user prompt to Gemini.
-4. Parses model JSON output.
-5. Creates YNAB transaction with optional splits.
-
-`--prompt` is optional. If omitted, the tool uses a default categorization instruction.
-
-## Model output contract
-
-Gemini is asked to return strict JSON:
-
-```json
-{
-  "payee_name": "Store Name",
-  "transaction_date": "2026-01-15",
-  "memo": "short description",
-  "total_amount": 54.22,
-  "splits": [
-    {
-      "category_id": "ynab-category-id",
-      "category_name": "Groceries",
-      "amount": 34.22,
-      "memo": "food items"
-    },
-    {
-      "category_id": "ynab-category-id-2",
-      "category_name": "Household",
-      "amount": 20.00,
-      "memo": "cleaning supplies"
-    }
-  ]
-}
+```bash
+PYTHONPATH=backend:shared python worker/scanner.py
 ```
 
-Amounts are in dollars in model output; tool converts to YNAB milliunits.
+6. Run frontend:
 
-## YNAB API references
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-The implementation follows official YNAB API documentation:
+## API (MVP)
 
-- API overview: https://api.ynab.com/
-- OpenAPI/Swagger JSON: https://api.ynab.com/v1/openapi.json
-- Endpoints used:
-  - `GET /budgets`
-  - `GET /budgets/{budget_id}/categories`
-  - `GET /budgets/{budget_id}/accounts`
-  - `POST /budgets/{budget_id}/transactions`
+- `GET /healthz`
+- `POST /api/ingest/scan`
+- `GET /api/receipts`
+- `GET /api/receipts/{id}`
+- `GET /api/receipts/{id}/file`
+- `POST /api/receipts/{id}/draft`
+- `POST /api/receipts/{id}/sync`
+- `GET /api/ynab/cache`
+- `POST /api/ynab/cache/refresh`
+- `GET /api/stats/summary`
 
-## Notes
+## Included V1 Features
 
-- YNAB `amount` values are integer milliunits (e.g., `$12.34` => `12340`; outflow sent as negative).
-- If Gemini does not provide valid JSON, the command fails fast and shows raw output for troubleshooting.
-- You can tune prompt behavior with `--prompt` and model via `--model`.
+- Folder ingestion (polling scanner)
+- Gemini vision extraction on receipt file
+- Strict JSON parsing + schema validation tracking
+- Versioned validation drafts
+- YNAB cache for categories/accounts/payees
+- YNAB match-or-create sync with idempotency
+- Timing metrics: extraction, validation, age at validation
+
+## Explicitly Not Implemented (V1)
+
+- User accounts/auth flows
+- Dropbox API ingestion
+- Gamification system
+- Timezone normalization
+- Advanced receipt highlight overlays
+
+## V2 TODOs
+
+- Dropbox API ingestion pipeline
+- Account identifier to YNAB account mapping strategy
+- Full gamification features
+- Multi-user tenancy and auth
+- Object storage backend abstraction for S3/MinIO
+- Postgres migration hardening and production deployment profile
