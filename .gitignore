@@ -1,0 +1,13 @@
+
+# macOS system files
+.DS_Store
+
+# Environment files
+*.env
+*.env.*
+
+# PDF receipts
+*.pdf
+
+# Backup directory
+backups/
