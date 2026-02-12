@@ -33,6 +33,15 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _duration_ms(later: datetime, earlier: datetime) -> int:
+    # SQLite returns naive datetimes even with timezone=True; normalize both to UTC-aware.
+    if later.tzinfo is None:
+        later = later.replace(tzinfo=timezone.utc)
+    if earlier.tzinfo is None:
+        earlier = earlier.replace(tzinfo=timezone.utc)
+    return max(int((later - earlier).total_seconds() * 1000), 0)
+
+
 def _latest_extraction(db: Session, receipt_id: str) -> ExtractionRun | None:
     return db.scalar(
         select(ExtractionRun)
@@ -215,7 +224,7 @@ def save_draft(
                     TimingMetric(
                         receipt_id=receipt.id,
                         metric_name="validation_duration_ms",
-                        metric_value_ms=max(int((now - receipt.extraction_completed_at).total_seconds() * 1000), 0),
+                        metric_value_ms=_duration_ms(now, receipt.extraction_completed_at),
                         metadata_json={"validation_version": next_version},
                     )
                 )
@@ -223,7 +232,7 @@ def save_draft(
                 TimingMetric(
                     receipt_id=receipt.id,
                     metric_name="receipt_age_at_validation_ms",
-                    metric_value_ms=max(int((now - receipt.ingested_at).total_seconds() * 1000), 0),
+                    metric_value_ms=_duration_ms(now, receipt.ingested_at),
                     metadata_json={"validation_version": next_version},
                 )
             )

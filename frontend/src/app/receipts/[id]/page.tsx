@@ -1,5 +1,10 @@
 import { ReceiptDetailView } from "@/components/receipt-detail";
 
-export default function ReceiptDetailPage({ params }: { params: { id: string } }) {
-  return <ReceiptDetailView receiptId={params.id} />;
+export default async function ReceiptDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  return <ReceiptDetailView receiptId={id} />;
 }

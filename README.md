@@ -112,6 +112,27 @@ npm install
 npm run dev
 ```
 
+## Dev Container (Recommended For Consistent Dev Environments)
+
+This repo includes a VS Code devcontainer in `.devcontainer/`.
+
+Quick start:
+
+```bash
+mkdir -p ~/.codex ~/.claude ~/.config/claude
+```
+
+Then in VS Code run `Dev Containers: Reopen in Container`.
+
+The first container start installs:
+
+- Python dependencies from `requirements.txt`
+- Frontend dependencies from `frontend/package.json`
+
+Detailed instructions: `.devcontainer/README.md`.
+
+Future runtime containerization plan: `docs/compose-plan.md`.
+
 ## API (MVP)
 
 - `GET /healthz`
