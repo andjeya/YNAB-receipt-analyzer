@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import app_settings, db_session
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.enums import ReceiptStatus
 from app.jobs.queue import SYNC_QUEUE_NAME, enqueue_sync_job
 from app.models import Receipt, TimingMetric, Validation, ExtractionRun
@@ -24,6 +24,7 @@ from app.schemas import (
     SyncRequest,
     ValidationOut,
 )
+from app.services.game import apply_user_validation_gamification
 from app.services.validation import validate_payload
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
@@ -201,6 +202,7 @@ def save_draft(
         errors=errors,
     )
     db.add(validation)
+    db.flush()
 
     receipt.latest_validation_version = next_version
     receipt.display_payee_name = normalized_payload.get("payee_name")
@@ -217,6 +219,7 @@ def save_draft(
         receipt.status_reason = None
 
     if request.source == "user" and is_valid:
+        validation_reference_ts = prior_user_valid.created_at if prior_user_valid is not None else validation.created_at
         if prior_user_valid is None:
             now = utcnow()
             if receipt.extraction_completed_at:
@@ -236,6 +239,12 @@ def save_draft(
                     metadata_json={"validation_version": next_version},
                 )
             )
+        apply_user_validation_gamification(
+            db,
+            receipt=receipt,
+            validated_at=validation_reference_ts or utcnow(),
+            settings=get_settings(),
+        )
 
     db.commit()
     db.refresh(validation)

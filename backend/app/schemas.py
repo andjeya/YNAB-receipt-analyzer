@@ -102,3 +102,88 @@ class StatsSummary(BaseModel):
     avg_extraction_duration_ms: float | None = None
     avg_validation_duration_ms: float | None = None
     avg_receipt_age_at_validation_ms: float | None = None
+
+
+class GameRulesOut(BaseModel):
+    green_hours_threshold: float
+    brown_hours_threshold: float
+    token_earn_every_greens: int
+    shred_daily_spend_cap: int
+
+
+class GameMomentumOut(BaseModel):
+    current_streak: int
+    max_streak: int
+    last_green_at: datetime | None = None
+    break_reason: str | None = None
+    token_balance: int
+    token_earned_count: int
+    token_spent_count: int
+    token_threshold: int
+    token_progress_current: int
+    next_token_in: int
+    spendable_now: bool
+
+
+class GameForestTileOut(BaseModel):
+    receipt_id: str
+    state: str
+    display_state: str
+    validated_at: datetime
+    age_hours_at_validation: float
+    streak_group_id: int
+    shredded_at: datetime | None = None
+    is_latest: bool
+
+
+class GameForestOut(BaseModel):
+    latest_receipt_id: str | None = None
+    counts: dict[str, int]
+    receipts: list[GameForestTileOut]
+
+
+class GameSummaryOut(BaseModel):
+    window: str
+    window_start: datetime
+    window_end: datetime
+    total_validated: int
+    green_count: int
+    yellow_count: int
+    brown_count: int
+    shredded_count: int
+    green_percent: float
+    avg_validation_age_hours: float | None = None
+
+
+class GameChallengeOut(BaseModel):
+    key: str
+    title: str
+    description: str
+    status: str
+    target: float
+    current: float
+    unit: str
+    progress: float
+
+
+class GameDashboardOut(BaseModel):
+    generated_at: datetime
+    window: str
+    rules: GameRulesOut
+    momentum: GameMomentumOut
+    forest: GameForestOut
+    summary: GameSummaryOut
+    challenges: list[GameChallengeOut]
+
+
+class GameShredResponse(BaseModel):
+    receipt_id: str
+    was_shredded: bool
+    state: str
+    token_balance: int
+    token_spent_count: int
+
+
+class GameRebuildResponse(BaseModel):
+    processed_receipts: int
+    restored_shreds: int
