@@ -25,3 +25,23 @@ class YNABSyncStatus(str, Enum):
     MATCHED_UPDATED = "matched_updated"
     CREATED = "created"
     FAILED = "failed"
+
+
+class GameReceiptState(str, Enum):
+    GREEN = "green"
+    YELLOW = "yellow"
+    BROWN = "brown"
+    SHREDDED = "shredded"
+
+
+class GameEventType(str, Enum):
+    RECEIPT_CLASSIFIED = "receipt_classified"
+    STREAK_INCREMENTED = "streak_incremented"
+    STREAK_BROKEN = "streak_broken"
+    TOKEN_EARNED = "token_earned"
+    TOKEN_SPENT = "token_spent"
+
+
+class GameChallengeStatus(str, Enum):
+    COMPLETED = "completed"
+    IN_PROGRESS = "in_progress"

@@ -102,3 +102,92 @@ export interface StatsSummary {
   avg_validation_duration_ms: number | null;
   avg_receipt_age_at_validation_ms: number | null;
 }
+
+export type GameWindow = "week" | "month";
+export type GameDisplayState = "green" | "yellow" | "brown" | "shredded";
+export type GameChallengeStatus = "completed" | "in_progress";
+
+export interface GameRules {
+  green_hours_threshold: number;
+  brown_hours_threshold: number;
+  token_earn_every_greens: number;
+  shred_daily_spend_cap: number;
+}
+
+export interface GameMomentum {
+  current_streak: number;
+  max_streak: number;
+  last_green_at: string | null;
+  break_reason: string | null;
+  token_balance: number;
+  token_earned_count: number;
+  token_spent_count: number;
+  token_threshold: number;
+  token_progress_current: number;
+  next_token_in: number;
+  spendable_now: boolean;
+}
+
+export interface GameForestTile {
+  receipt_id: string;
+  state: "green" | "yellow" | "brown";
+  display_state: GameDisplayState;
+  validated_at: string;
+  age_hours_at_validation: number;
+  streak_group_id: number;
+  shredded_at: string | null;
+  is_latest: boolean;
+}
+
+export interface GameForest {
+  latest_receipt_id: string | null;
+  counts: Record<GameDisplayState, number>;
+  receipts: GameForestTile[];
+}
+
+export interface GameSummary {
+  window: GameWindow;
+  window_start: string;
+  window_end: string;
+  total_validated: number;
+  green_count: number;
+  yellow_count: number;
+  brown_count: number;
+  shredded_count: number;
+  green_percent: number;
+  avg_validation_age_hours: number | null;
+}
+
+export interface GameChallenge {
+  key: string;
+  title: string;
+  description: string;
+  status: GameChallengeStatus;
+  target: number;
+  current: number;
+  unit: string;
+  progress: number;
+}
+
+export interface GameDashboard {
+  generated_at: string;
+  window: GameWindow;
+  rules: GameRules;
+  momentum: GameMomentum;
+  forest: GameForest;
+  summary: GameSummary;
+  challenges: GameChallenge[];
+}
+
+export interface GameShredResponse {
+  receipt_id: string;
+  was_shredded: boolean;
+  state: GameDisplayState;
+  token_balance: number;
+  token_spent_count: number;
+}
+
+export interface GameRebuildResponse {
+  processed_receipts: number;
+  restored_shreds: number;
+}

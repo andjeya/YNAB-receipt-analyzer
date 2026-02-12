@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     stable_checks_required: int = 2
     stable_min_age_seconds: int = 3
 
+    game_green_hours_threshold: float = 24.0
+    game_brown_hours_threshold: float = 72.0
+    game_token_earn_every_greens: int = 3
+    game_shred_daily_spend_cap: int = 0
+    game_green_ratio_target_percent: int = 70
+    game_streak_challenge_target: int = 6
+    game_shred_challenge_target: int = 2
+
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3-flash-preview"
     gemini_prompt: str = "Categorize receipt line items into the most appropriate YNAB categories."
@@ -42,6 +50,41 @@ class Settings(BaseSettings):
         if not value:
             return []
         return [origin.strip() for origin in value.split(",") if origin.strip()]
+
+    @field_validator("game_green_hours_threshold", "game_brown_hours_threshold")
+    @classmethod
+    def validate_game_hour_thresholds(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("Game hour thresholds must be greater than zero")
+        return value
+
+    @field_validator("game_token_earn_every_greens")
+    @classmethod
+    def validate_token_every(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("GAME_TOKEN_EARN_EVERY_GREENS must be at least 1")
+        return value
+
+    @field_validator("game_shred_daily_spend_cap")
+    @classmethod
+    def validate_spend_cap(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("GAME_SHRED_DAILY_SPEND_CAP cannot be negative")
+        return value
+
+    @field_validator("game_green_ratio_target_percent")
+    @classmethod
+    def validate_ratio_target(cls, value: int) -> int:
+        if value < 1 or value > 100:
+            raise ValueError("GAME_GREEN_RATIO_TARGET_PERCENT must be between 1 and 100")
+        return value
+
+    @field_validator("game_streak_challenge_target", "game_shred_challenge_target")
+    @classmethod
+    def validate_positive_targets(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("Game challenge targets must be at least 1")
+        return value
 
 
 @lru_cache

@@ -28,3 +28,6 @@ PYTHONPATH=backend:shared uvicorn app.main:app --reload --port 8000
 - `GET /api/ynab/cache`
 - `POST /api/ynab/cache/refresh`
 - `GET /api/stats/summary`
+- `GET /api/game/dashboard`
+- `POST /api/game/receipts/{receipt_id}/shred`
+- `POST /api/game/rebuild`

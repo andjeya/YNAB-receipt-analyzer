@@ -1,5 +1,9 @@
 import {
   CacheEntity,
+  GameDashboard,
+  GameRebuildResponse,
+  GameShredResponse,
+  GameWindow,
   ReceiptDetail,
   ReceiptSummary,
   SaveDraftResponse,
@@ -85,4 +89,22 @@ export function triggerScan() {
     "/ingest/scan",
     { method: "POST", body: "{}" },
   );
+}
+
+export function getGameDashboard(window: GameWindow = "week") {
+  return request<GameDashboard>(`/game/dashboard?window=${window}`);
+}
+
+export function shredGameReceipt(receiptId: string) {
+  return request<GameShredResponse>(`/game/receipts/${receiptId}/shred`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function rebuildGameState() {
+  return request<GameRebuildResponse>("/game/rebuild", {
+    method: "POST",
+    body: "{}",
+  });
 }

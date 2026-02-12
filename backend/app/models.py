@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -48,6 +48,12 @@ class Receipt(Base):
     validations: Mapped[list["Validation"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
     ynab_sync_runs: Mapped[list["YNABSync"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
     timing_metrics: Mapped[list["TimingMetric"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
+    game_receipt_state: Mapped["GameReceiptStateModel | None"] = relationship(
+        back_populates="receipt",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    game_events: Mapped[list["GameEvent"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
 
 
 class ExtractionRun(Base):
@@ -142,3 +148,58 @@ class TimingMetric(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     receipt: Mapped[Receipt] = relationship(back_populates="timing_metrics")
+
+
+class GameReceiptStateModel(Base):
+    __tablename__ = "game_receipt_states"
+
+    receipt_id: Mapped[str] = mapped_column(String(36), ForeignKey("receipts.id", ondelete="CASCADE"), primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    age_hours_at_validation: Mapped[float] = mapped_column(Float, nullable=False)
+    streak_group_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    shredded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    receipt: Mapped[Receipt] = relationship(back_populates="game_receipt_state")
+
+
+class GameStreak(Base):
+    __tablename__ = "game_streaks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    current_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_green_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    break_reason: Mapped[str | None] = mapped_column(String(32))
+    active_streak_group_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class GameToken(Base):
+    __tablename__ = "game_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    balance: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    earned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    spent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class GameEvent(Base):
+    __tablename__ = "game_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    receipt_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("receipts.id", ondelete="SET NULL"),
+        index=True,
+    )
+    payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    receipt: Mapped[Receipt | None] = relationship(back_populates="game_events")

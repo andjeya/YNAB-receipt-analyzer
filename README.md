@@ -131,7 +131,7 @@ The first container start installs:
 
 Detailed instructions: `.devcontainer/README.md`.
 
-Future runtime containerization plan: `docs/compose-plan.md`.
+Future runtime containerization plan: `plans/compose-plan.md`.
 
 ## API (MVP)
 
@@ -145,6 +145,9 @@ Future runtime containerization plan: `docs/compose-plan.md`.
 - `GET /api/ynab/cache`
 - `POST /api/ynab/cache/refresh`
 - `GET /api/stats/summary`
+- `GET /api/game/dashboard`
+- `POST /api/game/receipts/{id}/shred`
+- `POST /api/game/rebuild`
 
 ## Included V1 Features
 
@@ -155,12 +158,12 @@ Future runtime containerization plan: `docs/compose-plan.md`.
 - YNAB cache for categories/accounts/payees
 - YNAB match-or-create sync with idempotency
 - Timing metrics: extraction, validation, age at validation
+- Gamification core loop (green/yellow/brown classification, streak tracking, shred token earn/spend, forest dashboard + weekly/monthly summaries + challenges)
 
 ## Explicitly Not Implemented (V1)
 
 - User accounts/auth flows
 - Dropbox API ingestion
-- Gamification system
 - Timezone normalization
 - Advanced receipt highlight overlays
 
@@ -168,7 +171,7 @@ Future runtime containerization plan: `docs/compose-plan.md`.
 
 - Dropbox API ingestion pipeline
 - Account identifier to YNAB account mapping strategy
-- Full gamification features
+- Expanded gamification economy and rewards
 - Multi-user tenancy and auth
 - Object storage backend abstraction for S3/MinIO
 - Postgres migration hardening and production deployment profile
