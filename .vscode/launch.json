@@ -1,0 +1,46 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API (FastAPI/Uvicorn)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/backend:${workspaceFolder}/shared"
+      },
+      "justMyCode": true,
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Worker (RQ)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/worker/worker.py",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/backend:${workspaceFolder}/shared"
+      },
+      "justMyCode": true,
+      "console": "integratedTerminal"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "API + Worker",
+      "configurations": [
+        "API (FastAPI/Uvicorn)",
+        "Worker (RQ)"
+      ]
+    }
+  ]
+}

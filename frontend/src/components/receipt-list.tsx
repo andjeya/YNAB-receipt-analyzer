@@ -69,7 +69,7 @@ export function ReceiptList() {
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 pb-24 pt-5">
       <header className="animate-reveal rounded-3xl bg-ink p-4 text-sand shadow-float">
-        <p className="text-xs uppercase tracking-[0.2em] text-mint">Receipt -> YNAB</p>
+        <p className="text-xs uppercase tracking-[0.2em] text-mint">Receipt -&gt; YNAB</p>
         <h1 className="mt-1 font-[var(--font-heading)] text-2xl font-bold">Review Queue</h1>
         <p className="mt-1 text-sm text-sand/80">
           {highlightedCount} receipt{highlightedCount === 1 ? "" : "s"} waiting for review

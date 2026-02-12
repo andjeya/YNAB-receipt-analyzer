@@ -8,7 +8,7 @@ import {
   ValidationPayloadInput,
 } from "@/lib/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {

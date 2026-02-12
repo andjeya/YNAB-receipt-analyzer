@@ -14,3 +14,23 @@ backups/
 # Python cache files
 __pycache__/
 *.pyc
+
+# Frontend dependencies/build output
+frontend/node_modules/
+frontend/.next/
+
+# Local runtime data/artifacts
+data/
+extracting
+needs_review
+synced
+syncing
+
+# Local dev launcher runtime files
+.run/
+
+# Planning
+plans/
+
+# macOS metadata
+.DS_Store

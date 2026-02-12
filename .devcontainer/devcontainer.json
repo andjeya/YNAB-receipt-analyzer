@@ -1,0 +1,64 @@
+{
+  "name": "YNAB Receipt Analyzer Dev",
+  "build": {
+    "context": "..",
+    "dockerfile": "Dockerfile"
+  },
+  "initializeCommand": "mkdir -p ~/.codex ~/.claude",
+  "runArgs": [
+    "-p",
+    "3000:3000",
+    "-p",
+    "8000:8000"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22"
+    },
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+  "mounts": [
+    "source=${localEnv:HOME}/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached"
+  ],
+  "containerEnv": {
+    "PYTHONPATH": "${containerWorkspaceFolder}/backend:${containerWorkspaceFolder}/shared",
+    "REDIS_URL": "redis://host.docker.internal:6379/0",
+    "NEXT_PUBLIC_API_BASE_URL": "/api"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+        "ms-azuretools.vscode-docker",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss",
+        "ms-vscode.makefile-tools",
+        "anthropic.claude-code",
+        "openai.chatgpt"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/python/current/bin/python",
+        "python.analysis.extraPaths": [
+          "${workspaceFolder}/backend",
+          "${workspaceFolder}/shared"
+        ],
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "files.trimTrailingWhitespace": true,
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": "explicit"
+        }
+      }
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/scripts/post-create.sh",
+  "postStartCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}",
+  "remoteUser": "vscode"
+}
