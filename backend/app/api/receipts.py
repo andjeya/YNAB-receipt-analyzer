@@ -10,10 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import app_settings, db_session
-from app.config import Settings, get_settings
-from app.enums import ReceiptStatus
+from app.config import Settings
+from app.enums import ReceiptStatus, YNABSyncStatus
 from app.jobs.queue import SYNC_QUEUE_NAME, enqueue_sync_job
-from app.models import Receipt, TimingMetric, Validation, ExtractionRun
+from app.models import ExtractionRun, Receipt, TimingMetric, Validation, YNABSync
 from app.schemas import (
     ExtractionRunOut,
     ReceiptDetailOut,
@@ -24,8 +24,8 @@ from app.schemas import (
     SyncRequest,
     ValidationOut,
 )
-from app.services.game import apply_user_validation_gamification
 from app.services.validation import validate_payload
+from app.services.ynab import get_cached_reference_data
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 
@@ -61,6 +61,18 @@ def _latest_validation(db: Session, receipt_id: str) -> Validation | None:
     )
 
 
+def _first_model_validation(db: Session, receipt_id: str) -> Validation | None:
+    return db.scalar(
+        select(Validation)
+        .where(
+            Validation.receipt_id == receipt_id,
+            Validation.source == "model",
+        )
+        .order_by(Validation.version.asc())
+        .limit(1)
+    )
+
+
 def _to_extraction_schema(run: ExtractionRun) -> ExtractionRunOut:
     return ExtractionRunOut(
         id=run.id,
@@ -84,6 +96,18 @@ def _to_validation_schema(validation: Validation) -> ValidationOut:
         errors=validation.errors,
         created_at=validation.created_at,
     )
+
+
+def _has_successful_sync(db: Session, receipt_id: str) -> bool:
+    row_id = db.scalar(
+        select(YNABSync.id)
+        .where(
+            YNABSync.receipt_id == receipt_id,
+            YNABSync.status.in_([YNABSyncStatus.MATCHED_UPDATED.value, YNABSyncStatus.CREATED.value]),
+        )
+        .limit(1)
+    )
+    return row_id is not None
 
 
 @router.get("", response_model=list[ReceiptSummary])
@@ -125,6 +149,8 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
 
     extraction = _latest_extraction(db, receipt_id)
     validation = _latest_validation(db, receipt_id)
+    model_validation = _first_model_validation(db, receipt_id)
+    has_successful_sync = _has_successful_sync(db, receipt_id)
 
     return ReceiptDetailOut(
         id=receipt.id,
@@ -138,11 +164,13 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
         display_receipt_date=receipt.display_receipt_date,
         latest_extraction=_to_extraction_schema(extraction) if extraction else None,
         latest_validation=_to_validation_schema(validation) if validation else None,
+        model_validation=_to_validation_schema(model_validation) if model_validation else None,
         ingested_at=receipt.ingested_at,
         extraction_started_at=receipt.extraction_started_at,
         extraction_completed_at=receipt.extraction_completed_at,
         sync_started_at=receipt.sync_started_at,
         sync_completed_at=receipt.sync_completed_at,
+        has_successful_sync=has_successful_sync,
         created_at=receipt.created_at,
         updated_at=receipt.updated_at,
     )
@@ -166,6 +194,7 @@ def get_receipt_file(
         path=absolute_path,
         media_type=receipt.mime_type,
         filename=receipt.original_filename,
+        content_disposition_type="inline",
     )
 
 
@@ -174,6 +203,7 @@ def save_draft(
     receipt_id: str,
     request: SaveDraftRequest,
     db: Session = Depends(db_session),
+    settings: Settings = Depends(app_settings),
 ) -> SaveDraftResponse:
     receipt = db.get(Receipt, receipt_id)
     if receipt is None:
@@ -190,7 +220,14 @@ def save_draft(
         .limit(1)
     )
 
-    normalized_payload, is_valid, errors = validate_payload(request.payload)
+    reference_data = get_cached_reference_data(db, settings)
+    allowed_category_ids = {item.entity_id for item in reference_data["categories"]}
+    allowed_account_ids = {item.entity_id for item in reference_data["accounts"]}
+    normalized_payload, is_valid, errors = validate_payload(
+        request.payload,
+        allowed_category_ids=allowed_category_ids,
+        allowed_account_ids=allowed_account_ids,
+    )
     next_version = receipt.latest_validation_version + 1
 
     validation = Validation(
@@ -219,7 +256,6 @@ def save_draft(
         receipt.status_reason = None
 
     if request.source == "user" and is_valid:
-        validation_reference_ts = prior_user_valid.created_at if prior_user_valid is not None else validation.created_at
         if prior_user_valid is None:
             now = utcnow()
             if receipt.extraction_completed_at:
@@ -239,12 +275,6 @@ def save_draft(
                     metadata_json={"validation_version": next_version},
                 )
             )
-        apply_user_validation_gamification(
-            db,
-            receipt=receipt,
-            validated_at=validation_reference_ts or utcnow(),
-            settings=get_settings(),
-        )
 
     db.commit()
     db.refresh(validation)

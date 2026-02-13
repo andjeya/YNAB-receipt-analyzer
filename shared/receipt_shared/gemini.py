@@ -11,6 +11,8 @@ from pydantic import ValidationError
 
 from .contracts import GeminiReceiptExtraction
 
+UNKNOWN_ACCOUNT_ID = "__unknown__"
+
 try:
     from google import genai
     from google.genai import types
@@ -45,11 +47,22 @@ def parse_json_response(text: str) -> dict[str, Any]:
         raise ValueError("Gemini response was not valid JSON") from exc
 
 
-def build_analysis_prompt(user_prompt: str, categories: list[Any]) -> str:
+def build_analysis_prompt(
+    user_prompt: str,
+    categories: list[Any],
+    accounts: list[dict[str, Any]],
+    payees: list[str],
+) -> str:
     category_lines = "\n".join(
         f"- id={category.id} | group={category.group_name} | name={category.name}"
         for category in categories
     )
+    account_lines = "\n".join(
+        f"- id={account.get('id', '')} | name={account.get('name', '')}"
+        for account in accounts
+    )
+    account_lines = f"{account_lines}\n- id={UNKNOWN_ACCOUNT_ID} | name=Unknown account (requires user review)"
+    payee_lines = "\n".join(f"- {payee}" for payee in payees)
 
     return f"""
 You are analyzing a purchase receipt file and mapping line items to YNAB categories.
@@ -61,27 +74,36 @@ Return STRICT JSON ONLY. No markdown. No prose.
 Schema:
 {{
   "payee_name": "string",
+  "account_id": "string",
   "transaction_date": "YYYY-MM-DD",
   "memo": "string",
   "total_amount": number,
-  "splits": [
-    {{
-      "category_id": "string",
-      "category_name": "string",
-      "amount": number,
-      "memo": "string"
-    }}
-  ]
+  "category_id": "string | null",
+  "splits": [{{ "category_id": "string", "category_name": "string", "amount": number, "memo": "string" }}]
 }}
 
 Rules:
-1. Use category_id values ONLY from the category list below.
-2. Ensure splits sum to total_amount.
-3. Keep memo text concise.
-4. If date is unclear, use today's date.
+1. Use account_id values ONLY from the account list below.
+   - If unsure which account matches, set account_id to "{UNKNOWN_ACCOUNT_ID}".
+2. Use category_id values ONLY from the category list below.
+3. Choose exactly one mode:
+   - Single category mode: set category_id to one valid category and set splits to []
+   - Split mode: set category_id to null and provide 2 or more splits whose amounts sum to total_amount
+4. Prefer single category mode unless the receipt clearly maps to multiple categories.
+5. For payee_name:
+   - If an existing payee clearly matches, return that payee text exactly.
+   - Otherwise return a new payee name from the receipt.
+6. Keep memo text concise.
+7. If date is unclear, use today's date.
 
 Available YNAB categories:
 {category_lines}
+
+Available YNAB accounts:
+{account_lines}
+
+Existing YNAB payees:
+{payee_lines}
 
 Input receipt is provided as an attached file in this request.
 """.strip()

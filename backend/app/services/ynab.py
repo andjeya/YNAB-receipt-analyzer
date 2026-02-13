@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import and_, func, select
@@ -11,8 +13,12 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.enums import ReceiptStatus, YNABCacheEntityType, YNABSyncStatus
 from app.models import Receipt, TimingMetric, Validation, YNABCache, YNABSync
+from app.services.game import apply_sync_gamification
+from app.services.validation import UNKNOWN_ACCOUNT_ID
 from receipt_shared.money import dollars_to_milliunits
 from receipt_shared.ynab_client import YNABClient
+
+logger = logging.getLogger(__name__)
 
 
 def utcnow() -> datetime:
@@ -47,8 +53,12 @@ def refresh_ynab_cache(db: Session, settings: Settings) -> dict[str, int]:
     payees = client.list_payees(budget_id)
 
     now = utcnow()
+    category_ids: set[str] = set()
+    account_ids: set[str] = set()
+    payee_ids: set[str] = set()
 
     for category in categories:
+        category_ids.add(category.id)
         _upsert_cache_entity(
             db,
             budget_id,
@@ -65,6 +75,7 @@ def refresh_ynab_cache(db: Session, settings: Settings) -> dict[str, int]:
         )
 
     for account in accounts:
+        account_ids.add(account["id"])
         _upsert_cache_entity(
             db,
             budget_id,
@@ -77,6 +88,7 @@ def refresh_ynab_cache(db: Session, settings: Settings) -> dict[str, int]:
         )
 
     for payee in payees:
+        payee_ids.add(payee["id"])
         _upsert_cache_entity(
             db,
             budget_id,
@@ -87,6 +99,10 @@ def refresh_ynab_cache(db: Session, settings: Settings) -> dict[str, int]:
             payee,
             now,
         )
+
+    _prune_cache_entities(db, budget_id, YNABCacheEntityType.CATEGORY.value, category_ids)
+    _prune_cache_entities(db, budget_id, YNABCacheEntityType.ACCOUNT.value, account_ids)
+    _prune_cache_entities(db, budget_id, YNABCacheEntityType.PAYEE.value, payee_ids)
 
     db.commit()
     return {
@@ -135,11 +151,48 @@ def _upsert_cache_entity(
     )
 
 
-def list_cached_entities(db: Session, entity_type: str | None = None) -> list[YNABCache]:
+def _prune_cache_entities(db: Session, budget_id: str, entity_type: str, valid_ids: set[str]) -> None:
+    existing_rows = list(
+        db.scalars(
+            select(YNABCache).where(
+                and_(
+                    YNABCache.budget_id == budget_id,
+                    YNABCache.entity_type == entity_type,
+                )
+            )
+        )
+    )
+    for row in existing_rows:
+        if row.entity_id not in valid_ids:
+            db.delete(row)
+
+
+def list_cached_entities(
+    db: Session,
+    entity_type: str | None = None,
+    budget_id: str | None = None,
+) -> list[YNABCache]:
     stmt = select(YNABCache).order_by(YNABCache.entity_type, YNABCache.name)
     if entity_type:
         stmt = stmt.where(YNABCache.entity_type == entity_type)
+    if budget_id:
+        stmt = stmt.where(YNABCache.budget_id == budget_id)
     return list(db.scalars(stmt))
+
+
+def get_cached_reference_data(db: Session, settings: Settings) -> dict[str, list[YNABCache]]:
+    budget_id = settings.ynab_budget_id
+    if not budget_id:
+        return {"categories": [], "accounts": [], "payees": []}
+
+    categories = list_cached_entities(db, entity_type=YNABCacheEntityType.CATEGORY.value, budget_id=budget_id)
+    accounts = list_cached_entities(db, entity_type=YNABCacheEntityType.ACCOUNT.value, budget_id=budget_id)
+    payees = list_cached_entities(db, entity_type=YNABCacheEntityType.PAYEE.value, budget_id=budget_id)
+    return {
+        "categories": categories,
+        "accounts": accounts,
+        "payees": payees,
+    }
 
 
 def get_latest_validation(db: Session, receipt_id: str) -> Validation | None:
@@ -179,6 +232,72 @@ def _match_transaction(
     return None
 
 
+def _latest_successful_sync_for_receipt(db: Session, receipt_id: str) -> YNABSync | None:
+    return db.scalar(
+        select(YNABSync)
+        .where(
+            YNABSync.receipt_id == receipt_id,
+            YNABSync.status.in_([YNABSyncStatus.MATCHED_UPDATED.value, YNABSyncStatus.CREATED.value]),
+        )
+        .order_by(YNABSync.completed_at.desc(), YNABSync.id.desc())
+        .limit(1)
+    )
+
+
+def _normalized_subtransaction_signature(subtransactions: list[dict[str, Any]]) -> list[tuple[int, str, str]]:
+    signature: list[tuple[int, str, str]] = []
+    for sub in subtransactions:
+        if sub.get("deleted"):
+            continue
+        signature.append(
+            (
+                int(sub.get("amount", 0)),
+                str(sub.get("category_id") or ""),
+                str(sub.get("memo") or ""),
+            )
+        )
+    return sorted(signature)
+
+
+def _transaction_matches_payload(transaction: dict[str, Any], payload: dict[str, Any]) -> bool:
+    if transaction.get("deleted"):
+        return False
+    if str(transaction.get("date", "")) != str(payload.get("date", "")):
+        return False
+    if int(transaction.get("amount", 0)) != int(payload.get("amount", 0)):
+        return False
+    if str(transaction.get("account_id", "")) != str(payload.get("account_id", "")):
+        return False
+    if str(transaction.get("payee_name") or "") != str(payload.get("payee_name") or ""):
+        return False
+    if str(transaction.get("memo") or "") != str(payload.get("memo") or ""):
+        return False
+
+    payload_subtransactions = payload.get("subtransactions", [])
+    transaction_subtransactions = transaction.get("subtransactions", [])
+    if payload_subtransactions:
+        return _normalized_subtransaction_signature(transaction_subtransactions) == _normalized_subtransaction_signature(
+            payload_subtransactions
+        )
+
+    if any(not sub.get("deleted") for sub in transaction_subtransactions):
+        return False
+    return str(transaction.get("category_id") or "") == str(payload.get("category_id") or "")
+
+
+def _find_exact_transaction_match(
+    client: YNABClient,
+    budget_id: str,
+    transaction_payload: dict[str, Any],
+    since_date: str,
+) -> dict[str, Any] | None:
+    candidates = client.list_transactions_since(budget_id, since_date)
+    matches = [candidate for candidate in candidates if _transaction_matches_payload(candidate, transaction_payload)]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def sync_receipt_to_ynab(
     db: Session,
     settings: Settings,
@@ -194,6 +313,7 @@ def sync_receipt_to_ynab(
     if not validation or not validation.is_valid:
         raise ValueError("Receipt does not have a valid validation draft")
 
+    prior_success_sync = _latest_successful_sync_for_receipt(db, receipt.id)
     idempotency_key = make_idempotency_key(receipt_id, validation.id, force_create, allow_update_match)
     sync_row = db.scalar(select(YNABSync).where(YNABSync.idempotency_key == idempotency_key))
     if sync_row and sync_row.status in {
@@ -220,7 +340,11 @@ def sync_receipt_to_ynab(
             validation_id=validation.id,
             idempotency_key=idempotency_key,
             status=YNABSyncStatus.QUEUED.value,
-            match_mode="force_create" if force_create else "match_or_create",
+            match_mode=(
+                "update_existing"
+                if prior_success_sync is not None
+                else ("force_create" if force_create else "match_or_create")
+            ),
             started_at=started_at,
         )
         db.add(sync_row)
@@ -243,6 +367,34 @@ def sync_receipt_to_ynab(
         account_id = payload.get("account_id") or settings.ynab_default_account_id
         if not account_id:
             raise ValueError("Validation payload is missing account_id and no default account is configured")
+        if account_id == UNKNOWN_ACCOUNT_ID:
+            raise ValueError("Validation payload account is unknown. Select a valid YNAB account before syncing")
+
+        reference_data = get_cached_reference_data(db, settings)
+        allowed_account_ids = {item.entity_id for item in reference_data["accounts"]}
+        allowed_category_ids = {item.entity_id for item in reference_data["categories"]}
+
+        if account_id not in allowed_account_ids:
+            raise ValueError(f"Validation payload has invalid account_id: {account_id}")
+
+        splits = payload.get("splits", [])
+        split_rows = splits if isinstance(splits, list) else []
+        has_splits = len(split_rows) > 0
+        category_id = payload.get("category_id")
+
+        if has_splits:
+            split_total = sum((Decimal(str(split.get("amount", 0))) for split in split_rows), Decimal("0"))
+            if abs(split_total - Decimal(str(payload["total_amount"]))) > Decimal("0.01"):
+                raise ValueError("Split amounts must sum to total amount")
+            for split in split_rows:
+                split_category_id = split.get("category_id")
+                if split_category_id not in allowed_category_ids:
+                    raise ValueError(f"Validation payload has invalid split category_id: {split_category_id}")
+        else:
+            if not category_id:
+                raise ValueError("Validation payload must include category_id for single-category mode")
+            if category_id not in allowed_category_ids:
+                raise ValueError(f"Validation payload has invalid category_id: {category_id}")
 
         transaction_payload = {
             "account_id": account_id,
@@ -250,30 +402,88 @@ def sync_receipt_to_ynab(
             "amount": total_milliunits,
             "payee_name": payload["payee_name"],
             "memo": payload.get("memo", ""),
-            "subtransactions": _build_subtransactions(payload),
         }
+        if has_splits:
+            transaction_payload["subtransactions"] = _build_subtransactions(payload)
+        else:
+            transaction_payload["category_id"] = category_id
         sync_row.raw_request = {"transaction": transaction_payload}
+        logger.info(
+            "Starting YNAB sync receipt_id=%s validation_id=%s mode=%s request=%s",
+            receipt.id,
+            validation.id,
+            sync_row.match_mode,
+            sync_row.raw_request,
+        )
 
-        matched = None
-        if not force_create:
-            transaction_candidates = client.list_transactions_since(settings.ynab_budget_id, payload["transaction_date"])
-            matched = _match_transaction(
-                transaction_candidates,
-                total_milliunits,
-                receipt_date,
-                receipt_date + timedelta(days=3),
+        if prior_success_sync is not None:
+            target_transaction_id = (
+                prior_success_sync.created_transaction_id
+                or prior_success_sync.matched_transaction_id
             )
+            previous_request = prior_success_sync.raw_request or {}
+            previous_transaction = previous_request.get("transaction", {})
+            lookup_transaction_payload = previous_transaction if previous_transaction else transaction_payload
+            previous_date = str(previous_transaction.get("date") or payload["transaction_date"])
+            since_date = min(str(payload["transaction_date"]), previous_date)
 
-        if matched and allow_update_match:
-            ynab_response = client.update_transaction(settings.ynab_budget_id, matched["id"], transaction_payload)
+            if target_transaction_id:
+                try:
+                    ynab_response = client.update_transaction(settings.ynab_budget_id, target_transaction_id, transaction_payload)
+                except RuntimeError as exc:
+                    if "YNAB API error 404" not in str(exc):
+                        raise
+                    logger.warning(
+                        "Previously synced transaction missing in YNAB receipt_id=%s transaction_id=%s; searching exact match",
+                        receipt.id,
+                        target_transaction_id,
+                    )
+                    matched_exact = _find_exact_transaction_match(
+                        client,
+                        settings.ynab_budget_id,
+                        lookup_transaction_payload,
+                        since_date=since_date,
+                    )
+                    if matched_exact is None:
+                        raise ValueError("cannot find transaction in YNAB to update") from exc
+                    target_transaction_id = matched_exact["id"]
+                    ynab_response = client.update_transaction(settings.ynab_budget_id, target_transaction_id, transaction_payload)
+            else:
+                matched_exact = _find_exact_transaction_match(
+                    client,
+                    settings.ynab_budget_id,
+                    lookup_transaction_payload,
+                    since_date=since_date,
+                )
+                if matched_exact is None:
+                    raise ValueError("cannot find transaction in YNAB to update")
+                target_transaction_id = matched_exact["id"]
+                ynab_response = client.update_transaction(settings.ynab_budget_id, target_transaction_id, transaction_payload)
+
             sync_row.status = YNABSyncStatus.MATCHED_UPDATED.value
-            sync_row.matched_transaction_id = matched["id"]
+            sync_row.matched_transaction_id = target_transaction_id
             sync_row.raw_response = ynab_response
         else:
-            ynab_response = client.create_transaction(settings.ynab_budget_id, transaction_payload)
-            sync_row.status = YNABSyncStatus.CREATED.value
-            sync_row.created_transaction_id = ynab_response.get("id")
-            sync_row.raw_response = ynab_response
+            matched = None
+            if not force_create:
+                transaction_candidates = client.list_transactions_since(settings.ynab_budget_id, payload["transaction_date"])
+                matched = _match_transaction(
+                    transaction_candidates,
+                    total_milliunits,
+                    receipt_date,
+                    receipt_date + timedelta(days=3),
+                )
+
+            if matched and allow_update_match:
+                ynab_response = client.update_transaction(settings.ynab_budget_id, matched["id"], transaction_payload)
+                sync_row.status = YNABSyncStatus.MATCHED_UPDATED.value
+                sync_row.matched_transaction_id = matched["id"]
+                sync_row.raw_response = ynab_response
+            else:
+                ynab_response = client.create_transaction(settings.ynab_budget_id, transaction_payload)
+                sync_row.status = YNABSyncStatus.CREATED.value
+                sync_row.created_transaction_id = ynab_response.get("id")
+                sync_row.raw_response = ynab_response
 
         duration_ms = int((time.perf_counter() - started_perf) * 1000)
         finished_at = utcnow()
@@ -284,6 +494,17 @@ def sync_receipt_to_ynab(
         receipt.status_reason = None
         receipt.sync_completed_at = finished_at
 
+        try:
+            apply_sync_gamification(
+                db,
+                receipt=receipt,
+                validation=validation,
+                synced_at=finished_at,
+                settings=settings,
+            )
+        except Exception:
+            logger.exception("Gamification sync classification failed for receipt %s", receipt.id)
+
         db.add(
             TimingMetric(
                 receipt_id=receipt.id,
@@ -291,6 +512,13 @@ def sync_receipt_to_ynab(
                 metric_value_ms=duration_ms,
                 metadata_json={"sync_id": sync_row.id, "idempotency_key": idempotency_key},
             )
+        )
+        logger.info(
+            "Finished YNAB sync receipt_id=%s status=%s transaction_id=%s response=%s",
+            receipt.id,
+            sync_row.status,
+            sync_row.created_transaction_id or sync_row.matched_transaction_id,
+            sync_row.raw_response,
         )
         db.commit()
         return {
@@ -312,6 +540,7 @@ def sync_receipt_to_ynab(
         receipt.status_reason = str(exc)
         receipt.sync_completed_at = failed_at
 
+        logger.exception("YNAB sync failed receipt_id=%s error=%s", receipt.id, exc)
         db.commit()
         raise
 

@@ -14,47 +14,176 @@ import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 
-function toDraft(receipt: ReceiptDetail): ValidationPayloadInput {
-  const payload = (receipt.latest_validation?.payload ?? receipt.latest_extraction?.parsed_json ?? {}) as Record<string, unknown>;
+const UNKNOWN_ACCOUNT_ID = "__unknown__";
+const PAYEE_SUGGESTION_LIMIT = 12;
+
+type CategoryOption = {
+  entity_id: string;
+  name: string;
+  group_name: string | null;
+};
+
+function formatCategoryLabel(category: CategoryOption): string {
+  return `${category.group_name ? `${category.group_name} / ` : ""}${category.name}`;
+}
+
+function CategorySearchSelect({
+  value,
+  categories,
+  placeholder,
+  onChange,
+}: {
+  value: string;
+  categories: CategoryOption[];
+  placeholder: string;
+  onChange: (nextCategoryId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+
+  const selectedCategory = useMemo(
+    () => categories.find((category) => category.entity_id === value) ?? null,
+    [categories, value],
+  );
+  const filteredCategories = useMemo(() => {
+    const normalizedQuery = searchTerm.trim().toLowerCase();
+    if (!normalizedQuery) {
+      return categories;
+    }
+    return categories.filter((category) => formatCategoryLabel(category).toLowerCase().includes(normalizedQuery));
+  }, [categories, searchTerm]);
+
+  const inputValue = open ? searchTerm : selectedCategory ? formatCategoryLabel(selectedCategory) : "";
+
+  return (
+    <div className="relative">
+      <Input
+        value={inputValue}
+        placeholder={placeholder}
+        onFocus={() => {
+          setOpen(true);
+          setSearchTerm("");
+        }}
+        onBlur={() => {
+          setTimeout(() => {
+            setOpen(false);
+            setSearchTerm("");
+          }, 120);
+        }}
+        onChange={(event) => {
+          const nextSearch = event.target.value;
+          setSearchTerm(nextSearch);
+          if (value) {
+            onChange("");
+          }
+        }}
+      />
+      {open ? (
+        <div className="absolute z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
+          {filteredCategories.length ? (
+            filteredCategories.map((category) => (
+              <button
+                key={category.entity_id}
+                type="button"
+                className="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-sand/70"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onChange(category.entity_id);
+                  setOpen(false);
+                  setSearchTerm("");
+                }}
+              >
+                {formatCategoryLabel(category)}
+              </button>
+            ))
+          ) : (
+            <p className="px-3 py-2 text-sm text-ink/60">No matching categories</p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function toDraftFromPayload(payload: Record<string, unknown>, fallbackPayee: string): ValidationPayloadInput {
   const splitsSource = Array.isArray(payload.splits) ? payload.splits : [];
+  const parsedSplits = splitsSource.map((split) => {
+    const record = split as Record<string, unknown>;
+    return {
+      category_id: String(record.category_id ?? ""),
+      amount: Number(record.amount ?? 0),
+      memo: String(record.memo ?? ""),
+    };
+  });
+
+  let categoryId = String(payload.category_id ?? "");
+  const splits = parsedSplits;
+
+  if (splits.length > 0) {
+    categoryId = "";
+  }
 
   return {
-    payee_name: String(payload.payee_name ?? receipt.display_payee_name ?? ""),
+    payee_name: String(payload.payee_name ?? fallbackPayee ?? ""),
     account_id: String(payload.account_id ?? ""),
     transaction_date: String(payload.transaction_date ?? new Date().toISOString().slice(0, 10)),
     memo: String(payload.memo ?? ""),
     total_amount: Number(payload.total_amount ?? 0),
-    splits: splitsSource.map((split) => {
-      const record = split as Record<string, unknown>;
-      return {
-        category_id: String(record.category_id ?? ""),
-        amount: Number(record.amount ?? 0),
-        memo: String(record.memo ?? ""),
-      };
-    }),
+    category_id: categoryId,
+    splits,
   };
 }
 
-function validateDraft(draft: ValidationPayloadInput): string[] {
+function toDraft(receipt: ReceiptDetail): ValidationPayloadInput {
+  const payload = (receipt.latest_validation?.payload ?? receipt.latest_extraction?.parsed_json ?? {}) as Record<string, unknown>;
+  return toDraftFromPayload(payload, receipt.display_payee_name ?? "");
+}
+
+function toModelBaselineDraft(receipt: ReceiptDetail): ValidationPayloadInput {
+  const payload = (receipt.model_validation?.payload ?? receipt.latest_extraction?.parsed_json ?? {}) as Record<string, unknown>;
+  return toDraftFromPayload(payload, receipt.display_payee_name ?? "");
+}
+
+function validateDraft(
+  draft: ValidationPayloadInput,
+  options: { categoryIds: Set<string>; accountIds: Set<string> },
+): string[] {
+  const { categoryIds, accountIds } = options;
   const errors: string[] = [];
+  const usesSplits = draft.splits.length > 0;
 
   if (!draft.payee_name.trim()) errors.push("Payee is required");
-  if (!draft.account_id.trim()) errors.push("Account is required");
+  if (!draft.account_id.trim()) {
+    errors.push("Account is required");
+  } else if (draft.account_id === UNKNOWN_ACCOUNT_ID) {
+    errors.push("Account is unknown. Select a valid YNAB account before syncing");
+  } else if (!accountIds.size) {
+    errors.push("YNAB accounts are not loaded yet");
+  } else if (!accountIds.has(draft.account_id)) {
+    errors.push("Selected account is not a valid YNAB account");
+  }
   if (!draft.transaction_date.trim()) errors.push("Date is required");
   if (!Number.isFinite(draft.total_amount) || draft.total_amount <= 0) errors.push("Total must be > 0");
 
-  if (!draft.splits.length) {
-    errors.push("At least one split is required");
-  } else {
+  if (!categoryIds.size) {
+    errors.push("YNAB categories are not loaded yet");
+  } else if (usesSplits) {
     const splitTotal = draft.splits.reduce((sum, split) => sum + Number(split.amount || 0), 0);
     if (Math.abs(splitTotal - draft.total_amount) > 0.01) {
       errors.push("Split amounts must equal total amount");
     }
+
     draft.splits.forEach((split, index) => {
-      if (!split.category_id) {
+      if (!split.category_id.trim()) {
         errors.push(`Split ${index + 1}: category is required`);
+      } else if (!categoryIds.has(split.category_id)) {
+        errors.push(`Split ${index + 1}: category must be an existing YNAB category`);
       }
     });
+  } else if (!draft.category_id.trim()) {
+    errors.push("Category is required");
+  } else if (!categoryIds.has(draft.category_id)) {
+    errors.push("Selected category must be an existing YNAB category");
   }
 
   return errors;
@@ -68,9 +197,12 @@ function formatAmount(value: number | null): string {
 export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<ValidationPayloadInput | null>(null);
+  const [cancelBaseline, setCancelBaseline] = useState<ValidationPayloadInput | null>(null);
+  const [baselineReceiptId, setBaselineReceiptId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [forceCreate, setForceCreate] = useState(false);
+  const [payeeMenuOpen, setPayeeMenuOpen] = useState(false);
 
   const receiptQuery = useQuery({
     queryKey: ["receipt", receiptId],
@@ -85,11 +217,20 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   });
 
   useEffect(() => {
-    if (!receiptQuery.data || dirty) {
+    if (!receiptQuery.data) {
       return;
     }
-    setDraft(toDraft(receiptQuery.data));
-  }, [receiptQuery.data, dirty]);
+    if (baselineReceiptId !== receiptQuery.data.id) {
+      setBaselineReceiptId(receiptQuery.data.id);
+      setCancelBaseline(toModelBaselineDraft(receiptQuery.data));
+      setDraft(toDraft(receiptQuery.data));
+      setDirty(false);
+      return;
+    }
+    if (!dirty) {
+      setDraft(toDraft(receiptQuery.data));
+    }
+  }, [receiptQuery.data, baselineReceiptId, dirty]);
 
   const saveMutation = useMutation({
     mutationFn: (nextDraft: ValidationPayloadInput) => saveDraft(receiptId, nextDraft),
@@ -119,12 +260,44 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     return () => clearTimeout(timer);
   }, [draft, dirty, saveMutation]);
 
-  const categories = useMemo(() => cacheQuery.data?.filter((item) => item.entity_type === "category") ?? [], [cacheQuery.data]);
+  const categories = useMemo(
+    () => (cacheQuery.data?.filter((item) => item.entity_type === "category") ?? []) as CategoryOption[],
+    [cacheQuery.data],
+  );
   const accounts = useMemo(() => cacheQuery.data?.filter((item) => item.entity_type === "account") ?? [], [cacheQuery.data]);
   const payees = useMemo(() => cacheQuery.data?.filter((item) => item.entity_type === "payee") ?? [], [cacheQuery.data]);
 
-  const validationErrors = useMemo(() => (draft ? validateDraft(draft) : []), [draft]);
+  const categoryIds = useMemo(() => new Set(categories.map((category) => category.entity_id)), [categories]);
+  const accountIds = useMemo(() => new Set(accounts.map((account) => account.entity_id)), [accounts]);
+
+  const validationErrors = useMemo(
+    () => (draft ? validateDraft(draft, { categoryIds, accountIds }) : []),
+    [draft, categoryIds, accountIds],
+  );
+  const payeeSuggestions = useMemo(() => {
+    if (!draft) return [];
+    const query = draft.payee_name.trim().toLowerCase();
+    if (!query) return [];
+    const seen = new Set<string>();
+    return payees
+      .filter((payee) => {
+        const normalizedName = payee.name.toLowerCase();
+        if (!normalizedName.includes(query) || seen.has(normalizedName)) {
+          return false;
+        }
+        seen.add(normalizedName);
+        return true;
+      })
+      .slice(0, PAYEE_SUGGESTION_LIMIT);
+  }, [draft, payees]);
   const canSync = !!draft && validationErrors.length === 0 && !saveMutation.isPending && !dirty;
+  const isSplitMode = !!draft && draft.splits.length > 0;
+  const splitTotal = draft ? draft.splits.reduce((sum, split) => sum + Number(split.amount || 0), 0) : 0;
+  const accountNeedsAttention = draft?.account_id === UNKNOWN_ACCOUNT_ID;
+  const canResetToBaseline =
+    !!draft &&
+    !!cancelBaseline &&
+    JSON.stringify(draft) !== JSON.stringify(cancelBaseline);
 
   if (receiptQuery.isLoading || !receiptQuery.data || !draft) {
     return (
@@ -135,6 +308,18 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   }
 
   const receipt = receiptQuery.data;
+  const isSyncing = syncMutation.isPending || receipt.status === "syncing";
+  const hadPriorSync = receipt.has_successful_sync;
+  const syncButtonLabel = isSyncing ? "Syncing" : hadPriorSync ? "Force Resync" : "Sync to YNAB";
+  const resetDraft = () => {
+    if (!cancelBaseline) {
+      return;
+    }
+    setDirty(false);
+    setPayeeMenuOpen(false);
+    setDraft(cancelBaseline);
+    saveMutation.mutate(cancelBaseline);
+  };
 
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-4 px-4 pb-28 pt-4">
@@ -158,39 +343,62 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
       <Card className="animate-reveal space-y-3" style={{ animationDelay: "70ms" }}>
         <h2 className="font-semibold">Payee + Account</h2>
         <div className="grid gap-3">
-          <div>
+          <div className="relative">
             <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Payee</label>
             <Input
-              list="payee-options"
               value={draft.payee_name}
+              onFocus={() => setPayeeMenuOpen(true)}
+              onBlur={() => {
+                setTimeout(() => setPayeeMenuOpen(false), 120);
+              }}
               onChange={(event) => {
                 setDraft({ ...draft, payee_name: event.target.value });
                 setDirty(true);
+                setPayeeMenuOpen(true);
               }}
             />
-            <datalist id="payee-options">
-              {payees.map((payee) => (
-                <option key={payee.entity_id} value={payee.name} />
-              ))}
-            </datalist>
+            {payeeMenuOpen && payeeSuggestions.length > 0 ? (
+              <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
+                {payeeSuggestions.map((payee) => (
+                  <button
+                    key={payee.entity_id}
+                    type="button"
+                    className="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-sand/70"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      setDraft({ ...draft, payee_name: payee.name });
+                      setDirty(true);
+                      setPayeeMenuOpen(false);
+                    }}
+                  >
+                    {payee.name}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
 
           <div>
             <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Account</label>
             <Select
               value={draft.account_id}
+              className={accountNeedsAttention ? "border-amber-500 bg-amber-50 text-amber-900 focus:ring-amber-300" : undefined}
               onChange={(event) => {
                 setDraft({ ...draft, account_id: event.target.value });
                 setDirty(true);
               }}
             >
               <option value="">Select account</option>
+              <option value={UNKNOWN_ACCOUNT_ID}>Unknown (needs review)</option>
               {accounts.map((account) => (
                 <option key={account.entity_id} value={account.entity_id}>
                   {account.name}
                 </option>
               ))}
             </Select>
+            {accountNeedsAttention ? (
+              <p className="mt-1 text-xs font-semibold text-amber-700">Unknown account selected. Sync is disabled until this is fixed.</p>
+            ) : null}
           </div>
         </div>
       </Card>
@@ -237,84 +445,127 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
 
       <Card className="animate-reveal space-y-3" style={{ animationDelay: "170ms" }}>
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold">Splits</h2>
+          <h2 className="font-semibold">{isSplitMode ? "Split Categories" : "Category"}</h2>
           <Button
             variant="outline"
             size="sm"
             className="gap-1"
             onClick={() => {
+              if (isSplitMode) {
+                const fallbackCategory = draft.splits.find((split) => split.category_id)?.category_id ?? draft.category_id;
+                setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
+                setDirty(true);
+                return;
+              }
+
               setDraft({
                 ...draft,
-                splits: [...draft.splits, { category_id: "", amount: 0, memo: "" }],
+                category_id: "",
+                splits: [{ category_id: draft.category_id, amount: draft.total_amount, memo: "" }],
               });
               setDirty(true);
             }}
           >
-            <Plus className="h-4 w-4" /> Add split
+            {isSplitMode ? "Use Single Category" : "Split Transaction"}
           </Button>
         </div>
 
-        {draft.splits.map((split, index) => (
-          <div key={`${index}-${split.category_id}`} className="rounded-2xl border border-ink/10 bg-sand/70 p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Item {index + 1}</p>
-              <button
-                type="button"
-                className="inline-flex items-center text-red-600"
-                onClick={() => {
-                  const nextSplits = draft.splits.filter((_, splitIndex) => splitIndex !== index);
-                  setDraft({ ...draft, splits: nextSplits });
-                  setDirty(true);
-                }}
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="grid gap-2">
-              <Input
-                type="number"
-                step="0.01"
-                value={split.amount}
-                onChange={(event) => {
-                  const nextSplits = [...draft.splits];
-                  nextSplits[index] = { ...split, amount: Number(event.target.value) || 0 };
-                  setDraft({ ...draft, splits: nextSplits });
-                  setDirty(true);
-                }}
-              />
-
-              <Select
-                value={split.category_id}
-                onChange={(event) => {
-                  const nextSplits = [...draft.splits];
-                  nextSplits[index] = { ...split, category_id: event.target.value };
-                  setDraft({ ...draft, splits: nextSplits });
-                  setDirty(true);
-                }}
-              >
-                <option value="">Move item to category</option>
-                {categories.map((category) => (
-                  <option key={category.entity_id} value={category.entity_id}>
-                    {category.group_name ? `${category.group_name} / ` : ""}
-                    {category.name}
-                  </option>
-                ))}
-              </Select>
-
-              <Input
-                placeholder="Split memo"
-                value={split.memo}
-                onChange={(event) => {
-                  const nextSplits = [...draft.splits];
-                  nextSplits[index] = { ...split, memo: event.target.value };
-                  setDraft({ ...draft, splits: nextSplits });
-                  setDirty(true);
-                }}
-              />
-            </div>
+        {!isSplitMode ? (
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Category</label>
+            <CategorySearchSelect
+              value={draft.category_id}
+              categories={categories}
+              placeholder="Select or search category"
+              onChange={(nextCategoryId) => {
+                setDraft({ ...draft, category_id: nextCategoryId });
+                setDirty(true);
+              }}
+            />
           </div>
-        ))}
+        ) : (
+          <>
+            <div className="flex items-center justify-between rounded-xl bg-sand/50 px-3 py-2 text-xs text-ink/75">
+              <span>Split total: ${splitTotal.toFixed(2)}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1"
+                onClick={() => {
+                  setDraft({
+                    ...draft,
+                    splits: [...draft.splits, { category_id: "", amount: 0, memo: "" }],
+                  });
+                  setDirty(true);
+                }}
+              >
+                <Plus className="h-4 w-4" /> Add split
+              </Button>
+            </div>
+
+            {draft.splits.map((split, index) => (
+              <div key={`${index}-${split.category_id}`} className="rounded-2xl border border-ink/10 bg-sand/70 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Split {index + 1}</p>
+                  <button
+                    type="button"
+                    className="inline-flex items-center text-red-600"
+                    onClick={() => {
+                      const nextSplits = draft.splits.filter((_, splitIndex) => splitIndex !== index);
+                      if (nextSplits.length === 0) {
+                        const fallbackCategory = split.category_id || draft.category_id;
+                        setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
+                        setDirty(true);
+                        return;
+                      }
+                      setDraft({ ...draft, category_id: "", splits: nextSplits });
+                      setDirty(true);
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="grid gap-2">
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={split.amount}
+                    onChange={(event) => {
+                      const nextSplits = [...draft.splits];
+                      nextSplits[index] = { ...split, amount: Number(event.target.value) || 0 };
+                      setDraft({ ...draft, splits: nextSplits });
+                      setDirty(true);
+                    }}
+                  />
+
+                  <CategorySearchSelect
+                    value={split.category_id}
+                    categories={categories}
+                    placeholder="Move item to category"
+                    onChange={(nextCategoryId) => {
+                      const nextSplits = [...draft.splits];
+                      nextSplits[index] = { ...split, category_id: nextCategoryId };
+                      setDraft({ ...draft, splits: nextSplits });
+                      setDirty(true);
+                    }}
+                  />
+
+                  <Input
+                    placeholder="Split memo"
+                    value={split.memo}
+                    onChange={(event) => {
+                      const nextSplits = [...draft.splits];
+                      nextSplits[index] = { ...split, memo: event.target.value };
+                      setDraft({ ...draft, splits: nextSplits });
+                      setDirty(true);
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </>
+        )}
       </Card>
 
       <section className="animate-reveal rounded-2xl bg-white/80 p-3 text-xs text-ink/70" style={{ animationDelay: "210ms" }}>
@@ -341,17 +592,18 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
           <Button
             variant="outline"
             className="flex-1"
-            onClick={() => saveMutation.mutate(draft)}
-            disabled={saveMutation.isPending}
+            onClick={resetDraft}
+            disabled={!canResetToBaseline || saveMutation.isPending}
           >
-            Save Draft
+            Cancel
           </Button>
           <Button
             className="flex-1"
+            variant={isSyncing ? "outline" : "solid"}
             onClick={() => syncMutation.mutate()}
-            disabled={!canSync || syncMutation.isPending}
+            disabled={!canSync || isSyncing}
           >
-            Sync to YNAB
+            {syncButtonLabel}
           </Button>
         </div>
       </div>

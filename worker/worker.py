@@ -5,10 +5,12 @@ from rq import Queue, Worker
 
 from app.config import get_settings
 from app.jobs.queue import EXTRACTION_QUEUE_NAME, SYNC_QUEUE_NAME
+from app.log_setup import configure_logging
 
 
 def main() -> None:
     settings = get_settings()
+    configure_logging(settings.log_file_path)
     connection = Redis.from_url(settings.redis_url)
 
     queues = [
