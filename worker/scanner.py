@@ -5,14 +5,15 @@ import time
 
 from app.config import get_settings
 from app.db import SessionLocal
+from app.log_setup import configure_logging
 from app.services.ingestion import IngestionScanner
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
 def main() -> None:
     settings = get_settings()
+    configure_logging(settings.log_file_path)
     scanner = IngestionScanner(settings)
 
     logger.info("Starting scanner loop: ingest_dir=%s interval=%ss", settings.ingest_dir, settings.scan_interval_seconds)

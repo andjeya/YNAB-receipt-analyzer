@@ -4,14 +4,12 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import and_, select
-
 from app.config import get_settings
 from app.db import SessionLocal
-from app.enums import ReceiptStatus, YNABCacheEntityType
-from app.models import ExtractionRun, Receipt, TimingMetric, Validation, YNABCache
+from app.enums import ReceiptStatus
+from app.models import ExtractionRun, Receipt, TimingMetric, Validation
 from app.services.validation import build_initial_validation_payload, validate_payload
-from app.services.ynab import refresh_ynab_cache, sync_receipt_to_ynab
+from app.services.ynab import get_cached_reference_data, refresh_ynab_cache, sync_receipt_to_ynab
 from receipt_shared.gemini import GeminiAnalyzer, build_analysis_prompt
 from receipt_shared.money import dollars_to_milliunits
 from receipt_shared.ynab_client import Category
@@ -41,40 +39,47 @@ def run_extraction_job(receipt_id: str) -> None:
         try:
             if not settings.gemini_api_key:
                 raise ValueError("GEMINI_API_KEY is not configured")
+            logger.info("Starting Gemini extraction receipt_id=%s", receipt.id)
 
-            categories = list(
-                db.scalars(
-                    select(YNABCache).where(
-                        and_(
-                            YNABCache.entity_type == YNABCacheEntityType.CATEGORY.value,
-                            YNABCache.budget_id == (settings.ynab_budget_id or ""),
-                        )
-                    )
-                )
-            )
-            if not categories and settings.ynab_access_token and settings.ynab_budget_id:
+            reference_data = get_cached_reference_data(db, settings)
+            categories = reference_data["categories"]
+            accounts = reference_data["accounts"]
+            payees = reference_data["payees"]
+
+            if (not categories or not accounts or not payees) and settings.ynab_access_token and settings.ynab_budget_id:
                 refresh_ynab_cache(db, settings)
-                categories = list(
-                    db.scalars(
-                        select(YNABCache).where(
-                            and_(
-                                YNABCache.entity_type == YNABCacheEntityType.CATEGORY.value,
-                                YNABCache.budget_id == settings.ynab_budget_id,
-                            )
-                        )
-                    )
-                )
+                reference_data = get_cached_reference_data(db, settings)
+                categories = reference_data["categories"]
+                accounts = reference_data["accounts"]
+                payees = reference_data["payees"]
+
+            allowed_category_ids = {item.entity_id for item in categories}
+            allowed_account_ids = {item.entity_id for item in accounts}
 
             prompt_categories = [
                 Category(id=item.entity_id, name=item.name, group_name=item.group_name or "Uncategorized")
                 for item in categories
             ]
-            prompt_text = build_analysis_prompt(settings.gemini_prompt, prompt_categories)
+            prompt_accounts = [account.raw_json for account in accounts]
+            prompt_payees = [payee.name for payee in payees]
+            prompt_text = build_analysis_prompt(
+                settings.gemini_prompt,
+                prompt_categories,
+                prompt_accounts,
+                prompt_payees,
+            )
 
             file_path = Path(settings.object_store_root) / receipt.storage_key
             analyzer = GeminiAnalyzer(settings.gemini_api_key, settings.gemini_model)
             analysis = analyzer.analyze_file(file_path, prompt_text, receipt.mime_type)
             completed_at = utcnow()
+            logger.info(
+                "Gemini extraction receipt_id=%s schema_valid=%s duration_ms=%s raw_output=%s",
+                receipt.id,
+                analysis.schema_valid,
+                analysis.duration_ms,
+                analysis.raw_output,
+            )
 
             run = ExtractionRun(
                 receipt_id=receipt.id,
@@ -92,7 +97,11 @@ def run_extraction_job(receipt_id: str) -> None:
 
             if analysis.schema_valid and analysis.parsed_json:
                 payload = build_initial_validation_payload(analysis.parsed_json, settings.ynab_default_account_id)
-                normalized_payload, is_valid, errors = validate_payload(payload)
+                normalized_payload, is_valid, errors = validate_payload(
+                    payload,
+                    allowed_category_ids=allowed_category_ids,
+                    allowed_account_ids=allowed_account_ids,
+                )
                 validation = Validation(
                     receipt_id=receipt.id,
                     version=receipt.latest_validation_version + 1,
@@ -126,6 +135,7 @@ def run_extraction_job(receipt_id: str) -> None:
                 receipt.extraction_completed_at = completed_at
 
             db.commit()
+            logger.info("Finished extraction receipt_id=%s status=%s", receipt.id, receipt.status)
         except Exception as exc:
             receipt.status = ReceiptStatus.ERROR_EXTRACT.value
             receipt.status_reason = str(exc)

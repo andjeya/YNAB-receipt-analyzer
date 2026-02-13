@@ -51,11 +51,13 @@ export interface ReceiptDetail {
   display_receipt_date: string | null;
   latest_extraction: ExtractionRun | null;
   latest_validation: Validation | null;
+  model_validation: Validation | null;
   ingested_at: string;
   extraction_started_at: string | null;
   extraction_completed_at: string | null;
   sync_started_at: string | null;
   sync_completed_at: string | null;
+  has_successful_sync: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -72,6 +74,7 @@ export interface ValidationPayloadInput {
   transaction_date: string;
   memo: string;
   total_amount: number;
+  category_id: string;
   splits: ValidationSplitInput[];
 }
 

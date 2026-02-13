@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class GeminiSplit(BaseModel):
@@ -18,15 +18,31 @@ class GeminiReceiptExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     payee_name: str = Field(min_length=1)
+    account_id: str = Field(min_length=1)
     transaction_date: date
     memo: str = ""
     total_amount: float
+    category_id: str | None = None
     splits: list[GeminiSplit] = Field(default_factory=list)
 
+    @field_validator("category_id", mode="before")
+    @classmethod
+    def normalize_category_id(cls, value: str | None) -> str | None:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @model_validator(mode="after")
-    def ensure_has_splits(self) -> "GeminiReceiptExtraction":
-        if not self.splits:
-            raise ValueError("At least one split is required")
+    def ensure_single_or_split_mode(self) -> "GeminiReceiptExtraction":
+        has_category = bool(self.category_id)
+        split_count = len(self.splits)
+
+        if has_category and split_count:
+            raise ValueError("Provide either category_id or splits, not both")
+        if not has_category and split_count == 0:
+            raise ValueError("Either category_id or splits is required")
+        if split_count == 1:
+            raise ValueError("Split mode requires at least two splits")
         return self
 
 
@@ -46,10 +62,23 @@ class ValidationPayload(BaseModel):
     transaction_date: date
     memo: str = ""
     total_amount: float
+    category_id: str | None = None
     splits: list[ValidationSplit] = Field(default_factory=list)
 
+    @field_validator("category_id", mode="before")
+    @classmethod
+    def normalize_category_id(cls, value: str | None) -> str | None:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @model_validator(mode="after")
-    def ensure_has_splits(self) -> "ValidationPayload":
-        if not self.splits:
-            raise ValueError("At least one split is required")
+    def ensure_single_or_split_mode(self) -> "ValidationPayload":
+        has_category = bool(self.category_id)
+        split_count = len(self.splits)
+
+        if has_category and split_count:
+            raise ValueError("Provide either category_id or splits, not both")
+        if not has_category and split_count == 0:
+            raise ValueError("Either category_id or splits is required")
         return self

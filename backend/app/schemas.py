@@ -50,11 +50,13 @@ class ReceiptDetailOut(BaseModel):
     display_receipt_date: date | None = None
     latest_extraction: ExtractionRunOut | None = None
     latest_validation: ValidationOut | None = None
+    model_validation: ValidationOut | None = None
     ingested_at: datetime
     extraction_started_at: datetime | None = None
     extraction_completed_at: datetime | None = None
     sync_started_at: datetime | None = None
     sync_completed_at: datetime | None = None
+    has_successful_sync: bool = False
     created_at: datetime
     updated_at: datetime
 

@@ -21,8 +21,13 @@ def utcnow() -> datetime:
 def get_cache(
     entity_type: str | None = Query(default=None),
     db: Session = Depends(db_session),
+    settings: Settings = Depends(app_settings),
 ) -> list[CacheEntityOut]:
-    entities = list_cached_entities(db, entity_type=entity_type)
+    entities = list_cached_entities(
+        db,
+        entity_type=entity_type,
+        budget_id=settings.ynab_budget_id,
+    )
     return [
         CacheEntityOut(
             entity_type=entity.entity_type,

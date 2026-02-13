@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.enums import GameChallengeStatus, GameEventType, GameReceiptState
-from app.models import GameEvent, GameReceiptStateModel, GameStreak, GameToken, Receipt, Validation
+from app.enums import GameChallengeStatus, GameEventType, GameReceiptState, YNABSyncStatus
+from app.models import GameEvent, GameReceiptStateModel, GameStreak, GameToken, Receipt, Validation, YNABSync
 
 ALLOWED_WINDOWS = {"week", "month"}
 
@@ -24,11 +24,11 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def classify_receipt_state(
-    ingested_at: datetime,
-    validated_at: datetime,
+    transaction_at: datetime,
+    synced_at: datetime,
     settings: Settings,
 ) -> tuple[GameReceiptState, float]:
-    age_hours = max((_as_utc(validated_at) - _as_utc(ingested_at)).total_seconds() / 3600, 0.0)
+    age_hours = max((_as_utc(synced_at) - _as_utc(transaction_at)).total_seconds() / 3600, 0.0)
 
     if age_hours <= settings.game_green_hours_threshold:
         return GameReceiptState.GREEN, age_hours
@@ -83,17 +83,34 @@ def _record_event(
     return True
 
 
-def apply_user_validation_gamification(
+def _transaction_datetime_from_validation(validation: Validation) -> datetime | None:
+    raw_value = validation.payload.get("transaction_date")
+    if raw_value is None:
+        return None
+    try:
+        parsed_date = datetime.fromisoformat(str(raw_value)).date()
+    except ValueError:
+        return None
+    return datetime.combine(parsed_date, time.min, tzinfo=timezone.utc)
+
+
+def apply_sync_gamification(
     db: Session,
     receipt: Receipt,
-    validated_at: datetime,
+    validation: Validation,
+    synced_at: datetime,
     settings: Settings,
 ) -> GameReceiptStateModel:
     existing = db.get(GameReceiptStateModel, receipt.id)
     if existing is not None:
         return existing
 
-    state, age_hours = classify_receipt_state(receipt.ingested_at, validated_at, settings)
+    transaction_at = _transaction_datetime_from_validation(validation)
+    if transaction_at is None:
+        raise ValueError("Validation payload is missing a valid transaction_date for gamification")
+
+    synced_at_utc = _as_utc(synced_at)
+    state, age_hours = classify_receipt_state(transaction_at, synced_at_utc, settings)
     streak = _get_or_create_streak(db)
     tokens = _get_or_create_tokens(db)
 
@@ -103,7 +120,7 @@ def apply_user_validation_gamification(
     if state == GameReceiptState.GREEN:
         streak.current_streak += 1
         streak.max_streak = max(streak.max_streak, streak.current_streak)
-        streak.last_green_at = validated_at
+        streak.last_green_at = synced_at_utc
         streak.break_reason = None
 
         _record_event(
@@ -115,7 +132,7 @@ def apply_user_validation_gamification(
                 "current_streak": streak.current_streak,
                 "streak_group_id": streak_group_id,
             },
-            created_at=validated_at,
+            created_at=synced_at_utc,
         )
 
         threshold = settings.game_token_earn_every_greens
@@ -133,7 +150,7 @@ def apply_user_validation_gamification(
                     "threshold": threshold,
                     "streak": streak.current_streak,
                 },
-                created_at=validated_at,
+                created_at=synced_at_utc,
             )
     else:
         streak.current_streak = 0
@@ -150,13 +167,13 @@ def apply_user_validation_gamification(
                     "reason": state.value,
                     "prior_streak": prior_streak,
                 },
-                created_at=validated_at,
+                created_at=synced_at_utc,
             )
 
     state_row = GameReceiptStateModel(
         receipt_id=receipt.id,
         state=state.value,
-        validated_at=validated_at,
+        validated_at=synced_at_utc,
         age_hours_at_validation=age_hours,
         streak_group_id=streak_group_id,
     )
@@ -171,8 +188,9 @@ def apply_user_validation_gamification(
             "state": state.value,
             "age_hours": age_hours,
             "streak_group_id": streak_group_id,
+            "transaction_date": validation.payload.get("transaction_date"),
         },
-        created_at=validated_at,
+        created_at=synced_at_utc,
     )
 
     return state_row
@@ -213,27 +231,26 @@ def _spent_in_window(db: Session, start: datetime, end: datetime) -> int:
     return int(count or 0)
 
 
-def _first_valid_user_validation_rows(db: Session) -> list[tuple[Receipt, datetime]]:
-    first_valid_subquery = (
-        select(
-            Validation.receipt_id.label("receipt_id"),
-            func.min(Validation.created_at).label("validated_at"),
-        )
-        .where(
-            Validation.source == "user",
-            Validation.is_valid.is_(True),
-        )
-        .group_by(Validation.receipt_id)
-        .subquery()
-    )
-
+def _first_successful_sync_rows(db: Session) -> list[tuple[Receipt, Validation, datetime]]:
     rows = db.execute(
-        select(Receipt, first_valid_subquery.c.validated_at)
-        .join(first_valid_subquery, first_valid_subquery.c.receipt_id == Receipt.id)
-        .order_by(first_valid_subquery.c.validated_at.asc(), Receipt.id.asc())
+        select(Receipt, Validation, YNABSync.completed_at)
+        .join(YNABSync, YNABSync.receipt_id == Receipt.id)
+        .join(Validation, Validation.id == YNABSync.validation_id)
+        .where(
+            YNABSync.status.in_([YNABSyncStatus.MATCHED_UPDATED.value, YNABSyncStatus.CREATED.value]),
+            YNABSync.completed_at.is_not(None),
+        )
+        .order_by(YNABSync.completed_at.asc(), Receipt.id.asc())
     ).all()
 
-    return [(receipt, _as_utc(validated_at)) for receipt, validated_at in rows]
+    seen_receipts: set[str] = set()
+    first_rows: list[tuple[Receipt, Validation, datetime]] = []
+    for receipt, validation, completed_at in rows:
+        if receipt.id in seen_receipts:
+            continue
+        seen_receipts.add(receipt.id)
+        first_rows.append((receipt, validation, _as_utc(completed_at)))
+    return first_rows
 
 
 def rebuild_gamification_state(db: Session, settings: Settings) -> dict[str, int]:
@@ -266,8 +283,8 @@ def rebuild_gamification_state(db: Session, settings: Settings) -> dict[str, int
     processed_count = 0
     restored_shreds = 0
 
-    for receipt, validated_at in _first_valid_user_validation_rows(db):
-        state_row = apply_user_validation_gamification(db, receipt, validated_at, settings)
+    for receipt, validation, completed_at in _first_successful_sync_rows(db):
+        state_row = apply_sync_gamification(db, receipt, validation, completed_at, settings)
         processed_count += 1
 
         preserved_shredded_at = preserved_shreds.get(receipt.id)

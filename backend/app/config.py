@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     ingest_dir: Path = Path("./data/ingest")
     object_store_root: Path = Path("./data")
     object_store_receipts_prefix: str = "receipts"
+    log_file_path: Path = Path("./data/logs/app.log")
 
     scan_interval_seconds: int = 10
     stable_checks_required: int = 2
@@ -39,6 +40,7 @@ class Settings(BaseSettings):
     ynab_access_token: str | None = None
     ynab_budget_id: str | None = None
     ynab_default_account_id: str | None = None
+    ynab_cache_refresh_interval_minutes: int = 30
 
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
@@ -86,10 +88,18 @@ class Settings(BaseSettings):
             raise ValueError("Game challenge targets must be at least 1")
         return value
 
+    @field_validator("ynab_cache_refresh_interval_minutes")
+    @classmethod
+    def validate_cache_refresh_interval(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("YNAB_CACHE_REFRESH_INTERVAL_MINUTES must be at least 1")
+        return value
+
 
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
     settings.ingest_dir.mkdir(parents=True, exist_ok=True)
     (settings.object_store_root / settings.object_store_receipts_prefix).mkdir(parents=True, exist_ok=True)
+    settings.log_file_path.parent.mkdir(parents=True, exist_ok=True)
     return settings
