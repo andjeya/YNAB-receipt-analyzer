@@ -79,6 +79,9 @@ class YNABClient:
             params={"since_date": since_date},
         ).get("transactions", [])
 
+    def get_transaction(self, budget_id: str, transaction_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/budgets/{budget_id}/transactions/{transaction_id}").get("transaction", {})
+
     def create_transaction(self, budget_id: str, transaction: dict[str, Any]) -> dict[str, Any]:
         payload = {"transaction": transaction}
         return self._request("POST", f"/budgets/{budget_id}/transactions", payload).get("transaction", {})
@@ -86,3 +89,6 @@ class YNABClient:
     def update_transaction(self, budget_id: str, transaction_id: str, transaction: dict[str, Any]) -> dict[str, Any]:
         payload = {"transaction": transaction}
         return self._request("PUT", f"/budgets/{budget_id}/transactions/{transaction_id}", payload).get("transaction", {})
+
+    def delete_transaction(self, budget_id: str, transaction_id: str) -> dict[str, Any]:
+        return self._request("DELETE", f"/budgets/{budget_id}/transactions/{transaction_id}").get("transaction", {})

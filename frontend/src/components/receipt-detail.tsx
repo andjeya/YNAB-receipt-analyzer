@@ -201,7 +201,6 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const [baselineReceiptId, setBaselineReceiptId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [forceCreate, setForceCreate] = useState(false);
   const [payeeMenuOpen, setPayeeMenuOpen] = useState(false);
 
   const receiptQuery = useQuery({
@@ -243,7 +242,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   });
 
   const syncMutation = useMutation({
-    mutationFn: () => enqueueSync(receiptId, { force_create: forceCreate, allow_update_match: !forceCreate }),
+    mutationFn: () => enqueueSync(receiptId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
@@ -310,7 +309,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const receipt = receiptQuery.data;
   const isSyncing = syncMutation.isPending || receipt.status === "syncing";
   const hadPriorSync = receipt.has_successful_sync;
-  const syncButtonLabel = isSyncing ? "Syncing" : hadPriorSync ? "Force Resync" : "Sync to YNAB";
+  const syncButtonLabel = isSyncing ? "Syncing" : hadPriorSync ? "Resync to YNAB" : "Sync to YNAB";
   const resetDraft = () => {
     if (!cancelBaseline) {
       return;
@@ -572,10 +571,6 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
         <p className="mb-2 font-semibold text-ink/70">
           {saveMutation.isPending ? "Autosaving..." : dirty ? "Changes pending autosave" : "Draft saved"}
         </p>
-        <label className="mb-2 flex items-center gap-2 text-ink/80">
-          <input type="checkbox" checked={forceCreate} onChange={(event) => setForceCreate(event.target.checked)} />
-          Force create new YNAB transaction (skip match/update)
-        </label>
         {validationErrors.length ? (
           <ul className="space-y-1 text-red-700">
             {validationErrors.map((error) => (

@@ -298,6 +298,98 @@ def _find_exact_transaction_match(
     return None
 
 
+def _get_transaction_by_id(client: YNABClient, budget_id: str, transaction_id: str) -> dict[str, Any] | None:
+    try:
+        transaction = client.get_transaction(budget_id, transaction_id)
+    except RuntimeError as exc:
+        if "YNAB API error 404" in str(exc):
+            return None
+        raise
+    if transaction.get("deleted"):
+        return None
+    return transaction
+
+
+def _build_update_transaction_payload(
+    transaction_payload: dict[str, Any],
+    existing_transaction: dict[str, Any] | None,
+) -> dict[str, Any]:
+    update_payload: dict[str, Any] = dict(transaction_payload)
+    desired_subtransactions = transaction_payload.get("subtransactions")
+    existing_subtransactions = [
+        sub
+        for sub in (existing_transaction or {}).get("subtransactions", [])
+        if not sub.get("deleted")
+    ]
+
+    if desired_subtransactions is None:
+        if existing_subtransactions:
+            # Ask YNAB to clear split rows when transitioning back to single-category mode.
+            update_payload["subtransactions"] = []
+        return update_payload
+
+    merged_subtransactions: list[dict[str, Any]] = []
+    for index, desired_subtransaction in enumerate(desired_subtransactions):
+        next_subtransaction = dict(desired_subtransaction)
+        if index < len(existing_subtransactions):
+            existing_subtransaction_id = existing_subtransactions[index].get("id")
+            if existing_subtransaction_id:
+                next_subtransaction["id"] = existing_subtransaction_id
+        merged_subtransactions.append(next_subtransaction)
+
+    for existing_subtransaction in existing_subtransactions[len(desired_subtransactions) :]:
+        existing_subtransaction_id = existing_subtransaction.get("id")
+        if existing_subtransaction_id:
+            merged_subtransactions.append({"id": existing_subtransaction_id, "deleted": True})
+
+    update_payload["subtransactions"] = merged_subtransactions
+    return update_payload
+
+
+def _transaction_structure_matches_payload(transaction: dict[str, Any], payload: dict[str, Any]) -> bool:
+    payload_subtransactions = payload.get("subtransactions", [])
+    transaction_subtransactions = transaction.get("subtransactions", [])
+    if payload_subtransactions:
+        return _normalized_subtransaction_signature(transaction_subtransactions) == _normalized_subtransaction_signature(
+            payload_subtransactions
+        )
+
+    if any(not sub.get("deleted") for sub in transaction_subtransactions):
+        return False
+    return str(transaction.get("category_id") or "") == str(payload.get("category_id") or "")
+
+
+def _update_or_replace_transaction(
+    client: YNABClient,
+    budget_id: str,
+    target_transaction_id: str,
+    transaction_payload: dict[str, Any],
+    existing_transaction: dict[str, Any] | None,
+) -> tuple[dict[str, Any], str, str]:
+    """Try PUT update; if YNAB ignores split/category changes, delete + create.
+
+    Returns (ynab_response, final_transaction_id, sync_status).
+    """
+    update_payload = _build_update_transaction_payload(transaction_payload, existing_transaction)
+    ynab_response = client.update_transaction(budget_id, target_transaction_id, update_payload)
+
+    if _transaction_structure_matches_payload(ynab_response, transaction_payload):
+        return ynab_response, target_transaction_id, YNABSyncStatus.MATCHED_UPDATED.value
+
+    # YNAB silently ignored split/category structure changes.
+    # The YNAB API does not support updating subtransactions on existing split
+    # transactions, nor converting a split back to single-category.
+    # Workaround: delete the old transaction and create a fresh one.
+    logger.info(
+        "YNAB ignored split/category changes on transaction %s; deleting and recreating",
+        target_transaction_id,
+    )
+    client.delete_transaction(budget_id, target_transaction_id)
+    ynab_response = client.create_transaction(budget_id, transaction_payload)
+    new_id = ynab_response.get("id", "")
+    return ynab_response, new_id, YNABSyncStatus.CREATED.value
+
+
 def sync_receipt_to_ynab(
     db: Session,
     settings: Settings,
@@ -316,16 +408,6 @@ def sync_receipt_to_ynab(
     prior_success_sync = _latest_successful_sync_for_receipt(db, receipt.id)
     idempotency_key = make_idempotency_key(receipt_id, validation.id, force_create, allow_update_match)
     sync_row = db.scalar(select(YNABSync).where(YNABSync.idempotency_key == idempotency_key))
-    if sync_row and sync_row.status in {
-        YNABSyncStatus.MATCHED_UPDATED.value,
-        YNABSyncStatus.CREATED.value,
-    }:
-        return {
-            "status": sync_row.status,
-            "idempotency_key": idempotency_key,
-            "transaction_id": sync_row.created_transaction_id or sync_row.matched_transaction_id,
-            "already_synced": True,
-        }
 
     started_at = utcnow()
     started_perf = time.perf_counter()
@@ -340,18 +422,19 @@ def sync_receipt_to_ynab(
             validation_id=validation.id,
             idempotency_key=idempotency_key,
             status=YNABSyncStatus.QUEUED.value,
-            match_mode=(
-                "update_existing"
-                if prior_success_sync is not None
-                else ("force_create" if force_create else "match_or_create")
-            ),
+            match_mode="force_create" if force_create else ("update_existing" if prior_success_sync is not None else "match_or_create"),
             started_at=started_at,
         )
         db.add(sync_row)
 
+    sync_row.match_mode = "force_create" if force_create else ("update_existing" if prior_success_sync is not None else "match_or_create")
     sync_row.validation_id = validation.id
     sync_row.status = YNABSyncStatus.RUNNING.value
     sync_row.started_at = started_at
+    sync_row.matched_transaction_id = None
+    sync_row.created_transaction_id = None
+    sync_row.raw_request = None
+    sync_row.raw_response = None
     sync_row.error_text = None
     db.commit()
 
@@ -407,16 +490,15 @@ def sync_receipt_to_ynab(
             transaction_payload["subtransactions"] = _build_subtransactions(payload)
         else:
             transaction_payload["category_id"] = category_id
-        sync_row.raw_request = {"transaction": transaction_payload}
         logger.info(
             "Starting YNAB sync receipt_id=%s validation_id=%s mode=%s request=%s",
             receipt.id,
             validation.id,
             sync_row.match_mode,
-            sync_row.raw_request,
+            {"transaction": transaction_payload},
         )
 
-        if prior_success_sync is not None:
+        if prior_success_sync is not None and not force_create:
             target_transaction_id = (
                 prior_success_sync.created_transaction_id
                 or prior_success_sync.matched_transaction_id
@@ -427,45 +509,62 @@ def sync_receipt_to_ynab(
             previous_date = str(previous_transaction.get("date") or payload["transaction_date"])
             since_date = min(str(payload["transaction_date"]), previous_date)
 
+            existing_target_transaction: dict[str, Any] | None = None
             if target_transaction_id:
-                try:
-                    ynab_response = client.update_transaction(settings.ynab_budget_id, target_transaction_id, transaction_payload)
-                except RuntimeError as exc:
-                    if "YNAB API error 404" not in str(exc):
-                        raise
+                existing_target_transaction = _get_transaction_by_id(
+                    client,
+                    settings.ynab_budget_id,
+                    target_transaction_id,
+                )
+
+            if existing_target_transaction is None:
+                if target_transaction_id:
                     logger.warning(
                         "Previously synced transaction missing in YNAB receipt_id=%s transaction_id=%s; searching exact match",
                         receipt.id,
                         target_transaction_id,
                     )
-                    matched_exact = _find_exact_transaction_match(
-                        client,
-                        settings.ynab_budget_id,
-                        lookup_transaction_payload,
-                        since_date=since_date,
-                    )
-                    if matched_exact is None:
-                        raise ValueError("cannot find transaction in YNAB to update") from exc
-                    target_transaction_id = matched_exact["id"]
-                    ynab_response = client.update_transaction(settings.ynab_budget_id, target_transaction_id, transaction_payload)
-            else:
                 matched_exact = _find_exact_transaction_match(
                     client,
                     settings.ynab_budget_id,
                     lookup_transaction_payload,
                     since_date=since_date,
                 )
-                if matched_exact is None:
-                    raise ValueError("cannot find transaction in YNAB to update")
-                target_transaction_id = matched_exact["id"]
-                ynab_response = client.update_transaction(settings.ynab_budget_id, target_transaction_id, transaction_payload)
+                if matched_exact is not None:
+                    target_transaction_id = matched_exact["id"]
+                    existing_target_transaction = matched_exact
 
-            sync_row.status = YNABSyncStatus.MATCHED_UPDATED.value
-            sync_row.matched_transaction_id = target_transaction_id
-            sync_row.raw_response = ynab_response
+            if existing_target_transaction is not None:
+                sync_row.raw_request = {"transaction": transaction_payload}
+                ynab_response, final_id, sync_status = _update_or_replace_transaction(
+                    client,
+                    settings.ynab_budget_id,
+                    target_transaction_id,
+                    transaction_payload,
+                    existing_target_transaction,
+                )
+                sync_row.status = sync_status
+                if sync_status == YNABSyncStatus.CREATED.value:
+                    sync_row.created_transaction_id = final_id
+                else:
+                    sync_row.matched_transaction_id = final_id
+                sync_row.raw_response = ynab_response
+            else:
+                # Previously-synced transaction was deleted from YNAB (manually
+                # or by a prior failed delete+recreate).  Create a fresh one
+                # instead of leaving the user stuck in an error loop.
+                logger.warning(
+                    "Cannot find previous YNAB transaction for receipt_id=%s; creating new",
+                    receipt.id,
+                )
+                sync_row.raw_request = {"transaction": transaction_payload}
+                ynab_response = client.create_transaction(settings.ynab_budget_id, transaction_payload)
+                sync_row.status = YNABSyncStatus.CREATED.value
+                sync_row.created_transaction_id = ynab_response.get("id")
+                sync_row.raw_response = ynab_response
         else:
-            matched = None
-            if not force_create:
+            matched: dict[str, Any] | None = None
+            if prior_success_sync is None and not force_create:
                 transaction_candidates = client.list_transactions_since(settings.ynab_budget_id, payload["transaction_date"])
                 matched = _match_transaction(
                     transaction_candidates,
@@ -475,11 +574,22 @@ def sync_receipt_to_ynab(
                 )
 
             if matched and allow_update_match:
-                ynab_response = client.update_transaction(settings.ynab_budget_id, matched["id"], transaction_payload)
-                sync_row.status = YNABSyncStatus.MATCHED_UPDATED.value
-                sync_row.matched_transaction_id = matched["id"]
+                sync_row.raw_request = {"transaction": transaction_payload}
+                ynab_response, final_id, sync_status = _update_or_replace_transaction(
+                    client,
+                    settings.ynab_budget_id,
+                    matched["id"],
+                    transaction_payload,
+                    matched,
+                )
+                sync_row.status = sync_status
+                if sync_status == YNABSyncStatus.CREATED.value:
+                    sync_row.created_transaction_id = final_id
+                else:
+                    sync_row.matched_transaction_id = final_id
                 sync_row.raw_response = ynab_response
             else:
+                sync_row.raw_request = {"transaction": transaction_payload}
                 ynab_response = client.create_transaction(settings.ynab_budget_id, transaction_payload)
                 sync_row.status = YNABSyncStatus.CREATED.value
                 sync_row.created_transaction_id = ynab_response.get("id")
