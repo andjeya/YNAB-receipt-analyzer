@@ -61,10 +61,10 @@ export function saveDraft(receiptId: string, payload: ValidationPayloadInput) {
   });
 }
 
-export function enqueueSync(receiptId: string, options: { force_create?: boolean; allow_update_match?: boolean }) {
+export function enqueueSync(receiptId: string) {
   return request<SyncEnqueueResponse>(`/receipts/${receiptId}/sync`, {
     method: "POST",
-    body: JSON.stringify(options),
+    body: "{}",
   });
 }
 

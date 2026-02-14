@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3-flash-preview"
     gemini_prompt: str = "Categorize receipt line items into the most appropriate YNAB categories."
+    gemini_max_retries: int = 3
 
     ynab_access_token: str | None = None
     ynab_budget_id: str | None = None

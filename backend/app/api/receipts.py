@@ -296,16 +296,19 @@ def sync_receipt(
     if validation is None or not validation.is_valid:
         raise HTTPException(status_code=400, detail="Receipt must have a valid draft before sync")
 
+    try:
+        job_id = enqueue_sync_job(
+            receipt_id=receipt.id,
+            force_create=request.force_create,
+            allow_update_match=request.allow_update_match,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to enqueue sync job: {exc}") from exc
+
     receipt.status = ReceiptStatus.SYNCING.value
     receipt.status_reason = None
     receipt.sync_started_at = utcnow()
     db.commit()
-
-    job_id = enqueue_sync_job(
-        receipt_id=receipt.id,
-        force_create=request.force_create,
-        allow_update_match=request.allow_update_match,
-    )
 
     return SyncEnqueueResponse(
         receipt_id=receipt.id,

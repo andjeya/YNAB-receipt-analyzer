@@ -70,7 +70,7 @@ def run_extraction_job(receipt_id: str) -> None:
             )
 
             file_path = Path(settings.object_store_root) / receipt.storage_key
-            analyzer = GeminiAnalyzer(settings.gemini_api_key, settings.gemini_model)
+            analyzer = GeminiAnalyzer(settings.gemini_api_key, settings.gemini_model, settings.gemini_max_retries)
             analysis = analyzer.analyze_file(file_path, prompt_text, receipt.mime_type)
             completed_at = utcnow()
             logger.info(
