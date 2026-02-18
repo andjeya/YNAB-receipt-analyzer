@@ -20,6 +20,7 @@
 - Added manual endpoints:
   - `POST /api/game/reconcile`
   - `POST /api/game/correctness/recompute`
+- Commit: `64a9a6b`
 
 ## Checkpoint B: UI and game loop redesign
 - Reworked game dashboard around sketch style:
@@ -31,9 +32,11 @@
 - Added receipt state and fire iconography.
 - Added queue/detail correction shading and correction copy display.
 - Added reject flow button in detail UI to require resync.
+- Commit: `91fd1a5`
 
 ## Checkpoint C: Tests and hardening
 - Added backend correctness economy tests.
 - Added reconciliation helper tests.
 - Added frontend receipt ID helper + unit tests.
 - Added category guidance example and private guidance gitignore handling.
+- Commit: `571dcb6`
