@@ -34,3 +34,6 @@ plans/
 
 # macOS metadata
 .DS_Store
+
+# Local/private Gemini guidance (do not commit)
+shared/receipt_shared/resources/category_guidance.json

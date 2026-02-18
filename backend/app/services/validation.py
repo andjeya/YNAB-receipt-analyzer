@@ -75,11 +75,14 @@ def build_initial_validation_payload(parsed_extraction: dict[str, Any], default_
     if not category_id and len(parsed_splits) == 1:
         category_id = parsed_splits[0].get("category_id")
 
+    payee_name = str(parsed_extraction.get("payee_name") or "").strip()
+    memo = str(parsed_extraction.get("memo") or "").strip()
+
     return {
-        "payee_name": parsed_extraction.get("payee_name") or "Receipt Import",
+        "payee_name": payee_name,
         "account_id": parsed_extraction.get("account_id") or default_account_id or "",
         "transaction_date": parsed_extraction.get("transaction_date"),
-        "memo": parsed_extraction.get("memo") or "Imported from receipt via Gemini",
+        "memo": memo or "Imported from receipt via Gemini",
         "total_amount": parsed_extraction.get("total_amount") or 0,
         "category_id": category_id or "",
         "splits": parsed_splits if len(parsed_splits) >= 2 else [],

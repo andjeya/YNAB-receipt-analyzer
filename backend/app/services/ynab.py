@@ -19,6 +19,7 @@ from receipt_shared.money import dollars_to_milliunits
 from receipt_shared.ynab_client import YNABClient
 
 logger = logging.getLogger(__name__)
+RECEIPT_ID_MARKER_PREFIX = "[receipt_id:"
 
 
 def utcnow() -> datetime:
@@ -202,6 +203,20 @@ def get_latest_validation(db: Session, receipt_id: str) -> Validation | None:
         .order_by(Validation.version.desc())
         .limit(1)
     )
+
+
+def _receipt_id_marker(receipt_id: str) -> str:
+    return f"{RECEIPT_ID_MARKER_PREFIX}{receipt_id}]"
+
+
+def _append_receipt_id_marker(memo: str | None, receipt_id: str) -> str:
+    memo_text = str(memo or "").strip()
+    marker = _receipt_id_marker(receipt_id)
+    if marker in memo_text:
+        return memo_text
+    if memo_text:
+        return f"{memo_text} {marker}"
+    return marker
 
 
 def _build_subtransactions(validation_payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -484,7 +499,7 @@ def sync_receipt_to_ynab(
             "date": payload["transaction_date"],
             "amount": total_milliunits,
             "payee_name": payload["payee_name"],
-            "memo": payload.get("memo", ""),
+            "memo": _append_receipt_id_marker(payload.get("memo", ""), receipt.id),
         }
         if has_splits:
             transaction_payload["subtransactions"] = _build_subtransactions(payload)

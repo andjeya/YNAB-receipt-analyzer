@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { formatDistanceToNow } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -12,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { GamificationDashboard } from "@/components/gamification-dashboard";
 import { StatusBadge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 
 const FILTERS: Array<{ label: string; value: "" | ReceiptStatus }> = [
   { label: "All", value: "" },
@@ -21,6 +23,7 @@ const FILTERS: Array<{ label: string; value: "" | ReceiptStatus }> = [
   { label: "Errors", value: "error_extract" },
   { label: "Synced", value: "synced" },
 ];
+const RECEIPT_ID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
 
 function formatAmount(milliunits: number | null): string {
   if (milliunits == null) {
@@ -29,10 +32,18 @@ function formatAmount(milliunits: number | null): string {
   return `$${Math.abs(milliunits / 1000).toFixed(2)}`;
 }
 
+function extractReceiptId(rawValue: string): string | null {
+  const match = rawValue.match(RECEIPT_ID_PATTERN);
+  return match ? match[0].toLowerCase() : null;
+}
+
 export function ReceiptList() {
+  const router = useRouter();
   const [statusFilter, setStatusFilter] = useState<"" | ReceiptStatus>("");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
   const [activeView, setActiveView] = useState<"game" | "queue">("game");
+  const [receiptLookupInput, setReceiptLookupInput] = useState("");
+  const [receiptLookupError, setReceiptLookupError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const receiptsQuery = useQuery({
@@ -68,6 +79,15 @@ export function ReceiptList() {
   const highlightedCount = useMemo(() => {
     return receiptsQuery.data?.filter((receipt) => receipt.status === "needs_review").length ?? 0;
   }, [receiptsQuery.data]);
+  const openReceiptById = () => {
+    const parsedId = extractReceiptId(receiptLookupInput.trim());
+    if (!parsedId) {
+      setReceiptLookupError("Enter a valid receipt ID (UUID) or memo token containing one.");
+      return;
+    }
+    setReceiptLookupError(null);
+    router.push(`/receipts/${parsedId}`);
+  };
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 pb-24 pt-5">
@@ -105,6 +125,24 @@ export function ReceiptList() {
             ? "Build green streaks, earn shred tokens, and clear decay receipts"
             : `${highlightedCount} receipt${highlightedCount === 1 ? "" : "s"} waiting for review`}
         </p>
+        <div className="mt-3 flex items-start gap-2">
+          <Input
+            value={receiptLookupInput}
+            onChange={(event) => setReceiptLookupInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                openReceiptById();
+              }
+            }}
+            placeholder="Open receipt by ID or memo token"
+            className="border-white/25 bg-white/10 text-sand placeholder:text-sand/55"
+          />
+          <Button variant="outline" size="sm" className="h-10 border-white/30 bg-transparent text-sand hover:bg-white/10" onClick={openReceiptById}>
+            Open ID
+          </Button>
+        </div>
+        {receiptLookupError ? <p className="mt-1 text-xs text-red-300">{receiptLookupError}</p> : null}
         <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
           <div className="rounded-xl bg-sand/10 p-2">
             <p className="text-sand/70">Extract</p>

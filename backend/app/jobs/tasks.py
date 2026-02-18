@@ -116,7 +116,8 @@ def run_extraction_job(receipt_id: str) -> None:
                 receipt.status = ReceiptStatus.NEEDS_REVIEW.value
                 receipt.status_reason = None
                 receipt.extraction_completed_at = completed_at
-                receipt.display_payee_name = normalized_payload.get("payee_name")
+                normalized_payee = str(normalized_payload.get("payee_name") or "").strip()
+                receipt.display_payee_name = normalized_payee or None
                 receipt.display_total_milliunits = dollars_to_milliunits(normalized_payload.get("total_amount", 0), outflow=False)
                 if normalized_payload.get("transaction_date"):
                     receipt.display_receipt_date = datetime.fromisoformat(normalized_payload["transaction_date"]).date()

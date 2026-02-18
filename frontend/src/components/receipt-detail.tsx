@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, Droplets, Plus, Trash2 } from "lucide-react";
 
 import { enqueueSync, getReceiptDetail, getYnabCache, receiptFileUrl, saveDraft } from "@/lib/api";
 import { ReceiptDetail, ValidationPayloadInput } from "@/lib/types";
@@ -16,6 +16,14 @@ import { Textarea } from "@/components/ui/textarea";
 
 const UNKNOWN_ACCOUNT_ID = "__unknown__";
 const PAYEE_SUGGESTION_LIMIT = 12;
+const AMBIGUITY_MIN_CONFIDENCE = 0.7;
+
+type CategoryAmbiguityFlag = {
+  line_item: string;
+  candidate_category_ids: string[];
+  confidence: number;
+  note: string;
+};
 
 type CategoryOption = {
   entity_id: string;
@@ -126,12 +134,49 @@ function toDraftFromPayload(payload: Record<string, unknown>, fallbackPayee: str
   return {
     payee_name: String(payload.payee_name ?? fallbackPayee ?? ""),
     account_id: String(payload.account_id ?? ""),
-    transaction_date: String(payload.transaction_date ?? new Date().toISOString().slice(0, 10)),
+    transaction_date: String(payload.transaction_date ?? ""),
     memo: String(payload.memo ?? ""),
     total_amount: Number(payload.total_amount ?? 0),
     category_id: categoryId,
     splits,
   };
+}
+
+function parseCategoryAmbiguityFlags(payload: Record<string, unknown> | null | undefined): CategoryAmbiguityFlag[] {
+  if (!payload) {
+    return [];
+  }
+
+  const rawFlags = payload.category_ambiguity_flags;
+  if (!Array.isArray(rawFlags)) {
+    return [];
+  }
+
+  const parsedFlags: CategoryAmbiguityFlag[] = [];
+  for (const candidate of rawFlags) {
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+    const row = candidate as Record<string, unknown>;
+    const confidence = Number(row.confidence);
+    if (!Number.isFinite(confidence) || confidence < AMBIGUITY_MIN_CONFIDENCE) {
+      continue;
+    }
+    const lineItem = String(row.line_item ?? "").trim();
+    const note = String(row.note ?? "").trim();
+    const candidateCategoryIds = Array.isArray(row.candidate_category_ids)
+      ? row.candidate_category_ids
+          .map((item) => String(item ?? "").trim())
+          .filter((item) => item.length > 0)
+      : [];
+    parsedFlags.push({
+      line_item: lineItem,
+      candidate_category_ids: candidateCategoryIds,
+      confidence,
+      note,
+    });
+  }
+  return parsedFlags;
 }
 
 function toDraft(receipt: ReceiptDetail): ValidationPayloadInput {
@@ -293,10 +338,27 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const isSplitMode = !!draft && draft.splits.length > 0;
   const splitTotal = draft ? draft.splits.reduce((sum, split) => sum + Number(split.amount || 0), 0) : 0;
   const accountNeedsAttention = draft?.account_id === UNKNOWN_ACCOUNT_ID;
+  const ambiguityFlags = useMemo(
+    () => parseCategoryAmbiguityFlags((receiptQuery.data?.latest_extraction?.parsed_json ?? null) as Record<string, unknown> | null),
+    [receiptQuery.data?.latest_extraction?.parsed_json],
+  );
   const canResetToBaseline =
     !!draft &&
     !!cancelBaseline &&
     JSON.stringify(draft) !== JSON.stringify(cancelBaseline);
+
+  if (receiptQuery.isError) {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-6">
+        <Card>
+          <p className="text-sm text-red-700">Failed to load receipt details. Verify the receipt ID and try again.</p>
+          <Link href="/" className="mt-3 inline-flex text-sm font-semibold text-ink/70">
+            Back to queue
+          </Link>
+        </Card>
+      </main>
+    );
+  }
 
   if (receiptQuery.isLoading || !receiptQuery.data || !draft) {
     return (
@@ -401,6 +463,21 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
           </div>
         </div>
       </Card>
+
+      {ambiguityFlags.length > 0 ? (
+        <section className="animate-reveal rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900" style={{ animationDelay: "95ms" }}>
+          <p className="inline-flex items-center gap-1 font-semibold">
+            <Droplets className="h-3.5 w-3.5" />
+            Extra water opportunity: category ambiguity detected
+          </p>
+          {ambiguityFlags.slice(0, 3).map((flag, index) => (
+            <p key={`${flag.line_item}-${index}`} className="mt-1 text-[11px] text-sky-800">
+              {flag.line_item || "Item"} ({Math.round(flag.confidence * 100)}%):{" "}
+              {flag.note || "Could belong to multiple categories."}
+            </p>
+          ))}
+        </section>
+      ) : null}
 
       <Card className="animate-reveal space-y-3" style={{ animationDelay: "120ms" }}>
         <h2 className="font-semibold">Date + Total</h2>

@@ -1,0 +1,35 @@
+{
+  "_instructions": [
+    "Copy this file to shared/receipt_shared/resources/category_guidance.json and customize values for your budget.",
+    "Do not commit category_guidance.json (it may contain personal categories/payees/intent rules).",
+    "Keep the same top-level keys and value types."
+  ],
+  "schema_version": "example-1",
+  "category_examples": [
+    {
+      "category": "Groceries",
+      "examples": ["produce", "snacks", "drinks"]
+    },
+    {
+      "category": "Utilities",
+      "examples": ["electric", "water", "internet"]
+    }
+  ],
+  "never_suggest_categories": [
+    "Category to avoid 1",
+    "Category to avoid 2"
+  ],
+  "edge_case_rules": [
+    "Explain tricky distinctions that require user intent.",
+    "Use explicit receipt evidence before assigning exceptional categories."
+  ],
+  "model_behavior_rules": [
+    "If transaction date is unclear, set transaction_date to null.",
+    "If payee is uncertain, set payee_name to an empty string.",
+    "Prefer blank over hallucinated values for uncertain fields."
+  ],
+  "ambiguity_reporting": {
+    "probability_threshold": 0.7,
+    "instruction": "Include category_ambiguity_flags entries when confidence threshold is met."
+  }
+}

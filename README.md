@@ -160,6 +160,24 @@ Future runtime containerization plan: `plans/compose-plan.md`.
 - Timing metrics: extraction, validation, age at validation
 - Gamification core loop (green/yellow/brown classification, streak tracking, shred token earn/spend, forest dashboard + weekly/monthly summaries + challenges)
 
+## Gamification Strategy
+
+Current strategy (implemented):
+
+- First successful sync classifies each receipt as `green`, `yellow`, or `brown` based on hours from transaction date to sync time.
+- Consecutive green receipts build streaks.
+- Every configured green threshold mints one shred token.
+- Tokens can shred yellow/brown receipts in the forest view.
+- Resync does not add duplicate forest entries for the same receipt.
+
+Planned correctness strategy (next phase):
+
+- Add a second loop that rewards correction quality, not just speed.
+- Track user-corrected category/split improvements as "water".
+- Reconcile YNAB changes twice daily across the last 3 months and convert missed corrections into "fire" debt.
+- Tie mistakes back to specific transactions and surface correction history in UI.
+- Burn/reset behavior triggers when fire debt reaches threshold and no water remains.
+
 ## Explicitly Not Implemented (V1)
 
 - User accounts/auth flows
