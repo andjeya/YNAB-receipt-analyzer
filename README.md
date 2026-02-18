@@ -141,6 +141,7 @@ Future runtime containerization plan: `plans/compose-plan.md`.
 - `GET /api/receipts/{id}`
 - `GET /api/receipts/{id}/file`
 - `POST /api/receipts/{id}/draft`
+- `POST /api/receipts/{id}/reject`
 - `POST /api/receipts/{id}/sync`
 - `GET /api/ynab/cache`
 - `POST /api/ynab/cache/refresh`
@@ -148,6 +149,8 @@ Future runtime containerization plan: `plans/compose-plan.md`.
 - `GET /api/game/dashboard`
 - `POST /api/game/receipts/{id}/shred`
 - `POST /api/game/rebuild`
+- `POST /api/game/reconcile`
+- `POST /api/game/correctness/recompute`
 
 ## Included V1 Features
 
@@ -159,6 +162,9 @@ Future runtime containerization plan: `plans/compose-plan.md`.
 - YNAB match-or-create sync with idempotency
 - Timing metrics: extraction, validation, age at validation
 - Gamification core loop (green/yellow/brown classification, streak tracking, shred token earn/spend, forest dashboard + weekly/monthly summaries + challenges)
+- Correctness economy (water/fire counters, mismatch penalties, board burn threshold)
+- YNAB reconciliation run tracking with 3-month lookback (default) and 12-hour cadence (default)
+- Receipt correction metadata + fade shading for queue/detail visibility
 
 ## Gamification Strategy
 
@@ -169,6 +175,10 @@ Current strategy (implemented):
 - Every configured green threshold mints one shred token.
 - Tokens can shred yellow/brown receipts in the forest view.
 - Resync does not add duplicate forest entries for the same receipt.
+- Manual category/split corrections can award water (up to capacity).
+- Reconciliation mismatches add fire units; stored water auto-extinguishes fires.
+- Fire debt can burn the board when threshold is reached and no water remains.
+- Correction-linked penalties apply when brown receipts remain un-resynced for >24h.
 
 Planned correctness strategy (next phase):
 
@@ -177,6 +187,12 @@ Planned correctness strategy (next phase):
 - Reconcile YNAB changes twice daily across the last 3 months and convert missed corrections into "fire" debt.
 - Tie mistakes back to specific transactions and surface correction history in UI.
 - Burn/reset behavior triggers when fire debt reaches threshold and no water remains.
+
+## Category Guidance Template
+
+- Keep your local/private guidance in: `shared/receipt_shared/resources/category_guidance.json`
+- This file is intentionally gitignored.
+- Start from the committed template: `shared/receipt_shared/resources/example_category_guidance.json`
 
 ## Explicitly Not Implemented (V1)
 
