@@ -54,6 +54,7 @@ class Receipt(Base):
         uselist=False,
     )
     game_events: Mapped[list["GameEvent"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
+    corrections: Mapped[list["ReceiptCorrection"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
 
 
 class ExtractionRun(Base):
@@ -203,3 +204,57 @@ class GameEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     receipt: Mapped[Receipt | None] = relationship(back_populates="game_events")
+
+
+class GameCorrectnessState(Base):
+    __tablename__ = "game_correctness_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    water_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    water_earned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    water_spent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fire_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fire_added_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fire_extinguished_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    burn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_burned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ReceiptCorrection(Base):
+    __tablename__ = "receipt_corrections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    receipt_id: Mapped[str] = mapped_column(String(36), ForeignKey("receipts.id", ondelete="CASCADE"), index=True)
+    ynab_transaction_id: Mapped[str | None] = mapped_column(String(64))
+
+    synced_category_id: Mapped[str | None] = mapped_column(String(64))
+    corrected_category_id: Mapped[str | None] = mapped_column(String(64))
+    synced_splits_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    corrected_splits_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    resynced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resync_penalty_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    note: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    receipt: Mapped[Receipt] = relationship(back_populates="corrections")
+
+
+class YNABReconciliationRun(Base):
+    __tablename__ = "ynab_reconciliation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lookback_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    scanned_receipts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    detected_mistakes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    applied_penalties: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    details_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

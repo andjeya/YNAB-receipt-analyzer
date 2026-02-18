@@ -7,6 +7,7 @@ from app.config import get_settings
 
 EXTRACTION_QUEUE_NAME = "extraction"
 SYNC_QUEUE_NAME = "sync"
+RECONCILIATION_QUEUE_NAME = "reconciliation"
 
 
 def get_redis_connection() -> Redis:
@@ -35,6 +36,15 @@ def enqueue_sync_job(receipt_id: str, force_create: bool = False, allow_update_m
         force_create,
         allow_update_match,
         job_timeout=900,
+        result_ttl=24 * 3600,
+    )
+    return job.id
+
+
+def enqueue_reconciliation_job() -> str:
+    job = get_queue(RECONCILIATION_QUEUE_NAME).enqueue(
+        "app.jobs.tasks.run_reconciliation_job",
+        job_timeout=1800,
         result_ttl=24 * 3600,
     )
     return job.id

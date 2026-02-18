@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.enums import ReceiptStatus
 from app.models import ExtractionRun, Receipt, TimingMetric, Validation
+from app.services.reconciliation import run_ynab_reconciliation
 from app.services.validation import build_initial_validation_payload, validate_payload
 from app.services.ynab import get_cached_reference_data, refresh_ynab_cache, sync_receipt_to_ynab
 from receipt_shared.gemini import GeminiAnalyzer, build_analysis_prompt
@@ -158,3 +159,20 @@ def run_sync_job(receipt_id: str, force_create: bool = False, allow_update_match
             )
         except Exception:
             logger.exception("YNAB sync failed for receipt %s", receipt_id)
+
+
+def run_reconciliation_job() -> None:
+    settings = get_settings()
+    with SessionLocal() as db:
+        try:
+            result = run_ynab_reconciliation(db, settings)
+            db.commit()
+            logger.info(
+                "YNAB reconciliation completed run_id=%s scanned=%s detected=%s penalties=%s",
+                result.get("run_id"),
+                result.get("scanned_receipts"),
+                result.get("detected_mistakes"),
+                result.get("applied_penalties"),
+            )
+        except Exception:
+            logger.exception("YNAB reconciliation failed")

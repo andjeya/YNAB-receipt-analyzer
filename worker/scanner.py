@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 
 from app.config import get_settings
 from app.db import SessionLocal
+from app.jobs.queue import enqueue_reconciliation_job
 from app.log_setup import configure_logging
+from app.models import GameCorrectnessState
 from app.services.ingestion import IngestionScanner
 
 logger = logging.getLogger(__name__)
@@ -15,6 +18,7 @@ def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_file_path)
     scanner = IngestionScanner(settings)
+    last_reconcile_enqueue_at: datetime | None = None
 
     logger.info("Starting scanner loop: ingest_dir=%s interval=%ss", settings.ingest_dir, settings.scan_interval_seconds)
 
@@ -31,6 +35,25 @@ def main() -> None:
                 )
                 for error in result.errors:
                     logger.error(error)
+
+            # Reconciliation cadence: at most every configured interval (default 12h).
+            now = datetime.now(timezone.utc)
+            state = db.get(GameCorrectnessState, 1)
+            last_reconciled_at = state.last_reconciled_at if state else None
+            interval = timedelta(hours=settings.ynab_reconciliation_interval_hours)
+            should_enqueue = last_reconciled_at is None or now - last_reconciled_at >= interval
+            if should_enqueue:
+                if last_reconcile_enqueue_at is None or now - last_reconcile_enqueue_at >= interval:
+                    try:
+                        enqueue_reconciliation_job()
+                        last_reconcile_enqueue_at = now
+                        logger.info(
+                            "Enqueued reconciliation run (interval=%sh last_reconciled_at=%s)",
+                            settings.ynab_reconciliation_interval_hours,
+                            last_reconciled_at,
+                        )
+                    except Exception as exc:  # pragma: no cover - scanner safety
+                        logger.exception("Failed to enqueue reconciliation job: %s", exc)
 
         time.sleep(settings.scan_interval_seconds)
 

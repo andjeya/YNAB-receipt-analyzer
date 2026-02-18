@@ -15,6 +15,10 @@ class ReceiptSummary(BaseModel):
     display_receipt_date: date | None = None
     ingested_at: datetime
     updated_at: datetime
+    correction_detected_at: datetime | None = None
+    correction_expires_at: datetime | None = None
+    correction_shade_opacity: float | None = None
+    correction_message: str | None = None
 
 
 class ExtractionRunOut(BaseModel):
@@ -57,8 +61,28 @@ class ReceiptDetailOut(BaseModel):
     sync_started_at: datetime | None = None
     sync_completed_at: datetime | None = None
     has_successful_sync: bool = False
+    correction_detected_at: datetime | None = None
+    correction_expires_at: datetime | None = None
+    correction_shade_opacity: float | None = None
+    correction_message: str | None = None
+    correction_history: list["ReceiptCorrectionOut"] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+class ReceiptCorrectionOut(BaseModel):
+    id: int
+    receipt_id: str
+    ynab_transaction_id: str | None = None
+    synced_category_id: str | None = None
+    corrected_category_id: str | None = None
+    synced_splits_json: list[dict[str, Any]] | None = None
+    corrected_splits_json: list[dict[str, Any]] | None = None
+    detected_at: datetime
+    expires_at: datetime
+    resynced_at: datetime | None = None
+    resync_penalty_applied: bool
+    note: str | None = None
 
 
 class SaveDraftRequest(BaseModel):
@@ -111,6 +135,9 @@ class GameRulesOut(BaseModel):
     brown_hours_threshold: float
     token_earn_every_greens: int
     shred_daily_spend_cap: int
+    water_capacity: int
+    bucket_capacity: int
+    fire_burn_threshold: int
 
 
 class GameMomentumOut(BaseModel):
@@ -142,6 +169,16 @@ class GameForestOut(BaseModel):
     latest_receipt_id: str | None = None
     counts: dict[str, int]
     receipts: list[GameForestTileOut]
+    biweekly_slots: list["GameBiweeklySlotOut"] = Field(default_factory=list)
+
+
+class GameBiweeklySlotOut(BaseModel):
+    index: int
+    start_at: datetime
+    end_at: datetime
+    is_empty: bool
+    display_state: str | None = None
+    receipt_count: int = 0
 
 
 class GameSummaryOut(BaseModel):
@@ -168,12 +205,27 @@ class GameChallengeOut(BaseModel):
     progress: float
 
 
+class GameCorrectnessOut(BaseModel):
+    water_units: int
+    water_capacity: int
+    bucket_capacity: int
+    buckets_filled: int
+    fire_units: int
+    small_fires: int
+    medium_fires: int
+    large_fires: int
+    burn_count: int
+    last_burned_at: datetime | None = None
+    last_reconciled_at: datetime | None = None
+
+
 class GameDashboardOut(BaseModel):
     generated_at: datetime
     window: str
     rules: GameRulesOut
     momentum: GameMomentumOut
     forest: GameForestOut
+    correctness: GameCorrectnessOut
     summary: GameSummaryOut
     challenges: list[GameChallengeOut]
 
@@ -189,3 +241,21 @@ class GameShredResponse(BaseModel):
 class GameRebuildResponse(BaseModel):
     processed_receipts: int
     restored_shreds: int
+
+
+class GameReconcileResponse(BaseModel):
+    scanned_receipts: int
+    detected_mistakes: int
+    applied_penalties: int
+    run_id: int
+
+
+class GameCorrectnessRecomputeResponse(BaseModel):
+    correction_count: int
+    water_units: int
+    fire_units: int
+    burn_count: int
+
+
+ReceiptDetailOut.model_rebuild()
+GameForestOut.model_rebuild()

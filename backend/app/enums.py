@@ -40,6 +40,13 @@ class GameEventType(str, Enum):
     STREAK_BROKEN = "streak_broken"
     TOKEN_EARNED = "token_earned"
     TOKEN_SPENT = "token_spent"
+    WATER_EARNED = "water_earned"
+    WATER_SPENT = "water_spent"
+    FIRE_ADDED = "fire_added"
+    FIRE_EXTINGUISHED = "fire_extinguished"
+    BOARD_BURNED = "board_burned"
+    CORRECTION_DETECTED = "correction_detected"
+    RESYNC_REQUIRED = "resync_required"
 
 
 class GameChallengeStatus(str, Enum):
