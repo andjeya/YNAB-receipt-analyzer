@@ -14,7 +14,7 @@ import { Card } from "@/components/ui/card";
 import { GamificationDashboard } from "@/components/gamification-dashboard";
 import { StatusBadge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-
+import { extractReceiptIdFromText } from "@/lib/receipt-id";
 const FILTERS: Array<{ label: string; value: "" | ReceiptStatus }> = [
   { label: "All", value: "" },
   { label: "Needs review", value: "needs_review" },
@@ -23,18 +23,12 @@ const FILTERS: Array<{ label: string; value: "" | ReceiptStatus }> = [
   { label: "Errors", value: "error_extract" },
   { label: "Synced", value: "synced" },
 ];
-const RECEIPT_ID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
 
 function formatAmount(milliunits: number | null): string {
   if (milliunits == null) {
     return "--";
   }
   return `$${Math.abs(milliunits / 1000).toFixed(2)}`;
-}
-
-function extractReceiptId(rawValue: string): string | null {
-  const match = rawValue.match(RECEIPT_ID_PATTERN);
-  return match ? match[0].toLowerCase() : null;
 }
 
 export function ReceiptList() {
@@ -80,7 +74,7 @@ export function ReceiptList() {
     return receiptsQuery.data?.filter((receipt) => receipt.status === "needs_review").length ?? 0;
   }, [receiptsQuery.data]);
   const openReceiptById = () => {
-    const parsedId = extractReceiptId(receiptLookupInput.trim());
+    const parsedId = extractReceiptIdFromText(receiptLookupInput.trim());
     if (!parsedId) {
       setReceiptLookupError("Enter a valid receipt ID (UUID) or memo token containing one.");
       return;
@@ -224,7 +218,15 @@ export function ReceiptList() {
                   className={`animate-reveal transition hover:-translate-y-0.5 ${
                     receipt.status === "needs_review" ? "border-amber-400 bg-amber-50" : ""
                   }`}
-                  style={{ animationDelay: `${120 + index * 35}ms` }}
+                  style={{
+                    animationDelay: `${120 + index * 35}ms`,
+                    backgroundColor:
+                      receipt.correction_shade_opacity && receipt.correction_shade_opacity > 0
+                        ? `rgba(15, 23, 42, ${Math.min(0.12 + receipt.correction_shade_opacity * 0.45, 0.58)})`
+                        : undefined,
+                    color:
+                      receipt.correction_shade_opacity && receipt.correction_shade_opacity > 0.45 ? "#f8fafc" : undefined,
+                  }}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -232,6 +234,9 @@ export function ReceiptList() {
                       <p className="mt-1 text-xs text-ink/70">
                         {formatDistanceToNow(new Date(receipt.ingested_at), { addSuffix: true })}
                       </p>
+                      {receipt.correction_message ? (
+                        <p className="mt-1 text-[11px] font-semibold text-black/80">{receipt.correction_message}</p>
+                      ) : null}
                     </div>
                     <StatusBadge status={receipt.status} />
                   </div>

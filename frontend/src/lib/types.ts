@@ -16,6 +16,10 @@ export interface ReceiptSummary {
   display_receipt_date: string | null;
   ingested_at: string;
   updated_at: string;
+  correction_detected_at: string | null;
+  correction_expires_at: string | null;
+  correction_shade_opacity: number | null;
+  correction_message: string | null;
 }
 
 export interface ExtractionRun {
@@ -58,8 +62,28 @@ export interface ReceiptDetail {
   sync_started_at: string | null;
   sync_completed_at: string | null;
   has_successful_sync: boolean;
+  correction_detected_at: string | null;
+  correction_expires_at: string | null;
+  correction_shade_opacity: number | null;
+  correction_message: string | null;
+  correction_history: ReceiptCorrection[];
   created_at: string;
   updated_at: string;
+}
+
+export interface ReceiptCorrection {
+  id: number;
+  receipt_id: string;
+  ynab_transaction_id: string | null;
+  synced_category_id: string | null;
+  corrected_category_id: string | null;
+  synced_splits_json: Array<Record<string, unknown>> | null;
+  corrected_splits_json: Array<Record<string, unknown>> | null;
+  detected_at: string;
+  expires_at: string;
+  resynced_at: string | null;
+  resync_penalty_applied: boolean;
+  note: string | null;
 }
 
 export interface ValidationSplitInput {
@@ -115,6 +139,9 @@ export interface GameRules {
   brown_hours_threshold: number;
   token_earn_every_greens: number;
   shred_daily_spend_cap: number;
+  water_capacity: number;
+  bucket_capacity: number;
+  fire_burn_threshold: number;
 }
 
 export interface GameMomentum {
@@ -146,6 +173,16 @@ export interface GameForest {
   latest_receipt_id: string | null;
   counts: Record<GameDisplayState, number>;
   receipts: GameForestTile[];
+  biweekly_slots: GameBiweeklySlot[];
+}
+
+export interface GameBiweeklySlot {
+  index: number;
+  start_at: string;
+  end_at: string;
+  is_empty: boolean;
+  display_state: Exclude<GameDisplayState, "shredded"> | null;
+  receipt_count: number;
 }
 
 export interface GameSummary {
@@ -172,12 +209,27 @@ export interface GameChallenge {
   progress: number;
 }
 
+export interface GameCorrectness {
+  water_units: number;
+  water_capacity: number;
+  bucket_capacity: number;
+  buckets_filled: number;
+  fire_units: number;
+  small_fires: number;
+  medium_fires: number;
+  large_fires: number;
+  burn_count: number;
+  last_burned_at: string | null;
+  last_reconciled_at: string | null;
+}
+
 export interface GameDashboard {
   generated_at: string;
   window: GameWindow;
   rules: GameRules;
   momentum: GameMomentum;
   forest: GameForest;
+  correctness: GameCorrectness;
   summary: GameSummary;
   challenges: GameChallenge[];
 }
@@ -193,4 +245,18 @@ export interface GameShredResponse {
 export interface GameRebuildResponse {
   processed_receipts: number;
   restored_shreds: number;
+}
+
+export interface GameReconcileResponse {
+  scanned_receipts: number;
+  detected_mistakes: number;
+  applied_penalties: number;
+  run_id: number;
+}
+
+export interface GameCorrectnessRecomputeResponse {
+  correction_count: number;
+  water_units: number;
+  fire_units: number;
+  burn_count: number;
 }
