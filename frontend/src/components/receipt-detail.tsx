@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Droplets, Plus, Trash2 } from "lucide-react";
 
-import { enqueueSync, getReceiptDetail, getYnabCache, receiptFileUrl, saveDraft } from "@/lib/api";
+import { enqueueSync, getReceiptDetail, getYnabCache, receiptFileUrl, rejectReceipt, saveDraft } from "@/lib/api";
 import { ReceiptDetail, ValidationPayloadInput } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -294,6 +295,17 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     },
   });
 
+  const rejectMutation = useMutation({
+    mutationFn: () => rejectReceipt(receiptId),
+    onSuccess: () => {
+      setDirty(false);
+      queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+    },
+  });
+
   useEffect(() => {
     if (!draft || !dirty) {
       return;
@@ -382,8 +394,15 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     saveMutation.mutate(cancelBaseline);
   };
 
+  const correctionShade = receipt.correction_shade_opacity ?? 0;
+
   return (
-    <main className="mx-auto flex max-w-3xl flex-col gap-4 px-4 pb-28 pt-4">
+    <main
+      className="mx-auto flex max-w-3xl flex-col gap-4 px-4 pb-28 pt-4"
+      style={{
+        backgroundColor: correctionShade > 0 ? `rgba(2, 6, 23, ${Math.min(correctionShade * 0.16, 0.18)})` : undefined,
+      }}
+    >
       <header className="animate-reveal rounded-3xl bg-white/90 p-4 shadow-float">
         <Link href="/" className="inline-flex items-center gap-2 text-sm font-semibold text-ink/70">
           <ArrowLeft className="h-4 w-4" /> Back
@@ -546,6 +565,12 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
           </Button>
         </div>
 
+        {receipt.correction_message ? (
+          <p className="rounded-xl bg-black px-3 py-2 text-xs text-white">
+            {receipt.correction_message}
+          </p>
+        ) : null}
+
         {!isSplitMode ? (
           <div>
             <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Category</label>
@@ -659,13 +684,32 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
         )}
       </section>
 
+      {receipt.correction_history.length > 0 ? (
+        <section className="animate-reveal rounded-2xl border border-black/20 bg-black/90 p-3 text-xs text-white" style={{ animationDelay: "225ms" }}>
+          <p className="font-semibold">Correction history</p>
+          {receipt.correction_history.slice(0, 3).map((item) => (
+            <p key={item.id} className="mt-1 text-[11px] text-slate-200">
+              {new Date(item.detected_at).toLocaleDateString()}: {item.note?.split("| sig=", 1)[0] ?? "Category corrected in YNAB"}
+            </p>
+          ))}
+        </section>
+      ) : null}
+
       <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink/15 bg-white/95 px-4 py-3 backdrop-blur">
         <div className="mx-auto flex max-w-3xl items-center gap-2">
           <Button
             variant="outline"
+            className="flex-1 border-red-300 text-red-700 hover:bg-red-50"
+            onClick={() => rejectMutation.mutate()}
+            disabled={rejectMutation.isPending || isSyncing}
+          >
+            {rejectMutation.isPending ? "Rejecting..." : "Reject"}
+          </Button>
+          <Button
+            variant="outline"
             className="flex-1"
             onClick={resetDraft}
-            disabled={!canResetToBaseline || saveMutation.isPending}
+            disabled={!canResetToBaseline || saveMutation.isPending || rejectMutation.isPending}
           >
             Cancel
           </Button>
@@ -688,9 +732,23 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             </Button>
             <div className="mt-2 flex-1 overflow-hidden rounded-xl bg-white">
               {receipt.mime_type.startsWith("image/") ? (
-                <img src={receiptFileUrl(receiptId)} alt={receipt.original_filename} className="h-full w-full object-contain" />
+                <div className="relative h-full w-full">
+                  <Image
+                    src={receiptFileUrl(receiptId)}
+                    alt={receipt.original_filename}
+                    fill
+                    unoptimized
+                    className="object-contain"
+                  />
+                </div>
               ) : (
-                <iframe src={receiptFileUrl(receiptId)} title="Receipt preview" className="h-full w-full border-0" />
+                <object
+                  data={`${receiptFileUrl(receiptId)}#toolbar=1&view=FitH`}
+                  type="application/pdf"
+                  className="h-full w-full"
+                >
+                  <iframe src={receiptFileUrl(receiptId)} title="Receipt preview" className="h-full w-full border-0" />
+                </object>
               )}
             </div>
           </div>

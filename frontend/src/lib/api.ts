@@ -1,6 +1,8 @@
 import {
   CacheEntity,
+  GameCorrectnessRecomputeResponse,
   GameDashboard,
+  GameReconcileResponse,
   GameRebuildResponse,
   GameShredResponse,
   GameWindow,
@@ -68,6 +70,13 @@ export function enqueueSync(receiptId: string) {
   });
 }
 
+export function rejectReceipt(receiptId: string) {
+  return request<SaveDraftResponse>(`/receipts/${receiptId}/reject`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
 export function getYnabCache(entityType?: "category" | "account" | "payee") {
   const query = entityType ? `?entity_type=${encodeURIComponent(entityType)}` : "";
   return request<CacheEntity[]>(`/ynab/cache${query}`);
@@ -104,6 +113,20 @@ export function shredGameReceipt(receiptId: string) {
 
 export function rebuildGameState() {
   return request<GameRebuildResponse>("/game/rebuild", {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function reconcileGameState() {
+  return request<GameReconcileResponse>("/game/reconcile", {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function recomputeCorrectnessState() {
+  return request<GameCorrectnessRecomputeResponse>("/game/correctness/recompute", {
     method: "POST",
     body: "{}",
   });
