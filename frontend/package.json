@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:unit": "tsx --test src/lib/receipt-id.test.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.5",
@@ -29,5 +30,6 @@
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.2"
+    ,"tsx": "^4.20.6"
   }
 }
