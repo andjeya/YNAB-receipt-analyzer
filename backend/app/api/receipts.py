@@ -242,7 +242,8 @@ def save_draft(
     db.flush()
 
     receipt.latest_validation_version = next_version
-    receipt.display_payee_name = normalized_payload.get("payee_name")
+    normalized_payee = str(normalized_payload.get("payee_name") or "").strip()
+    receipt.display_payee_name = normalized_payee or None
     if normalized_payload.get("total_amount") is not None:
         receipt.display_total_milliunits = int(float(normalized_payload["total_amount"]) * 1000)
     if normalized_payload.get("transaction_date"):

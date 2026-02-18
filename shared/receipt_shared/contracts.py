@@ -14,16 +14,26 @@ class GeminiSplit(BaseModel):
     memo: str = ""
 
 
+class GeminiCategoryAmbiguityFlag(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    line_item: str = ""
+    candidate_category_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+    note: str = ""
+
+
 class GeminiReceiptExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    payee_name: str = Field(min_length=1)
+    payee_name: str = ""
     account_id: str = Field(min_length=1)
-    transaction_date: date
+    transaction_date: date | None = None
     memo: str = ""
     total_amount: float
     category_id: str | None = None
     splits: list[GeminiSplit] = Field(default_factory=list)
+    category_ambiguity_flags: list[GeminiCategoryAmbiguityFlag] = Field(default_factory=list)
 
     @field_validator("category_id", mode="before")
     @classmethod

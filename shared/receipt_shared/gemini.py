@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from .contracts import GeminiReceiptExtraction
 logger = logging.getLogger(__name__)
 
 UNKNOWN_ACCOUNT_ID = "__unknown__"
+CATEGORY_GUIDANCE_PATH = Path(__file__).resolve().parent / "resources" / "category_guidance.json"
 
 try:
     from google import genai
@@ -50,6 +52,99 @@ def parse_json_response(text: str) -> dict[str, Any]:
         raise ValueError("Gemini response was not valid JSON") from exc
 
 
+@lru_cache(maxsize=1)
+def load_category_guidance() -> dict[str, Any]:
+    if not CATEGORY_GUIDANCE_PATH.exists():
+        logger.warning("Category guidance resource not found: %s", CATEGORY_GUIDANCE_PATH)
+        return {}
+
+    try:
+        with CATEGORY_GUIDANCE_PATH.open("r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except Exception as exc:  # pragma: no cover - defensive fallback for file parse errors
+        logger.warning("Failed loading category guidance resource %s: %s", CATEGORY_GUIDANCE_PATH, exc)
+        return {}
+
+    if not isinstance(loaded, dict):
+        logger.warning("Category guidance resource is not an object: %s", CATEGORY_GUIDANCE_PATH)
+        return {}
+    return loaded
+
+
+def _to_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            stripped = item.strip()
+            if stripped:
+                result.append(stripped)
+    return result
+
+
+def _format_category_guidance(guidance: dict[str, Any]) -> str:
+    if not guidance:
+        return "No extra category guidance file was loaded."
+
+    lines: list[str] = []
+
+    category_examples = guidance.get("category_examples", [])
+    if isinstance(category_examples, list):
+        lines.append("Category examples and intent hints:")
+        for entry in category_examples:
+            if not isinstance(entry, dict):
+                continue
+            category_name = str(entry.get("category", "")).strip()
+            if not category_name:
+                continue
+            examples = ", ".join(_to_string_list(entry.get("examples")))
+            notes = str(entry.get("notes", "")).strip()
+            if examples and notes:
+                lines.append(f"- {category_name}: {examples}. Note: {notes}")
+            elif examples:
+                lines.append(f"- {category_name}: {examples}")
+            elif notes:
+                lines.append(f"- {category_name}: {notes}")
+            else:
+                lines.append(f"- {category_name}")
+
+    never_suggest = _to_string_list(guidance.get("never_suggest_categories"))
+    if never_suggest:
+        lines.append("")
+        lines.append("Never suggest these categories:")
+        for category_name in never_suggest:
+            lines.append(f"- {category_name}")
+
+    edge_case_rules = _to_string_list(guidance.get("edge_case_rules"))
+    if edge_case_rules:
+        lines.append("")
+        lines.append("Edge-case rules:")
+        for rule in edge_case_rules:
+            lines.append(f"- {rule}")
+
+    model_behavior_rules = _to_string_list(guidance.get("model_behavior_rules"))
+    if model_behavior_rules:
+        lines.append("")
+        lines.append("Model behavior rules:")
+        for rule in model_behavior_rules:
+            lines.append(f"- {rule}")
+
+    ambiguity = guidance.get("ambiguity_reporting", {})
+    if isinstance(ambiguity, dict):
+        threshold = ambiguity.get("probability_threshold")
+        instruction = str(ambiguity.get("instruction", "")).strip()
+        if threshold is not None or instruction:
+            lines.append("")
+            lines.append("Ambiguity reporting:")
+            if threshold is not None:
+                lines.append(f"- probability_threshold={threshold}")
+            if instruction:
+                lines.append(f"- {instruction}")
+
+    return "\n".join(lines) if lines else "No extra category guidance file was loaded."
+
+
 def build_analysis_prompt(
     user_prompt: str,
     categories: list[Any],
@@ -65,7 +160,8 @@ def build_analysis_prompt(
         for account in accounts
     )
     account_lines = f"{account_lines}\n- id={UNKNOWN_ACCOUNT_ID} | name=Unknown account (requires user review)"
-    payee_lines = "\n".join(f"- {payee}" for payee in payees)
+    payee_lines = "\n".join(f"- {payee}" for payee in payees) if payees else "- (none cached)"
+    category_guidance = _format_category_guidance(load_category_guidance())
 
     return f"""
 You are analyzing a purchase receipt file and mapping line items to YNAB categories.
@@ -76,13 +172,21 @@ Return STRICT JSON ONLY. No markdown. No prose.
 
 Schema:
 {{
-  "payee_name": "string",
+  "payee_name": "string (can be empty if uncertain)",
   "account_id": "string",
-  "transaction_date": "YYYY-MM-DD",
+  "transaction_date": "YYYY-MM-DD | null",
   "memo": "string",
   "total_amount": number,
   "category_id": "string | null",
-  "splits": [{{ "category_id": "string", "category_name": "string", "amount": number, "memo": "string" }}]
+  "splits": [{{ "category_id": "string", "category_name": "string", "amount": number, "memo": "string" }}],
+  "category_ambiguity_flags": [
+    {{
+      "line_item": "string",
+      "candidate_category_ids": ["string"],
+      "confidence": number,
+      "note": "string"
+    }}
+  ]
 }}
 
 Rules:
@@ -94,10 +198,12 @@ Rules:
    - Split mode: set category_id to null and provide 2 or more splits whose amounts sum to total_amount
 4. Prefer single category mode unless the receipt clearly maps to multiple categories.
 5. For payee_name:
-   - If an existing payee clearly matches, return that payee text exactly.
-   - Otherwise return a new payee name from the receipt.
+   - Use an existing YNAB payee only when receipt evidence is clear.
+   - If uncertain, set payee_name to an empty string.
 6. Keep memo text concise.
-7. If date is unclear, use today's date.
+7. If date is unclear, set transaction_date to null.
+8. If any line item could map to multiple categories with confidence >= 0.70, include it in category_ambiguity_flags.
+9. category_ambiguity_flags should be [] when there are no qualifying ambiguous items.
 
 Available YNAB categories:
 {category_lines}
@@ -107,6 +213,9 @@ Available YNAB accounts:
 
 Existing YNAB payees:
 {payee_lines}
+
+Additional category guidance:
+{category_guidance}
 
 Input receipt is provided as an attached file in this request.
 """.strip()
