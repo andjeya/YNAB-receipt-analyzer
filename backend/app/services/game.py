@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
@@ -9,8 +10,10 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.enums import GameChallengeStatus, GameEventType, GameReceiptState, YNABSyncStatus
 from app.models import GameEvent, GameReceiptStateModel, GameStreak, GameToken, Receipt, Validation, YNABSync
+from app.services.correctness import fire_breakdown, get_or_create_correctness_state
 
 ALLOWED_WINDOWS = {"week", "month"}
+BIWEEK_SLOT_COUNT = 27
 
 
 def utcnow() -> datetime:
@@ -220,6 +223,41 @@ def _state_for_display(row: GameReceiptStateModel) -> GameReceiptState:
     return GameReceiptState(row.state)
 
 
+def _slot_state(rows: list[GameReceiptStateModel]) -> str | None:
+    if not rows:
+        return None
+    rank = {
+        GameReceiptState.GREEN.value: 0,
+        GameReceiptState.YELLOW.value: 1,
+        GameReceiptState.BROWN.value: 2,
+    }
+    worst = max(rows, key=lambda item: rank.get(item.state, 0))
+    return worst.state
+
+
+def _build_biweekly_slots(rows: list[GameReceiptStateModel], now: datetime) -> list[dict[str, Any]]:
+    anchor = _as_utc(now).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    slots: list[dict[str, Any]] = []
+    for index in range(BIWEEK_SLOT_COUNT):
+        end_at = anchor - timedelta(days=index * 14)
+        start_at = end_at - timedelta(days=14)
+        slot_rows = [row for row in rows if start_at <= _as_utc(row.validated_at) < end_at]
+        state = _slot_state(slot_rows)
+        slots.append(
+            {
+                "index": index,
+                "start_at": start_at,
+                "end_at": end_at,
+                "is_empty": state is None,
+                "display_state": state,
+                "receipt_count": len(slot_rows),
+            }
+        )
+    # Oldest first for left-to-right visual flow.
+    slots.reverse()
+    return slots
+
+
 def _spent_in_window(db: Session, start: datetime, end: datetime) -> int:
     count = db.scalar(
         select(func.count(GameEvent.id)).where(
@@ -380,6 +418,8 @@ def get_dashboard_data(
     token_balance = tokens.balance if tokens else 0
     token_earned_count = tokens.earned_count if tokens else 0
     token_spent_count = tokens.spent_count if tokens else 0
+    correctness = get_or_create_correctness_state(db)
+    small_fires, medium_fires, large_fires = fire_breakdown(correctness.fire_units)
 
     token_threshold = settings.game_token_earn_every_greens
     token_progress_current = current_streak % token_threshold
@@ -418,6 +458,8 @@ def get_dashboard_data(
                 "is_latest": row.receipt_id == latest_receipt_id,
             }
         )
+
+    biweekly_slots = _build_biweekly_slots(forest_rows, now)
 
     window_start, window_end = _window_bounds(window, now)
     window_rows = list(
@@ -508,6 +550,9 @@ def get_dashboard_data(
             "brown_hours_threshold": settings.game_brown_hours_threshold,
             "token_earn_every_greens": settings.game_token_earn_every_greens,
             "shred_daily_spend_cap": settings.game_shred_daily_spend_cap,
+            "water_capacity": settings.game_water_capacity,
+            "bucket_capacity": settings.game_bucket_capacity,
+            "fire_burn_threshold": settings.game_fire_burn_threshold,
         },
         "momentum": {
             "current_streak": current_streak,
@@ -526,6 +571,22 @@ def get_dashboard_data(
             "latest_receipt_id": latest_receipt_id,
             "counts": display_counts,
             "receipts": forest_tiles,
+            "biweekly_slots": biweekly_slots,
+        },
+        "correctness": {
+            "water_units": correctness.water_units,
+            "water_capacity": settings.game_water_capacity,
+            "bucket_capacity": settings.game_bucket_capacity,
+            "buckets_filled": int(math.ceil(correctness.water_units / settings.game_bucket_capacity))
+            if correctness.water_units
+            else 0,
+            "fire_units": correctness.fire_units,
+            "small_fires": small_fires,
+            "medium_fires": medium_fires,
+            "large_fires": large_fires,
+            "burn_count": correctness.burn_count,
+            "last_burned_at": correctness.last_burned_at,
+            "last_reconciled_at": correctness.last_reconciled_at,
         },
         "summary": {
             "window": window,

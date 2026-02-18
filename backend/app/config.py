@@ -27,11 +27,15 @@ class Settings(BaseSettings):
 
     game_green_hours_threshold: float = 24.0
     game_brown_hours_threshold: float = 72.0
-    game_token_earn_every_greens: int = 3
+    game_token_earn_every_greens: int = 5
     game_shred_daily_spend_cap: int = 0
     game_green_ratio_target_percent: int = 70
     game_streak_challenge_target: int = 6
     game_shred_challenge_target: int = 2
+    game_water_capacity: int = 15
+    game_bucket_capacity: int = 3
+    game_fire_burn_threshold: int = 15
+    correction_fade_days: int = 90
 
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3-flash-preview"
@@ -42,6 +46,8 @@ class Settings(BaseSettings):
     ynab_budget_id: str | None = None
     ynab_default_account_id: str | None = None
     ynab_cache_refresh_interval_minutes: int = 30
+    ynab_reconciliation_interval_hours: int = 12
+    ynab_reconciliation_lookback_days: int = 90
 
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
@@ -94,6 +100,27 @@ class Settings(BaseSettings):
     def validate_cache_refresh_interval(cls, value: int) -> int:
         if value < 1:
             raise ValueError("YNAB_CACHE_REFRESH_INTERVAL_MINUTES must be at least 1")
+        return value
+
+    @field_validator("ynab_reconciliation_interval_hours")
+    @classmethod
+    def validate_reconciliation_interval(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("YNAB_RECONCILIATION_INTERVAL_HOURS must be at least 1")
+        return value
+
+    @field_validator("ynab_reconciliation_lookback_days")
+    @classmethod
+    def validate_reconciliation_lookback(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("YNAB_RECONCILIATION_LOOKBACK_DAYS must be at least 1")
+        return value
+
+    @field_validator("game_water_capacity", "game_bucket_capacity", "game_fire_burn_threshold", "correction_fade_days")
+    @classmethod
+    def validate_positive_int(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("Game/correction numeric settings must be at least 1")
         return value
 
 

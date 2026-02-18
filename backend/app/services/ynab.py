@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.enums import ReceiptStatus, YNABCacheEntityType, YNABSyncStatus
-from app.models import Receipt, TimingMetric, Validation, YNABCache, YNABSync
+from app.models import Receipt, ReceiptCorrection, TimingMetric, Validation, YNABCache, YNABSync
 from app.services.game import apply_sync_gamification
 from app.services.validation import UNKNOWN_ACCOUNT_ID
 from receipt_shared.money import dollars_to_milliunits
@@ -629,6 +629,17 @@ def sync_receipt_to_ynab(
             )
         except Exception:
             logger.exception("Gamification sync classification failed for receipt %s", receipt.id)
+
+        unresolved_corrections = list(
+            db.scalars(
+                select(ReceiptCorrection).where(
+                    ReceiptCorrection.receipt_id == receipt.id,
+                    ReceiptCorrection.resynced_at.is_(None),
+                )
+            )
+        )
+        for correction in unresolved_corrections:
+            correction.resynced_at = finished_at
 
         db.add(
             TimingMetric(
