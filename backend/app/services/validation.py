@@ -82,6 +82,7 @@ def build_initial_validation_payload(parsed_extraction: dict[str, Any], default_
         "payee_name": payee_name,
         "account_id": parsed_extraction.get("account_id") or default_account_id or "",
         "transaction_date": parsed_extraction.get("transaction_date"),
+        "transaction_time": parsed_extraction.get("transaction_time"),
         "memo": memo or "Imported from receipt via Gemini",
         "total_amount": parsed_extraction.get("total_amount") or 0,
         "category_id": category_id or "",

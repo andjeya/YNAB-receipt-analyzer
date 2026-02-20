@@ -358,17 +358,16 @@ def save_draft(
         receipt.status_reason = None
 
     if request.source == "user" and is_valid:
-        if prior_user_valid is None:
-            now = utcnow()
-            if receipt.extraction_completed_at:
-                db.add(
-                    TimingMetric(
-                        receipt_id=receipt.id,
-                        metric_name="validation_duration_ms",
-                        metric_value_ms=_duration_ms(now, receipt.extraction_completed_at),
-                        metadata_json={"validation_version": next_version},
-                    )
+        now = utcnow()
+        if prior_user_valid is None and receipt.extraction_completed_at:
+            db.add(
+                TimingMetric(
+                    receipt_id=receipt.id,
+                    metric_name="validation_duration_ms",
+                    metric_value_ms=_duration_ms(now, receipt.extraction_completed_at),
+                    metadata_json={"validation_version": next_version},
                 )
+            )
         if _is_manual_category_correction(
             model_validation.payload if model_validation else None,
             normalized_payload,

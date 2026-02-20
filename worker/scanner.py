@@ -8,15 +8,25 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.jobs.queue import enqueue_reconciliation_job
 from app.log_setup import configure_logging
+from app.migrations import ensure_schema_current
 from app.models import GameCorrectnessState
 from app.services.ingestion import IngestionScanner
 
 logger = logging.getLogger(__name__)
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_file_path)
+    ensure_schema_current()
     scanner = IngestionScanner(settings)
     last_reconcile_enqueue_at: datetime | None = None
 
@@ -39,7 +49,7 @@ def main() -> None:
             # Reconciliation cadence: at most every configured interval (default 12h).
             now = datetime.now(timezone.utc)
             state = db.get(GameCorrectnessState, 1)
-            last_reconciled_at = state.last_reconciled_at if state else None
+            last_reconciled_at = _as_utc(state.last_reconciled_at) if state else None
             interval = timedelta(hours=settings.ynab_reconciliation_interval_hours)
             should_enqueue = last_reconciled_at is None or now - last_reconciled_at >= interval
             if should_enqueue:

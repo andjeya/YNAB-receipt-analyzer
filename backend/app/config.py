@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,6 +28,7 @@ class Settings(BaseSettings):
 
     game_green_hours_threshold: float = 24.0
     game_brown_hours_threshold: float = 72.0
+    game_timezone: str = "UTC"
     game_token_earn_every_greens: int = 5
     game_shred_daily_spend_cap: int = 0
     game_green_ratio_target_percent: int = 70
@@ -121,6 +123,15 @@ class Settings(BaseSettings):
     def validate_positive_int(cls, value: int) -> int:
         if value < 1:
             raise ValueError("Game/correction numeric settings must be at least 1")
+        return value
+
+    @field_validator("game_timezone")
+    @classmethod
+    def validate_game_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except Exception as exc:
+            raise ValueError(f"GAME_TIMEZONE is invalid: {value}") from exc
         return value
 
 

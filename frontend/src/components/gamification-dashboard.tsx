@@ -253,11 +253,11 @@ export function GamificationDashboard() {
       <Card className="animate-reveal space-y-3 bg-slate-950 text-slate-100" style={{ animationDelay: "70ms" }}>
         <div className="flex items-center justify-between text-xs uppercase tracking-wide text-slate-300">
           <p>Oldest</p>
-          <p>Bi-week board (27 slots)</p>
+          <p>Week board (9 slots)</p>
           <p>Newest</p>
         </div>
         <div className="grid grid-cols-9 gap-1">
-          {dashboardQuery.data.forest.biweekly_slots.map((slot) => (
+          {dashboardQuery.data.forest.weekly_slots.map((slot) => (
             <div
               key={`slot-${slot.index}`}
               className={cn(

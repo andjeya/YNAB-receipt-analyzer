@@ -132,10 +132,14 @@ function toDraftFromPayload(payload: Record<string, unknown>, fallbackPayee: str
     categoryId = "";
   }
 
+  const transactionTimeRaw = String(payload.transaction_time ?? "").trim();
+  const transactionTime = transactionTimeRaw ? transactionTimeRaw.slice(0, 5) : "";
+
   return {
     payee_name: String(payload.payee_name ?? fallbackPayee ?? ""),
     account_id: String(payload.account_id ?? ""),
     transaction_date: String(payload.transaction_date ?? ""),
+    transaction_time: transactionTime,
     memo: String(payload.memo ?? ""),
     total_amount: Number(payload.total_amount ?? 0),
     category_id: categoryId,
@@ -278,7 +282,11 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   }, [receiptQuery.data, baselineReceiptId, dirty]);
 
   const saveMutation = useMutation({
-    mutationFn: (nextDraft: ValidationPayloadInput) => saveDraft(receiptId, nextDraft),
+    mutationFn: (nextDraft: ValidationPayloadInput) =>
+      saveDraft(receiptId, {
+        ...nextDraft,
+        transaction_time: nextDraft.transaction_time?.trim() ? nextDraft.transaction_time : null,
+      }),
     onSuccess: () => {
       setDirty(false);
       queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
@@ -512,6 +520,19 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
               }}
             />
           </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Receipt time (optional)</label>
+            <Input
+              type="time"
+              value={draft.transaction_time ?? ""}
+              onChange={(event) => {
+                setDraft({ ...draft, transaction_time: event.target.value || "" });
+                setDirty(true);
+              }}
+            />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-1">
           <div>
             <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Total</label>
             <Input

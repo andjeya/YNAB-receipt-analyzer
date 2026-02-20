@@ -18,7 +18,9 @@ class TestGeminiPromptAndContracts:
         )
 
         assert "transaction_date\": \"YYYY-MM-DD | null\"" in prompt
+        assert "transaction_time\": \"HH:MM | null\"" in prompt
         assert "If date is unclear, set transaction_date to null." in prompt
+        assert "If time is unclear or unavailable, set transaction_time to null." in prompt
         assert "If date is unclear, use today's date." not in prompt
         assert "Never suggest these categories:" in prompt
         assert "category_ambiguity_flags" in prompt
@@ -29,6 +31,7 @@ class TestGeminiPromptAndContracts:
                 "payee_name": "",
                 "account_id": "acct-1",
                 "transaction_date": None,
+                "transaction_time": None,
                 "memo": "",
                 "total_amount": 42.11,
                 "category_id": "cat-1",
@@ -46,6 +49,7 @@ class TestGeminiPromptAndContracts:
 
         assert parsed.payee_name == ""
         assert parsed.transaction_date is None
+        assert parsed.transaction_time is None
         assert len(parsed.category_ambiguity_flags) == 1
 
 
@@ -56,6 +60,7 @@ class TestValidationPayloadDefaults:
                 "payee_name": "",
                 "account_id": "acct-1",
                 "transaction_date": None,
+                "transaction_time": None,
                 "memo": "",
                 "total_amount": 19.99,
                 "category_id": "cat-1",
@@ -66,6 +71,7 @@ class TestValidationPayloadDefaults:
 
         assert payload["payee_name"] == ""
         assert payload["transaction_date"] is None
+        assert payload["transaction_time"] is None
         assert payload["memo"] == "Imported from receipt via Gemini"
 
 
