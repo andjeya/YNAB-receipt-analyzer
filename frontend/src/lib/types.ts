@@ -96,6 +96,7 @@ export interface ValidationPayloadInput {
   payee_name: string;
   account_id: string;
   transaction_date: string;
+  transaction_time?: string | null;
   memo: string;
   total_amount: number;
   category_id: string;
@@ -173,10 +174,10 @@ export interface GameForest {
   latest_receipt_id: string | null;
   counts: Record<GameDisplayState, number>;
   receipts: GameForestTile[];
-  biweekly_slots: GameBiweeklySlot[];
+  weekly_slots: GameWeeklySlot[];
 }
 
-export interface GameBiweeklySlot {
+export interface GameWeeklySlot {
   index: number;
   start_at: string;
   end_at: string;

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -13,7 +14,7 @@ from app.models import GameEvent, GameReceiptStateModel, GameStreak, GameToken, 
 from app.services.correctness import fire_breakdown, get_or_create_correctness_state
 
 ALLOWED_WINDOWS = {"week", "month"}
-BIWEEK_SLOT_COUNT = 27
+WEEK_SLOT_COUNT = 9
 
 
 def utcnow() -> datetime:
@@ -24,6 +25,31 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _game_tz(settings: Settings) -> ZoneInfo:
+    return ZoneInfo(settings.game_timezone)
+
+
+def _week_start_sunday(value: datetime) -> datetime:
+    days_since_sunday = (value.weekday() + 1) % 7
+    return (value - timedelta(days=days_since_sunday)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _day_bounds(now: datetime, settings: Settings) -> tuple[datetime, datetime]:
+    tz = _game_tz(settings)
+    local_now = _as_utc(now).astimezone(tz)
+    day_start_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end_local = day_start_local + timedelta(days=1)
+    return day_start_local.astimezone(timezone.utc), day_end_local.astimezone(timezone.utc)
+
+
+def _week_bounds_for_timestamp(value: datetime, settings: Settings) -> tuple[datetime, datetime]:
+    tz = _game_tz(settings)
+    local_value = _as_utc(value).astimezone(tz)
+    week_start_local = _week_start_sunday(local_value)
+    week_end_local = week_start_local + timedelta(days=7)
+    return week_start_local.astimezone(timezone.utc), week_end_local.astimezone(timezone.utc)
 
 
 def classify_receipt_state(
@@ -86,15 +112,49 @@ def _record_event(
     return True
 
 
-def _transaction_datetime_from_validation(validation: Validation) -> datetime | None:
-    raw_value = validation.payload.get("transaction_date")
+def _parse_transaction_date(raw_value: Any) -> date | None:
     if raw_value is None:
         return None
     try:
-        parsed_date = datetime.fromisoformat(str(raw_value)).date()
+        return date.fromisoformat(str(raw_value))
     except ValueError:
         return None
-    return datetime.combine(parsed_date, time.min, tzinfo=timezone.utc)
+
+
+def _parse_transaction_time(raw_value: Any) -> tuple[time | None, bool]:
+    if raw_value is None:
+        return None, False
+
+    text = str(raw_value).strip()
+    if not text:
+        return None, False
+
+    try:
+        parsed = time.fromisoformat(text)
+    except ValueError:
+        return None, False
+
+    # Receipt times are interpreted in the configured game timezone.
+    if parsed.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed, True
+
+
+def _transaction_datetime_from_validation(
+    validation: Validation,
+    settings: Settings,
+) -> tuple[datetime | None, bool]:
+    parsed_date = _parse_transaction_date(validation.payload.get("transaction_date"))
+    if parsed_date is None:
+        return None, False
+
+    parsed_time, has_explicit_time = _parse_transaction_time(validation.payload.get("transaction_time"))
+    if parsed_time is None:
+        # Unknown receipt time: allow grace through the end of the following day.
+        parsed_time = time.max
+
+    transaction_at_local = datetime.combine(parsed_date, parsed_time, tzinfo=_game_tz(settings))
+    return transaction_at_local.astimezone(timezone.utc), has_explicit_time
 
 
 def apply_sync_gamification(
@@ -108,7 +168,7 @@ def apply_sync_gamification(
     if existing is not None:
         return existing
 
-    transaction_at = _transaction_datetime_from_validation(validation)
+    transaction_at, has_explicit_time = _transaction_datetime_from_validation(validation, settings)
     if transaction_at is None:
         raise ValueError("Validation payload is missing a valid transaction_date for gamification")
 
@@ -192,6 +252,8 @@ def apply_sync_gamification(
             "age_hours": age_hours,
             "streak_group_id": streak_group_id,
             "transaction_date": validation.payload.get("transaction_date"),
+            "transaction_time": validation.payload.get("transaction_time"),
+            "has_explicit_time": has_explicit_time,
         },
         created_at=synced_at_utc,
     )
@@ -199,21 +261,21 @@ def apply_sync_gamification(
     return state_row
 
 
-def _window_bounds(window: str, now: datetime) -> tuple[datetime, datetime]:
-    anchor = _as_utc(now)
+def _window_bounds(window: str, now: datetime, settings: Settings) -> tuple[datetime, datetime]:
+    tz = _game_tz(settings)
+    anchor_local = _as_utc(now).astimezone(tz)
 
     if window == "month":
-        start = anchor.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        if start.month == 12:
-            end = start.replace(year=start.year + 1, month=1)
+        start_local = anchor_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if start_local.month == 12:
+            end_local = start_local.replace(year=start_local.year + 1, month=1)
         else:
-            end = start.replace(month=start.month + 1)
-        return start, end
+            end_local = start_local.replace(month=start_local.month + 1)
+        return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
 
-    # week starts on Monday
-    start = (anchor - timedelta(days=anchor.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=7)
-    return start, end
+    start_local = _week_start_sunday(anchor_local)
+    end_local = start_local + timedelta(days=7)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
 
 
 def _state_for_display(row: GameReceiptStateModel) -> GameReceiptState:
@@ -224,23 +286,27 @@ def _state_for_display(row: GameReceiptStateModel) -> GameReceiptState:
 
 
 def _slot_state(rows: list[GameReceiptStateModel]) -> str | None:
-    if not rows:
+    active_rows = [row for row in rows if row.shredded_at is None]
+    if not active_rows:
         return None
     rank = {
         GameReceiptState.GREEN.value: 0,
         GameReceiptState.YELLOW.value: 1,
         GameReceiptState.BROWN.value: 2,
     }
-    worst = max(rows, key=lambda item: rank.get(item.state, 0))
+    worst = max(active_rows, key=lambda item: rank.get(item.state, 0))
     return worst.state
 
 
-def _build_biweekly_slots(rows: list[GameReceiptStateModel], now: datetime) -> list[dict[str, Any]]:
-    anchor = _as_utc(now).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+def _build_weekly_slots(rows: list[GameReceiptStateModel], now: datetime, settings: Settings) -> list[dict[str, Any]]:
+    tz = _game_tz(settings)
+    current_week_start_local = _week_start_sunday(_as_utc(now).astimezone(tz))
     slots: list[dict[str, Any]] = []
-    for index in range(BIWEEK_SLOT_COUNT):
-        end_at = anchor - timedelta(days=index * 14)
-        start_at = end_at - timedelta(days=14)
+    for index in range(WEEK_SLOT_COUNT):
+        end_local = current_week_start_local + timedelta(days=7) - timedelta(days=index * 7)
+        start_local = end_local - timedelta(days=7)
+        start_at = start_local.astimezone(timezone.utc)
+        end_at = end_local.astimezone(timezone.utc)
         slot_rows = [row for row in rows if start_at <= _as_utc(row.validated_at) < end_at]
         state = _slot_state(slot_rows)
         slots.append(
@@ -360,9 +426,12 @@ def spend_shred_token(
 
     now = _as_utc(spent_at or utcnow())
 
+    shred_week_start, shred_week_end = _week_bounds_for_timestamp(now, settings)
+    if not (shred_week_start <= _as_utc(state_row.validated_at) < shred_week_end):
+        raise ValueError("Receipts can only be shredded in the same week they were validated")
+
     if settings.game_shred_daily_spend_cap > 0:
-        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
+        day_start, day_end = _day_bounds(now, settings)
         spent_today = _spent_in_window(db, day_start, day_end)
         if spent_today >= settings.game_shred_daily_spend_cap:
             raise ValueError("Daily shred cap reached")
@@ -459,9 +528,19 @@ def get_dashboard_data(
             }
         )
 
-    biweekly_slots = _build_biweekly_slots(forest_rows, now)
+    week_start_utc, _ = _window_bounds("week", now, settings)
+    weekly_slots_window_end = week_start_utc + timedelta(days=7)
+    weekly_slots_rows = list(
+        db.scalars(
+            select(GameReceiptStateModel).where(
+                GameReceiptStateModel.validated_at >= week_start_utc - timedelta(days=(WEEK_SLOT_COUNT - 1) * 7),
+                GameReceiptStateModel.validated_at < weekly_slots_window_end,
+            )
+        )
+    )
+    weekly_slots = _build_weekly_slots(weekly_slots_rows, now, settings)
 
-    window_start, window_end = _window_bounds(window, now)
+    window_start, window_end = _window_bounds(window, now, settings)
     window_rows = list(
         db.scalars(
             select(GameReceiptStateModel).where(
@@ -472,9 +551,10 @@ def get_dashboard_data(
     )
 
     total_validated = len(window_rows)
-    green_count = sum(1 for row in window_rows if row.state == GameReceiptState.GREEN.value)
-    yellow_count = sum(1 for row in window_rows if row.state == GameReceiptState.YELLOW.value)
-    brown_count = sum(1 for row in window_rows if row.state == GameReceiptState.BROWN.value)
+    scoring_rows = [row for row in window_rows if row.shredded_at is None]
+    green_count = sum(1 for row in scoring_rows if row.state == GameReceiptState.GREEN.value)
+    yellow_count = sum(1 for row in scoring_rows if row.state == GameReceiptState.YELLOW.value)
+    brown_count = sum(1 for row in scoring_rows if row.state == GameReceiptState.BROWN.value)
     shredded_count = sum(
         1
         for row in window_rows
@@ -482,10 +562,10 @@ def get_dashboard_data(
     )
 
     avg_validation_age_hours = None
-    if total_validated:
-        avg_validation_age_hours = sum(row.age_hours_at_validation for row in window_rows) / total_validated
+    if scoring_rows:
+        avg_validation_age_hours = sum(row.age_hours_at_validation for row in scoring_rows) / len(scoring_rows)
 
-    green_percent = (green_count / total_validated * 100) if total_validated else 0.0
+    green_percent = (green_count / len(scoring_rows) * 100) if scoring_rows else 0.0
 
     ratio_target = settings.game_green_ratio_target_percent
     streak_target = settings.game_streak_challenge_target
@@ -538,8 +618,7 @@ def get_dashboard_data(
 
     spendable_now = token_balance > 0
     if settings.game_shred_daily_spend_cap > 0:
-        day_start = _as_utc(now).replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
+        day_start, day_end = _day_bounds(now, settings)
         spendable_now = spendable_now and _spent_in_window(db, day_start, day_end) < settings.game_shred_daily_spend_cap
 
     return {
@@ -571,7 +650,7 @@ def get_dashboard_data(
             "latest_receipt_id": latest_receipt_id,
             "counts": display_counts,
             "receipts": forest_tiles,
-            "biweekly_slots": biweekly_slots,
+            "weekly_slots": weekly_slots,
         },
         "correctness": {
             "water_units": correctness.water_units,

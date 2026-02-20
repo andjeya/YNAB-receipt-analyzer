@@ -100,8 +100,8 @@ export function triggerScan() {
   );
 }
 
-export function getGameDashboard(window: GameWindow = "week") {
-  return request<GameDashboard>(`/game/dashboard?window=${window}`);
+export function getGameDashboard(window: GameWindow = "week", forestLimit = 140) {
+  return request<GameDashboard>(`/game/dashboard?window=${window}&forest_limit=${forestLimit}`);
 }
 
 export function shredGameReceipt(receiptId: string) {

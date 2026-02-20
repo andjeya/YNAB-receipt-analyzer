@@ -169,10 +169,10 @@ class GameForestOut(BaseModel):
     latest_receipt_id: str | None = None
     counts: dict[str, int]
     receipts: list[GameForestTileOut]
-    biweekly_slots: list["GameBiweeklySlotOut"] = Field(default_factory=list)
+    weekly_slots: list["GameWeeklySlotOut"] = Field(default_factory=list)
 
 
-class GameBiweeklySlotOut(BaseModel):
+class GameWeeklySlotOut(BaseModel):
     index: int
     start_at: datetime
     end_at: datetime

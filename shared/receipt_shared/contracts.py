@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -29,6 +29,7 @@ class GeminiReceiptExtraction(BaseModel):
     payee_name: str = ""
     account_id: str = Field(min_length=1)
     transaction_date: date | None = None
+    transaction_time: time | None = None
     memo: str = ""
     total_amount: float
     category_id: str | None = None
@@ -70,6 +71,7 @@ class ValidationPayload(BaseModel):
     payee_name: str = Field(min_length=1)
     account_id: str = Field(min_length=1)
     transaction_date: date
+    transaction_time: time | None = None
     memo: str = ""
     total_amount: float
     category_id: str | None = None

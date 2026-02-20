@@ -175,6 +175,7 @@ Schema:
   "payee_name": "string (can be empty if uncertain)",
   "account_id": "string",
   "transaction_date": "YYYY-MM-DD | null",
+  "transaction_time": "HH:MM | null",
   "memo": "string",
   "total_amount": number,
   "category_id": "string | null",
@@ -202,8 +203,9 @@ Rules:
    - If uncertain, set payee_name to an empty string.
 6. Keep memo text concise.
 7. If date is unclear, set transaction_date to null.
-8. If any line item could map to multiple categories with confidence >= 0.70, include it in category_ambiguity_flags.
-9. category_ambiguity_flags should be [] when there are no qualifying ambiguous items.
+8. If time is unclear or unavailable, set transaction_time to null.
+9. If any line item could map to multiple categories with confidence >= 0.70, include it in category_ambiguity_flags.
+10. category_ambiguity_flags should be [] when there are no qualifying ambiguous items.
 
 Available YNAB categories:
 {category_lines}

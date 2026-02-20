@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.log_setup import configure_logging
 from app.services.ynab import refresh_ynab_cache
+from app.migrations import ensure_schema_current
 
 settings = get_settings()
 configure_logging(settings.log_file_path)
@@ -44,6 +45,7 @@ async def _periodic_cache_refresh() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    await asyncio.to_thread(ensure_schema_current)
     refresh_task: asyncio.Task[None] | None = None
     if settings.ynab_access_token and settings.ynab_budget_id:
         try:
