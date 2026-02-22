@@ -222,6 +222,53 @@ class GameCorrectnessState(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
 
+class GameDebugSeed(Base):
+    __tablename__ = "game_debug_seed"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Correctness baseline.
+    water_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    water_earned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    water_spent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fire_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fire_added_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fire_extinguished_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    burn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Momentum baseline.
+    token_balance: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    token_earned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    token_spent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active_streak_group_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    break_reason: Mapped[str | None] = mapped_column(String(32))
+
+    # Replay floors so future activity builds from this baseline.
+    correctness_event_floor_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sync_floor_unix_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class GameIncident(Base):
+    __tablename__ = "game_incidents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    incident_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    details_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
 class ReceiptCorrection(Base):
     __tablename__ = "receipt_corrections"
 

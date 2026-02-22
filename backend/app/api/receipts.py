@@ -26,6 +26,7 @@ from app.schemas import (
     ValidationOut,
 )
 from app.services.correctness import award_water
+from app.services.incidents import record_incident
 from app.services.validation import validate_payload
 from app.services.ynab import get_cached_reference_data
 
@@ -372,7 +373,7 @@ def save_draft(
             model_validation.payload if model_validation else None,
             normalized_payload,
         ):
-            award_water(
+            awarded = award_water(
                 db,
                 settings,
                 units=1,
@@ -380,6 +381,17 @@ def save_draft(
                 idempotency_key=f"water:manual_correction:{receipt.id}",
                 reason="manual_category_or_split_correction",
             )
+            if awarded > 0:
+                record_incident(
+                    db,
+                    incident_type="water_earned",
+                    severity="info",
+                    title="Water Earned",
+                    message=f"Manual category correction earned {awarded} water.",
+                    details={"receipt_id": receipt.id, "units": awarded},
+                    idempotency_key=f"incident:water_earned:{receipt.id}:{next_version}",
+                    created_at=now,
+                )
             db.add(
                 TimingMetric(
                     receipt_id=receipt.id,

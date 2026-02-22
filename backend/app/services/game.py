@@ -12,6 +12,8 @@ from app.config import Settings
 from app.enums import GameChallengeStatus, GameEventType, GameReceiptState, YNABSyncStatus
 from app.models import GameEvent, GameReceiptStateModel, GameStreak, GameToken, Receipt, Validation, YNABSync
 from app.services.correctness import fire_breakdown, get_or_create_correctness_state
+from app.services.debug_seed import get_or_create_debug_seed, unix_ms_to_datetime
+from app.services.debug_tools import is_debug_tools_enabled
 
 ALLOWED_WINDOWS = {"week", "month"}
 WEEK_SLOT_COUNT = 9
@@ -335,7 +337,7 @@ def _spent_in_window(db: Session, start: datetime, end: datetime) -> int:
     return int(count or 0)
 
 
-def _first_successful_sync_rows(db: Session) -> list[tuple[Receipt, Validation, datetime]]:
+def _first_successful_sync_rows(db: Session, *, sync_floor: datetime | None = None) -> list[tuple[Receipt, Validation, datetime]]:
     rows = db.execute(
         select(Receipt, Validation, YNABSync.completed_at)
         .join(YNABSync, YNABSync.receipt_id == Receipt.id)
@@ -343,6 +345,7 @@ def _first_successful_sync_rows(db: Session) -> list[tuple[Receipt, Validation, 
         .where(
             YNABSync.status.in_([YNABSyncStatus.MATCHED_UPDATED.value, YNABSyncStatus.CREATED.value]),
             YNABSync.completed_at.is_not(None),
+            *( [YNABSync.completed_at > sync_floor] if sync_floor is not None else [] ),
         )
         .order_by(YNABSync.completed_at.asc(), Receipt.id.asc())
     ).all()
@@ -358,6 +361,8 @@ def _first_successful_sync_rows(db: Session) -> list[tuple[Receipt, Validation, 
 
 
 def rebuild_gamification_state(db: Session, settings: Settings) -> dict[str, int]:
+    seed = get_or_create_debug_seed(db)
+    sync_floor = unix_ms_to_datetime(seed.sync_floor_unix_ms) if seed.enabled else None
     preserved_shreds = {
         receipt_id: _as_utc(shredded_at)
         for receipt_id, shredded_at in db.execute(
@@ -367,27 +372,41 @@ def rebuild_gamification_state(db: Session, settings: Settings) -> dict[str, int
         ).all()
     }
 
-    preserved_spent = int(
-        db.scalar(
-            select(func.count(GameEvent.id)).where(GameEvent.event_type == GameEventType.TOKEN_SPENT.value)
+    preserved_spent = 0
+    if not seed.enabled:
+        preserved_spent = int(
+            db.scalar(
+                select(func.count(GameEvent.id)).where(GameEvent.event_type == GameEventType.TOKEN_SPENT.value)
+            )
+            or 0
         )
-        or 0
-    )
 
     db.execute(delete(GameReceiptStateModel))
     db.execute(delete(GameStreak))
     db.execute(delete(GameToken))
     db.flush()
 
+    streak = _get_or_create_streak(db)
     tokens = _get_or_create_tokens(db)
-    tokens.spent_count = preserved_spent
-    tokens.balance = 0
-    tokens.earned_count = 0
+    if seed.enabled:
+        streak.current_streak = seed.current_streak
+        streak.max_streak = seed.max_streak
+        streak.break_reason = seed.break_reason
+        streak.active_streak_group_id = max(seed.active_streak_group_id, 1)
+        streak.last_green_at = None
+
+        tokens.balance = seed.token_balance
+        tokens.earned_count = seed.token_earned_count
+        tokens.spent_count = seed.token_spent_count
+    else:
+        tokens.spent_count = preserved_spent
+        tokens.balance = 0
+        tokens.earned_count = 0
 
     processed_count = 0
     restored_shreds = 0
 
-    for receipt, validation, completed_at in _first_successful_sync_rows(db):
+    for receipt, validation, completed_at in _first_successful_sync_rows(db, sync_floor=sync_floor):
         state_row = apply_sync_gamification(db, receipt, validation, completed_at, settings)
         processed_count += 1
 
@@ -400,7 +419,10 @@ def rebuild_gamification_state(db: Session, settings: Settings) -> dict[str, int
         state_row.shredded_at = preserved_shredded_at
         restored_shreds += 1
 
-    tokens.balance = max(tokens.earned_count - tokens.spent_count, 0)
+    if not seed.enabled:
+        tokens.balance = max(tokens.earned_count - tokens.spent_count, 0)
+    else:
+        tokens.balance = max(tokens.balance, 0)
 
     return {
         "processed_receipts": processed_count,
@@ -624,6 +646,7 @@ def get_dashboard_data(
     return {
         "generated_at": now,
         "window": window,
+        "debug_tools_enabled": is_debug_tools_enabled(settings),
         "rules": {
             "green_hours_threshold": settings.game_green_hours_threshold,
             "brown_hours_threshold": settings.game_brown_hours_threshold,
@@ -660,6 +683,7 @@ def get_dashboard_data(
             if correctness.water_units
             else 0,
             "fire_units": correctness.fire_units,
+            "fires_to_burn": max(settings.game_fire_burn_threshold - correctness.fire_units, 0),
             "small_fires": small_fires,
             "medium_fires": medium_fires,
             "large_fires": large_fires,

@@ -1,10 +1,15 @@
 import {
   CacheEntity,
+  FetchYnabUpdatesResponse,
+  GameDebugSeed,
+  GameDebugSeedUpdateRequest,
   GameCorrectnessRecomputeResponse,
   GameDashboard,
+  GameIncident,
   GameReconcileResponse,
   GameRebuildResponse,
   GameShredResponse,
+  GameWaterSpendResponse,
   GameWindow,
   ReceiptDetail,
   ReceiptSummary,
@@ -89,6 +94,13 @@ export function refreshYnabCache() {
   );
 }
 
+export function fetchYnabUpdates() {
+  return request<FetchYnabUpdatesResponse>("/ynab/updates/fetch", {
+    method: "POST",
+    body: "{}",
+  });
+}
+
 export function getStatsSummary() {
   return request<StatsSummary>("/stats/summary");
 }
@@ -129,5 +141,37 @@ export function recomputeCorrectnessState() {
   return request<GameCorrectnessRecomputeResponse>("/game/correctness/recompute", {
     method: "POST",
     body: "{}",
+  });
+}
+
+export function spendGameWater(units: number) {
+  return request<GameWaterSpendResponse>("/game/water/spend", {
+    method: "POST",
+    body: JSON.stringify({ units }),
+  });
+}
+
+export function listGameIncidents(pendingOnly = true, limit = 30) {
+  const params = new URLSearchParams();
+  params.set("pending_only", pendingOnly ? "true" : "false");
+  params.set("limit", String(limit));
+  return request<GameIncident[]>(`/game/incidents?${params.toString()}`);
+}
+
+export function acknowledgeGameIncident(incidentId: number) {
+  return request<GameIncident>(`/game/incidents/${incidentId}/ack`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function getGameDebugSeed() {
+  return request<GameDebugSeed>("/game/debug-seed");
+}
+
+export function updateGameDebugSeed(payload: GameDebugSeedUpdateRequest) {
+  return request<GameDebugSeed>("/game/debug-seed", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
