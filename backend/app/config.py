@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     ynab_reconciliation_interval_hours: int = 12
     ynab_reconciliation_lookback_days: int = 90
 
+    debug_tools_enabled: bool = False
+    debug_tools_flag_file: Path = Path("./data/debug_tools_enabled.flag")
+
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     @field_validator("cors_origins", mode="before")
@@ -141,4 +144,7 @@ def get_settings() -> Settings:
     settings.ingest_dir.mkdir(parents=True, exist_ok=True)
     (settings.object_store_root / settings.object_store_receipts_prefix).mkdir(parents=True, exist_ok=True)
     settings.log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.debug_tools_flag_file.parent.mkdir(parents=True, exist_ok=True)
+    if settings.debug_tools_enabled:
+        settings.debug_tools_flag_file.touch(exist_ok=True)
     return settings

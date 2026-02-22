@@ -9,6 +9,7 @@ import {
   Flame,
   Menu,
   RefreshCcw,
+  ScanSearch,
   Scissors,
   Sparkles,
   Trophy,
@@ -16,11 +17,12 @@ import {
 } from "lucide-react";
 
 import {
+  fetchYnabUpdates,
   getGameDashboard,
   rebuildGameState,
-  reconcileGameState,
   recomputeCorrectnessState,
   shredGameReceipt,
+  triggerScan,
 } from "@/lib/api";
 import { GameDisplayState, GameForestTile, GameWindow } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -131,10 +133,21 @@ export function GamificationDashboard() {
   });
 
   const reconcileMutation = useMutation({
-    mutationFn: reconcileGameState,
+    mutationFn: fetchYnabUpdates,
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ynab-cache"] });
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+    },
+  });
+
+  const scanMutation = useMutation({
+    mutationFn: triggerScan,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
     },
   });
 
@@ -216,7 +229,17 @@ export function GamificationDashboard() {
           ) : null}
 
           {menuOpen ? (
-            <div className="grid gap-2 rounded-2xl border border-white/15 bg-black/25 p-2 sm:grid-cols-3">
+            <div className="grid gap-2 rounded-2xl border border-white/15 bg-black/25 p-2 sm:grid-cols-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 border-white/30 bg-transparent text-sand hover:bg-white/10"
+                onClick={() => scanMutation.mutate()}
+                disabled={scanMutation.isPending}
+              >
+                <ScanSearch className="mr-1 h-3.5 w-3.5" />
+                {scanMutation.isPending ? "Checking" : "Check ingestion queue"}
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -234,7 +257,7 @@ export function GamificationDashboard() {
                 onClick={() => reconcileMutation.mutate()}
                 disabled={reconcileMutation.isPending}
               >
-                {reconcileMutation.isPending ? "Reconciling" : "Reconcile"}
+                {reconcileMutation.isPending ? "Fetching" : "Fetch YNAB updates"}
               </Button>
               <Button
                 size="sm"

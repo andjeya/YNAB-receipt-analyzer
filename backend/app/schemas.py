@@ -123,6 +123,20 @@ class CacheRefreshResponse(BaseModel):
     payee_count: int
 
 
+class FetchYnabUpdatesResponse(BaseModel):
+    refreshed_at: datetime
+    category_count: int
+    account_count: int
+    payee_count: int
+    run_id: int
+    scanned_receipts: int
+    detected_mistakes: int
+    applied_penalties: int
+    fires_added: int
+    waters_spent: int
+    burns_triggered: int
+
+
 class StatsSummary(BaseModel):
     status_counts: dict[str, int]
     avg_extraction_duration_ms: float | None = None
@@ -211,6 +225,7 @@ class GameCorrectnessOut(BaseModel):
     bucket_capacity: int
     buckets_filled: int
     fire_units: int
+    fires_to_burn: int
     small_fires: int
     medium_fires: int
     large_fires: int
@@ -222,6 +237,7 @@ class GameCorrectnessOut(BaseModel):
 class GameDashboardOut(BaseModel):
     generated_at: datetime
     window: str
+    debug_tools_enabled: bool = False
     rules: GameRulesOut
     momentum: GameMomentumOut
     forest: GameForestOut
@@ -247,6 +263,9 @@ class GameReconcileResponse(BaseModel):
     scanned_receipts: int
     detected_mistakes: int
     applied_penalties: int
+    fires_added: int = 0
+    waters_spent: int = 0
+    burns_triggered: int = 0
     run_id: int
 
 
@@ -255,6 +274,68 @@ class GameCorrectnessRecomputeResponse(BaseModel):
     water_units: int
     fire_units: int
     burn_count: int
+
+
+class GameWaterSpendRequest(BaseModel):
+    units: int = Field(ge=1, default=1)
+
+
+class GameWaterSpendResponse(BaseModel):
+    waters_spent: int
+    fires_extinguished: int
+    water_units: int
+    fire_units: int
+
+
+class GameIncidentOut(BaseModel):
+    id: int
+    incident_type: str
+    severity: str
+    title: str
+    message: str
+    details_json: dict[str, Any] | None = None
+    created_at: datetime
+    acknowledged_at: datetime | None = None
+
+
+class GameDebugSeedOut(BaseModel):
+    enabled: bool
+    water_units: int
+    water_earned_count: int
+    water_spent_count: int
+    fire_units: int
+    fire_added_count: int
+    fire_extinguished_count: int
+    burn_count: int
+    token_balance: int
+    token_earned_count: int
+    token_spent_count: int
+    current_streak: int
+    max_streak: int
+    active_streak_group_id: int
+    break_reason: str | None = None
+    correctness_event_floor_id: int
+    sync_floor_unix_ms: int
+
+
+class GameDebugSeedUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    water_units: int | None = None
+    water_earned_count: int | None = None
+    water_spent_count: int | None = None
+    fire_units: int | None = None
+    fire_added_count: int | None = None
+    fire_extinguished_count: int | None = None
+    burn_count: int | None = None
+    token_balance: int | None = None
+    token_earned_count: int | None = None
+    token_spent_count: int | None = None
+    current_streak: int | None = None
+    max_streak: int | None = None
+    active_streak_group_id: int | None = None
+    break_reason: str | None = None
+    reset_floors_to_now: bool = False
+    apply_to_live_state: bool = True
 
 
 ReceiptDetailOut.model_rebuild()

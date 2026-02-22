@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.enums import GameEventType
 from app.models import GameCorrectnessState, GameEvent
+from app.services.debug_seed import get_or_create_debug_seed
 
 
 def utcnow() -> datetime:
@@ -89,6 +90,43 @@ def _apply_board_burn_if_needed(
     return True
 
 
+def _spend_water_to_extinguish(
+    db: Session,
+    *,
+    state: GameCorrectnessState,
+    units: int,
+    receipt_id: str | None,
+    idempotency_key: str,
+    reason: str,
+    created_at: datetime,
+) -> int:
+    if units <= 0:
+        return 0
+
+    state.water_units = max(state.water_units - units, 0)
+    state.fire_units = max(state.fire_units - units, 0)
+    state.water_spent_count += units
+    state.fire_extinguished_count += units
+
+    _record_event(
+        db,
+        event_type=GameEventType.WATER_SPENT,
+        idempotency_key=f"{idempotency_key}:water",
+        receipt_id=receipt_id,
+        payload={"units": units, "reason": reason, "water_units": state.water_units},
+        created_at=created_at,
+    )
+    _record_event(
+        db,
+        event_type=GameEventType.FIRE_EXTINGUISHED,
+        idempotency_key=f"{idempotency_key}:extinguished",
+        receipt_id=receipt_id,
+        payload={"units": units, "reason": reason, "fire_units": state.fire_units},
+        created_at=created_at,
+    )
+    return units
+
+
 def award_water(
     db: Session,
     settings: Settings,
@@ -133,75 +171,105 @@ def add_fire(
     created_at: datetime | None = None,
 ) -> dict[str, int]:
     if units <= 0:
-        return {"fires_added": 0, "fires_extinguished": 0, "waters_spent": 0, "burns_triggered": 0}
+        return {
+            "fires_added": 0,
+            "fires_extinguished": 0,
+            "waters_spent": 0,
+            "burns_triggered": 0,
+            "forced_waters_spent": 0,
+        }
 
     if _event_exists(db, idempotency_key):
-        return {"fires_added": 0, "fires_extinguished": 0, "waters_spent": 0, "burns_triggered": 0}
+        return {
+            "fires_added": 0,
+            "fires_extinguished": 0,
+            "waters_spent": 0,
+            "burns_triggered": 0,
+            "forced_waters_spent": 0,
+        }
 
     now = _as_utc(created_at or utcnow())
     state = get_or_create_correctness_state(db)
 
-    fires_added = 0
-    fires_extinguished = 0
-    waters_spent = 0
+    state.fire_units += units
+    state.fire_added_count += units
+    _record_event(
+        db,
+        event_type=GameEventType.FIRE_ADDED,
+        idempotency_key=idempotency_key,
+        receipt_id=receipt_id,
+        payload={"units": units, "reason": reason, "fire_units": state.fire_units},
+        created_at=now,
+    )
+
+    forced_waters_spent = 0
     burns_triggered = 0
 
-    for idx in range(units):
-        fires_added += 1
-        state.fire_added_count += 1
-
-        _record_event(
+    if state.fire_units >= settings.game_fire_burn_threshold and state.water_units > 0:
+        minimum_fire_to_survive = settings.game_fire_burn_threshold - 1
+        waters_needed = max(state.fire_units - minimum_fire_to_survive, 0)
+        forced_waters_spent = min(waters_needed, state.water_units)
+        _spend_water_to_extinguish(
             db,
-            event_type=GameEventType.FIRE_ADDED,
-            idempotency_key=f"{idempotency_key}:fire:{idx}",
+            state=state,
+            units=forced_waters_spent,
             receipt_id=receipt_id,
-            payload={"reason": reason, "unit_index": idx + 1},
+            idempotency_key=f"{idempotency_key}:forced_spend",
+            reason="forced_prevent_board_burn",
             created_at=now,
         )
 
-        if state.water_units > 0:
-            state.water_units -= 1
-            state.water_spent_count += 1
-            state.fire_extinguished_count += 1
-            fires_extinguished += 1
-            waters_spent += 1
-
-            _record_event(
-                db,
-                event_type=GameEventType.WATER_SPENT,
-                idempotency_key=f"{idempotency_key}:water:{idx}",
-                receipt_id=receipt_id,
-                payload={"reason": reason, "unit_index": idx + 1, "water_units": state.water_units},
-                created_at=now,
-            )
-            _record_event(
-                db,
-                event_type=GameEventType.FIRE_EXTINGUISHED,
-                idempotency_key=f"{idempotency_key}:extinguished:{idx}",
-                receipt_id=receipt_id,
-                payload={"reason": reason, "unit_index": idx + 1},
-                created_at=now,
-            )
-            continue
-
-        state.fire_units += 1
-        did_burn = _apply_board_burn_if_needed(
-            db,
-            state=state,
-            settings=settings,
-            receipt_id=receipt_id,
-            event_suffix=f"{idempotency_key}:{idx}",
-            now=now,
-        )
-        if did_burn:
-            burns_triggered += 1
+    did_burn = _apply_board_burn_if_needed(
+        db,
+        state=state,
+        settings=settings,
+        receipt_id=receipt_id,
+        event_suffix=idempotency_key,
+        now=now,
+    )
+    if did_burn:
+        burns_triggered += 1
 
     return {
-        "fires_added": fires_added,
-        "fires_extinguished": fires_extinguished,
-        "waters_spent": waters_spent,
+        "fires_added": units,
+        "fires_extinguished": forced_waters_spent,
+        "waters_spent": forced_waters_spent,
         "burns_triggered": burns_triggered,
+        "forced_waters_spent": forced_waters_spent,
     }
+
+
+def spend_water_to_extinguish(
+    db: Session,
+    *,
+    units: int,
+    receipt_id: str | None,
+    idempotency_key: str,
+    reason: str = "manual_extinguish",
+    created_at: datetime | None = None,
+) -> dict[str, int]:
+    if units <= 0:
+        return {"waters_spent": 0, "fires_extinguished": 0}
+
+    if _event_exists(db, f"{idempotency_key}:water"):
+        return {"waters_spent": 0, "fires_extinguished": 0}
+
+    now = _as_utc(created_at or utcnow())
+    state = get_or_create_correctness_state(db)
+    spendable = min(units, state.water_units, state.fire_units)
+    if spendable <= 0:
+        return {"waters_spent": 0, "fires_extinguished": 0}
+
+    spent = _spend_water_to_extinguish(
+        db,
+        state=state,
+        units=spendable,
+        receipt_id=receipt_id,
+        idempotency_key=idempotency_key,
+        reason=reason,
+        created_at=now,
+    )
+    return {"waters_spent": spent, "fires_extinguished": spent}
 
 
 def fire_breakdown(fire_units: int) -> tuple[int, int, int]:
@@ -216,33 +284,47 @@ def fire_breakdown(fire_units: int) -> tuple[int, int, int]:
 
 def recompute_correctness_state_from_history(db: Session, settings: Settings) -> dict[str, int]:
     state = get_or_create_correctness_state(db)
+    seed = get_or_create_debug_seed(db)
 
-    water_units = 0
-    water_earned_count = 0
-    water_spent_count = 0
-    fire_units = 0
-    fire_added_count = 0
-    fire_extinguished_count = 0
-    burn_count = 0
+    if seed.enabled:
+        water_units = seed.water_units
+        water_earned_count = seed.water_earned_count
+        water_spent_count = seed.water_spent_count
+        fire_units = seed.fire_units
+        fire_added_count = seed.fire_added_count
+        fire_extinguished_count = seed.fire_extinguished_count
+        burn_count = seed.burn_count
+        event_floor = seed.correctness_event_floor_id
+    else:
+        water_units = 0
+        water_earned_count = 0
+        water_spent_count = 0
+        fire_units = 0
+        fire_added_count = 0
+        fire_extinguished_count = 0
+        burn_count = 0
+        event_floor = 0
+
     last_burned_at: datetime | None = None
 
-    events = list(
-        db.scalars(
-            select(GameEvent)
-            .where(
-                GameEvent.event_type.in_(
-                    [
-                        GameEventType.WATER_EARNED.value,
-                        GameEventType.WATER_SPENT.value,
-                        GameEventType.FIRE_ADDED.value,
-                        GameEventType.FIRE_EXTINGUISHED.value,
-                        GameEventType.BOARD_BURNED.value,
-                    ]
-                )
+    stmt = (
+        select(GameEvent)
+        .where(
+            GameEvent.event_type.in_(
+                [
+                    GameEventType.WATER_EARNED.value,
+                    GameEventType.WATER_SPENT.value,
+                    GameEventType.FIRE_ADDED.value,
+                    GameEventType.FIRE_EXTINGUISHED.value,
+                    GameEventType.BOARD_BURNED.value,
+                ]
             )
-            .order_by(GameEvent.created_at.asc(), GameEvent.id.asc())
         )
+        .order_by(GameEvent.created_at.asc(), GameEvent.id.asc())
     )
+    if event_floor > 0:
+        stmt = stmt.where(GameEvent.id > event_floor)
+    events = list(db.scalars(stmt))
 
     for event in events:
         payload = event.payload_json or {}

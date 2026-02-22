@@ -10,10 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.enums import GameEventType, GameReceiptState, ReceiptStatus, YNABSyncStatus
+from app.enums import GameEventType, ReceiptStatus, YNABSyncStatus
 from app.models import (
     GameEvent,
-    GameReceiptStateModel,
     Receipt,
     ReceiptCorrection,
     Validation,
@@ -21,6 +20,7 @@ from app.models import (
     YNABSync,
 )
 from app.services.correctness import add_fire, get_or_create_correctness_state
+from app.services.incidents import record_incident
 from app.services.validation import validate_payload
 from app.services.ynab import get_cached_reference_data, get_ynab_client
 
@@ -175,14 +175,51 @@ def _apply_corrected_validation(
     receipt.display_total_milliunits = int(float(normalized_payload.get("total_amount", 0)) * 1000)
     if normalized_payload.get("transaction_date"):
         receipt.display_receipt_date = datetime.fromisoformat(str(normalized_payload["transaction_date"])).date()
-    receipt.status = ReceiptStatus.NEEDS_REVIEW.value
-    receipt.status_reason = "Category/split changed in YNAB. Review and resync to confirm."
+    # Keep receipts synced after reconciliation updates; correction metadata and
+    # iconography communicate what changed without forcing a review loop.
+    receipt.status = ReceiptStatus.SYNCED.value
+    receipt.status_reason = None
+
+
+def _split_note(subtransactions: list[dict[str, Any]]) -> str:
+    if not subtransactions:
+        return "[empty split]"
+    parts: list[str] = []
+    for sub in sorted(
+        subtransactions,
+        key=lambda item: (
+            str(item.get("category_id") or ""),
+            int(item.get("amount", 0)),
+            str(item.get("memo") or ""),
+        ),
+    ):
+        category_id = str(sub.get("category_id") or "[none]")
+        amount = _dollars_from_milliunits(int(sub.get("amount", 0)))
+        parts.append(f"{category_id}:${amount:.2f}")
+    preview = ", ".join(parts[:4])
+    if len(parts) > 4:
+        preview = f"{preview}, +{len(parts) - 4} more"
+    return preview
 
 
 def _category_note(sync_payload: dict[str, Any], ynab_transaction: dict[str, Any]) -> str:
     synced_category = str(sync_payload.get("category_id") or "")
     corrected_category = str(ynab_transaction.get("category_id") or "")
-    return f"error: synced as {synced_category or '[split]'}, corrected in YNAB to {corrected_category or '[split]'}"
+    synced_splits = sync_payload.get("subtransactions", [])
+    corrected_splits = _active_subtransactions(ynab_transaction)
+    synced_is_split = isinstance(synced_splits, list) and len(synced_splits) > 0
+    corrected_is_split = len(corrected_splits) > 0
+
+    if synced_is_split or corrected_is_split:
+        synced_desc = f"split [{_split_note(synced_splits if isinstance(synced_splits, list) else [])}]"
+        corrected_desc = (
+            f"split [{_split_note(corrected_splits)}]"
+            if corrected_is_split
+            else (corrected_category or "[none]")
+        )
+        return f"Category/split synced as {synced_desc}, corrected in YNAB to {corrected_desc}"
+
+    return f"Category synced as {synced_category or '[none]'}, corrected in YNAB to {corrected_category or '[none]'}"
 
 
 def _correction_signature(sync_payload: dict[str, Any], ynab_transaction: dict[str, Any]) -> str:
@@ -222,42 +259,6 @@ def _successful_sync_after(db: Session, receipt_id: str, detected_at: datetime) 
     )
 
 
-def _apply_resync_penalties(db: Session, settings: Settings, now: datetime) -> int:
-    penalty_count = 0
-    corrections = list(
-        db.scalars(
-            select(ReceiptCorrection).where(
-                ReceiptCorrection.resync_penalty_applied.is_(False),
-                ReceiptCorrection.detected_at <= now - timedelta(hours=24),
-            )
-        )
-    )
-    for correction in corrections:
-        resynced_at = _successful_sync_after(db, correction.receipt_id, correction.detected_at)
-        if resynced_at is not None:
-            correction.resynced_at = _as_utc(resynced_at)
-            continue
-
-        state = db.get(GameReceiptStateModel, correction.receipt_id)
-        if state is None or state.state != GameReceiptState.BROWN.value:
-            continue
-
-        result = add_fire(
-            db,
-            settings,
-            units=1,
-            receipt_id=correction.receipt_id,
-            idempotency_key=f"fire:resync_overdue:{correction.id}",
-            reason="resync_overdue_24h",
-            created_at=now,
-        )
-        if result["fires_added"] > 0:
-            penalty_count += 1
-        correction.resync_penalty_applied = True
-
-    return penalty_count
-
-
 def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
     if not settings.ynab_budget_id:
         raise ValueError("YNAB_BUDGET_ID is not configured")
@@ -276,6 +277,9 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
     scanned_receipts = 0
     detected_mistakes = 0
     correction_receipts: list[str] = []
+    fires_added_total = 0
+    waters_spent_total = 0
+    burns_triggered_total = 0
 
     for sync_row in _latest_successful_sync_rows(db, since_at):
         receipt = db.get(Receipt, sync_row.receipt_id)
@@ -351,7 +355,7 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
             )
         )
 
-        add_fire(
+        fire_result = add_fire(
             db,
             settings,
             units=1,
@@ -360,6 +364,9 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
             reason="ynab_category_or_split_changed",
             created_at=detected_at,
         )
+        fires_added_total += int(fire_result.get("fires_added", 0))
+        waters_spent_total += int(fire_result.get("waters_spent", 0))
+        burns_triggered_total += int(fire_result.get("burns_triggered", 0))
 
         _apply_corrected_validation(
             db,
@@ -371,7 +378,13 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
         detected_mistakes += 1
         correction_receipts.append(receipt.id)
 
-    applied_penalties = _apply_resync_penalties(db, settings, utcnow())
+    for correction in db.scalars(select(ReceiptCorrection)):
+        resynced_at = _successful_sync_after(db, correction.receipt_id, correction.detected_at)
+        if resynced_at is not None:
+            correction.resynced_at = _as_utc(resynced_at)
+            correction.resync_penalty_applied = True
+
+    applied_penalties = 0
 
     correctness = get_or_create_correctness_state(db)
     correctness.last_reconciled_at = utcnow()
@@ -394,9 +407,53 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
         applied_penalties,
     )
 
+    if detected_mistakes > 0 or waters_spent_total > 0 or burns_triggered_total > 0:
+        if burns_triggered_total > 0:
+            severity = "critical"
+            title = "Board Burn Triggered"
+        elif waters_spent_total > 0:
+            severity = "warning"
+            title = "Fires Added and Water Spent"
+        else:
+            severity = "warning"
+            title = "YNAB Corrections Detected"
+
+        message_parts = [
+            f"{detected_mistakes} transaction{'s' if detected_mistakes != 1 else ''} corrected in YNAB.",
+            f"{fires_added_total} fire{'s' if fires_added_total != 1 else ''} added.",
+        ]
+        if waters_spent_total > 0:
+            message_parts.append(f"{waters_spent_total} water spent to prevent board burn.")
+        if burns_triggered_total > 0:
+            message_parts.append(
+                f"Board burned {burns_triggered_total} time{'s' if burns_triggered_total != 1 else ''}."
+            )
+
+        record_incident(
+            db,
+            incident_type="reconciliation_summary",
+            severity=severity,
+            title=title,
+            message=" ".join(message_parts),
+            details={
+                "run_id": run.id,
+                "scanned_receipts": scanned_receipts,
+                "detected_mistakes": detected_mistakes,
+                "fires_added": fires_added_total,
+                "waters_spent": waters_spent_total,
+                "burns_triggered": burns_triggered_total,
+                "receipt_ids": correction_receipts,
+            },
+            idempotency_key=f"incident:reconciliation:{run.id}",
+            created_at=run.completed_at,
+        )
+
     return {
         "run_id": run.id,
         "scanned_receipts": scanned_receipts,
         "detected_mistakes": detected_mistakes,
         "applied_penalties": applied_penalties,
+        "fires_added": fires_added_total,
+        "waters_spent": waters_spent_total,
+        "burns_triggered": burns_triggered_total,
     }

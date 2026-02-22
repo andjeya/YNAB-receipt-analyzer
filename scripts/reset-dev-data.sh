@@ -18,6 +18,15 @@ echo "   - extraction_runs"
 echo "   - validations"
 echo "   - ynab_sync"
 echo "   - timing_metrics"
+echo "   - game_receipt_states"
+echo "   - game_events"
+echo "   - game_streaks"
+echo "   - game_tokens"
+echo "   - game_correctness_state"
+echo "   - game_debug_seed"
+echo "   - game_incidents"
+echo "   - receipt_corrections"
+echo "   - ynab_reconciliation_runs"
 echo "3) Delete stored receipt files under data/receipts."
 echo "4) Delete files in data/ingest."
 echo "5) Flush Redis DB at REDIS_URL (or redis://host.docker.internal:6379/0)."
@@ -40,6 +49,15 @@ if [[ -f "data/app.db" ]]; then
   DELETE FROM validations;
   DELETE FROM ynab_sync;
   DELETE FROM timing_metrics;
+  DELETE FROM game_receipt_states;
+  DELETE FROM game_events;
+  DELETE FROM game_streaks;
+  DELETE FROM game_tokens;
+  DELETE FROM game_correctness_state;
+  DELETE FROM game_debug_seed;
+  DELETE FROM game_incidents;
+  DELETE FROM receipt_corrections;
+  DELETE FROM ynab_reconciliation_runs;
   DELETE FROM receipts;
   "
 else

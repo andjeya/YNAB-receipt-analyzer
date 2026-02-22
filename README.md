@@ -145,12 +145,18 @@ Future runtime containerization plan: `plans/compose-plan.md`.
 - `POST /api/receipts/{id}/sync`
 - `GET /api/ynab/cache`
 - `POST /api/ynab/cache/refresh`
+- `POST /api/ynab/updates/fetch`
 - `GET /api/stats/summary`
 - `GET /api/game/dashboard`
 - `POST /api/game/receipts/{id}/shred`
 - `POST /api/game/rebuild`
 - `POST /api/game/reconcile`
 - `POST /api/game/correctness/recompute`
+- `GET /api/game/incidents`
+- `POST /api/game/incidents/{id}/ack`
+- `POST /api/game/water/spend`
+- `GET /api/game/debug-seed`
+- `POST /api/game/debug-seed`
 
 ## Included V1 Features
 
@@ -165,6 +171,9 @@ Future runtime containerization plan: `plans/compose-plan.md`.
 - Correctness economy (water/fire counters, mismatch penalties, board burn threshold)
 - YNAB reconciliation run tracking with 3-month lookback (default) and 12-hour cadence (default)
 - Receipt correction metadata + fade shading for queue/detail visibility
+- Persistent game incident queue + acknowledge workflow
+- Debug seed controls for game-state testing (`scripts/game-debug.sh`)
+- Debug tool toggle for in-app panel + debug APIs (`scripts/debug-tools.sh`)
 
 ## Gamification Strategy
 
@@ -176,9 +185,10 @@ Current strategy (implemented):
 - Tokens can shred yellow/brown receipts in the forest view.
 - Resync does not add duplicate forest entries for the same receipt.
 - Manual category/split corrections can award water (up to capacity).
-- Reconciliation mismatches add fire units; stored water auto-extinguishes fires.
+- Reconciliation mismatches add fire units.
+- Water is force-spent only when needed to prevent an immediate board burn.
 - Fire debt can burn the board when threshold is reached and no water remains.
-- Correction-linked penalties apply when brown receipts remain un-resynced for >24h.
+- User can manually spend water to extinguish fire units from the dashboard.
 
 Planned correctness strategy (next phase):
 
@@ -193,6 +203,19 @@ Planned correctness strategy (next phase):
 - Keep your local/private guidance in: `shared/receipt_shared/resources/category_guidance.json`
 - This file is intentionally gitignored.
 - Start from the committed template: `shared/receipt_shared/resources/example_category_guidance.json`
+
+## Game Debug Seed Tool
+
+Use `scripts/game-debug.sh` to inspect and seed game counters for testing.
+
+- `bash scripts/debug-tools.sh on`
+- `bash scripts/debug-tools.sh off`
+- `bash scripts/debug-tools.sh status`
+- `bash scripts/game-debug.sh show`
+- `bash scripts/game-debug.sh seed set --enable --water 3 --fire 11 --token-balance 2 --current-streak 4 --reset-floors`
+- `bash scripts/game-debug.sh seed clear`
+
+When debug tools are OFF, the in-app debug panel is hidden and debug APIs/scripts are disabled.
 
 ## Explicitly Not Implemented (V1)
 

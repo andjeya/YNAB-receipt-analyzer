@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangle,
+  Droplets,
   Flame,
   Menu,
   RefreshCcw,
@@ -16,17 +18,21 @@ import {
 } from "lucide-react";
 
 import {
+  acknowledgeGameIncident,
+  fetchYnabUpdates,
+  getGameDebugSeed,
   getGameDashboard,
   getStatsSummary,
+  listGameIncidents,
   listReceipts,
   rebuildGameState,
-  reconcileGameState,
   recomputeCorrectnessState,
-  refreshYnabCache,
   shredGameReceipt,
+  spendGameWater,
   triggerScan,
+  updateGameDebugSeed,
 } from "@/lib/api";
-import { GameDisplayState, GameForestTile, ReceiptStatus } from "@/lib/types";
+import { GameDisplayState, GameForestTile, GameIncident, ReceiptStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { extractReceiptIdFromText } from "@/lib/receipt-id";
 import { Button } from "@/components/ui/button";
@@ -78,13 +84,54 @@ function isWithinSlot(isoTimestamp: string, slotStart: string, slotEnd: string):
   return ts >= new Date(slotStart).getTime() && ts < new Date(slotEnd).getTime();
 }
 
+function severityClass(incident: GameIncident): string {
+  if (incident.severity === "critical") return "border-red-500 bg-red-50";
+  if (incident.severity === "warning") return "border-amber-400 bg-amber-50";
+  return "border-sky-300 bg-sky-50";
+}
+
+function toInt(value: unknown): number {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : 0;
+}
+
+type DebugSeedForm = {
+  enabled: boolean;
+  water_units: number;
+  fire_units: number;
+  burn_count: number;
+  token_balance: number;
+  token_earned_count: number;
+  token_spent_count: number;
+  current_streak: number;
+  max_streak: number;
+  active_streak_group_id: number;
+};
+
 export function ReceiptList() {
   const router = useRouter();
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<"" | ReceiptStatus>("");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
   const [receiptLookupInput, setReceiptLookupInput] = useState("");
   const [receiptLookupError, setReceiptLookupError] = useState<string | null>(null);
+  const [waterSpendOpen, setWaterSpendOpen] = useState(false);
+  const [waterSpendAmount, setWaterSpendAmount] = useState(1);
+  const [debugPanelOpen, setDebugPanelOpen] = useState(false);
+  const [debugResetFloors, setDebugResetFloors] = useState(true);
+  const [debugForm, setDebugForm] = useState<DebugSeedForm>({
+    enabled: false,
+    water_units: 0,
+    fire_units: 0,
+    burn_count: 0,
+    token_balance: 0,
+    token_earned_count: 0,
+    token_spent_count: 0,
+    current_streak: 0,
+    max_streak: 0,
+    active_streak_group_id: 1,
+  });
   const queryClient = useQueryClient();
 
   const receiptsQuery = useQuery({
@@ -105,19 +152,86 @@ export function ReceiptList() {
     refetchInterval: 10_000,
   });
 
+  const incidentsQuery = useQuery({
+    queryKey: ["game-incidents", "pending"],
+    queryFn: () => listGameIncidents(true, 25),
+    refetchInterval: 6000,
+  });
+
+  const debugToolsEnabled = dashboardQuery.data?.debug_tools_enabled ?? false;
+
+  const debugSeedQuery = useQuery({
+    queryKey: ["game-debug-seed"],
+    queryFn: getGameDebugSeed,
+    enabled: debugToolsEnabled && debugPanelOpen,
+    staleTime: 0,
+  });
+
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    const onPointerDown = (event: MouseEvent) => {
+      if (!menuRef.current) return;
+      if (!menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
+
+  useEffect(() => {
+    if (!debugToolsEnabled) {
+      setDebugPanelOpen(false);
+    }
+  }, [debugToolsEnabled]);
+
+  useEffect(() => {
+    if (!debugSeedQuery.data) return;
+    setDebugForm({
+      enabled: debugSeedQuery.data.enabled,
+      water_units: debugSeedQuery.data.water_units,
+      fire_units: debugSeedQuery.data.fire_units,
+      burn_count: debugSeedQuery.data.burn_count,
+      token_balance: debugSeedQuery.data.token_balance,
+      token_earned_count: debugSeedQuery.data.token_earned_count,
+      token_spent_count: debugSeedQuery.data.token_spent_count,
+      current_streak: debugSeedQuery.data.current_streak,
+      max_streak: debugSeedQuery.data.max_streak,
+      active_streak_group_id: debugSeedQuery.data.active_streak_group_id,
+    });
+  }, [debugSeedQuery.data]);
+
   const scanMutation = useMutation({
     mutationFn: triggerScan,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+      setMenuOpen(false);
     },
   });
 
-  const cacheMutation = useMutation({
-    mutationFn: refreshYnabCache,
+  const fetchUpdatesMutation = useMutation({
+    mutationFn: fetchYnabUpdates,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ynab-cache"] });
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
+      setMenuOpen(false);
     },
   });
 
@@ -127,14 +241,7 @@ export function ReceiptList() {
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
-    },
-  });
-
-  const reconcileMutation = useMutation({
-    mutationFn: reconcileGameState,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      setMenuOpen(false);
     },
   });
 
@@ -142,6 +249,8 @@ export function ReceiptList() {
     mutationFn: recomputeCorrectnessState,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
+      setMenuOpen(false);
     },
   });
 
@@ -151,6 +260,55 @@ export function ReceiptList() {
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
+    },
+  });
+
+  const spendWaterMutation = useMutation({
+    mutationFn: (units: number) => spendGameWater(units),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
+      setWaterSpendOpen(false);
+    },
+  });
+
+  const acknowledgeIncidentMutation = useMutation({
+    mutationFn: (incidentId: number) => acknowledgeGameIncident(incidentId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+    },
+  });
+
+  const saveDebugSeedMutation = useMutation({
+    mutationFn: () =>
+      updateGameDebugSeed({
+        enabled: debugForm.enabled,
+        water_units: debugForm.water_units,
+        fire_units: debugForm.fire_units,
+        burn_count: debugForm.burn_count,
+        token_balance: debugForm.token_balance,
+        token_earned_count: debugForm.token_earned_count,
+        token_spent_count: debugForm.token_spent_count,
+        current_streak: debugForm.current_streak,
+        max_streak: debugForm.max_streak,
+        active_streak_group_id: debugForm.active_streak_group_id,
+        reset_floors_to_now: debugResetFloors,
+        apply_to_live_state: true,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["game-debug-seed"] });
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
+      setDebugPanelOpen(false);
+    },
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+      setDebugPanelOpen(false);
     },
   });
 
@@ -169,6 +327,16 @@ export function ReceiptList() {
   }, [dashboardQuery.data]);
 
   const currentWeekSlot = dashboardQuery.data?.forest.weekly_slots[dashboardQuery.data.forest.weekly_slots.length - 1];
+  const activeIncident = incidentsQuery.data?.[0] ?? null;
+  const incidentDetails = (activeIncident?.details_json ?? null) as Record<string, unknown> | null;
+  const incidentWatersSpent = toInt(incidentDetails?.waters_spent);
+  const incidentBurnsTriggered = toInt(incidentDetails?.burns_triggered);
+  const incidentWaterEarned = activeIncident?.incident_type === "water_earned" ? toInt(incidentDetails?.units) : 0;
+
+  const waterUnits = dashboardQuery.data?.correctness.water_units ?? 0;
+  const fireUnits = dashboardQuery.data?.correctness.fire_units ?? 0;
+  const fireToBurn = dashboardQuery.data?.correctness.fires_to_burn ?? Math.max((dashboardQuery.data?.rules.fire_burn_threshold ?? 0) - fireUnits, 0);
+  const maxWaterSpend = Math.min(waterUnits, fireUnits);
 
   const openReceiptById = () => {
     const parsedId = extractReceiptIdFromText(receiptLookupInput.trim());
@@ -183,7 +351,7 @@ export function ReceiptList() {
 
   return (
     <main className="relative mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 pb-24 pt-14">
-      <div className="absolute right-4 top-3 z-30">
+      <div ref={menuRef} className="absolute right-4 top-3 z-30">
         <button
           type="button"
           className="rounded-full border border-ink/20 bg-white/90 p-2 text-ink shadow-float transition hover:bg-white"
@@ -193,7 +361,7 @@ export function ReceiptList() {
           <Menu className="h-5 w-5" />
         </button>
         {menuOpen ? (
-          <Card className="absolute right-0 mt-2 w-[20rem] rounded-2xl p-3">
+          <Card className="absolute right-0 mt-2 w-[22rem] rounded-2xl p-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Actions</p>
             <div className="mt-2 grid gap-2 sm:grid-cols-2">
               <Button
@@ -204,17 +372,17 @@ export function ReceiptList() {
                 disabled={scanMutation.isPending}
               >
                 <ScanSearch className="h-3.5 w-3.5" />
-                {scanMutation.isPending ? "Scanning" : "Scan folder"}
+                {scanMutation.isPending ? "Checking" : "Check ingestion queue"}
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 className="justify-start gap-1"
-                onClick={() => cacheMutation.mutate()}
-                disabled={cacheMutation.isPending}
+                onClick={() => fetchUpdatesMutation.mutate()}
+                disabled={fetchUpdatesMutation.isPending}
               >
                 <RefreshCcw className="h-3.5 w-3.5" />
-                {cacheMutation.isPending ? "Refreshing" : "Refresh cache"}
+                {fetchUpdatesMutation.isPending ? "Fetching" : "Fetch YNAB updates"}
               </Button>
               <Button
                 variant="outline"
@@ -230,20 +398,24 @@ export function ReceiptList() {
                 variant="outline"
                 size="sm"
                 className="justify-start gap-1"
-                onClick={() => reconcileMutation.mutate()}
-                disabled={reconcileMutation.isPending}
-              >
-                {reconcileMutation.isPending ? "Reconciling" : "Reconcile"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="justify-start gap-1 sm:col-span-2"
                 onClick={() => recomputeMutation.mutate()}
                 disabled={recomputeMutation.isPending}
               >
                 {recomputeMutation.isPending ? "Recomputing" : "Recompute correctness"}
               </Button>
+              {debugToolsEnabled ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="justify-start gap-1 sm:col-span-2"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setDebugPanelOpen(true);
+                  }}
+                >
+                  Debug panel
+                </Button>
+              ) : null}
             </div>
             <div className="mt-3 border-t border-ink/10 pt-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Open by ID</p>
@@ -297,18 +469,35 @@ export function ReceiptList() {
             <p className="text-sand/70">Validation wait</p>
             <p className="mt-1 text-base font-semibold">{formatWaitTime(dashboardQuery.data?.summary.avg_validation_age_hours)}</p>
           </div>
-          <div className="rounded-xl bg-white/10 px-3 py-2">
+          <button
+            type="button"
+            className={cn(
+              "rounded-xl bg-white/10 px-3 py-2 text-left transition",
+              maxWaterSpend > 0 ? "hover:bg-white/20" : "cursor-not-allowed opacity-80",
+              spendWaterMutation.isPending ? "animate-water-pulse" : undefined,
+            )}
+            onClick={() => {
+              if (maxWaterSpend <= 0) return;
+              setWaterSpendAmount(Math.min(1, maxWaterSpend) || 1);
+              setWaterSpendOpen(true);
+            }}
+            disabled={maxWaterSpend <= 0 || spendWaterMutation.isPending}
+            title={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
+          >
             <p className="text-sand/70">Water</p>
             <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
               <Waves className="h-3.5 w-3.5 text-sky-300" />
               {dashboardQuery.data ? `${dashboardQuery.data.correctness.water_units}/${dashboardQuery.data.correctness.water_capacity}` : "0/0"}
             </p>
-          </div>
+          </button>
           <div className="rounded-xl bg-white/10 px-3 py-2">
             <p className="text-sand/70">Fire</p>
             <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
               <Flame className="h-3.5 w-3.5 text-rose-300" />
-              {dashboardQuery.data?.correctness.fire_units ?? 0}
+              {fireUnits}
+            </p>
+            <p className="mt-1 text-[11px] text-sand/70">
+              {fireToBurn > 0 ? `${fireToBurn} to burn` : "Burn threshold reached"}
             </p>
           </div>
         </div>
@@ -373,6 +562,9 @@ export function ReceiptList() {
         {receiptsQuery.data?.map((receipt, index) => {
           const tile = tileByReceiptId.get(receipt.id);
           const { tone, shredded } = deriveIconState(tile);
+          const correctionOpacity = receipt.correction_shade_opacity ?? 0;
+          const correctionVisible = correctionOpacity > 0.01;
+          const correctionColor = `rgba(15, 23, 42, ${Math.max(0.16, Math.min(0.2 + correctionOpacity * 0.75, 1))})`;
 
           const canShred =
             tile?.shredded_at == null &&
@@ -393,16 +585,19 @@ export function ReceiptList() {
               )}
               style={{
                 animationDelay: `${120 + index * 28}ms`,
-                backgroundColor:
-                  receipt.correction_shade_opacity && receipt.correction_shade_opacity > 0
-                    ? `rgba(15, 23, 42, ${Math.min(0.12 + receipt.correction_shade_opacity * 0.45, 0.58)})`
-                    : undefined,
-                color: receipt.correction_shade_opacity && receipt.correction_shade_opacity > 0.45 ? "#f8fafc" : undefined,
               }}
             >
               <div className="flex items-start gap-3">
-                <div className="mt-1 flex w-7 shrink-0 justify-center">
-                  {tone ? <ReceiptStateIcon tone={tone} shredded={shredded} className="h-5 w-5" /> : null}
+                <div className="mt-1 flex shrink-0 items-center gap-1.5">
+                  {correctionVisible ? (
+                    <span title="YNAB correction tracked">
+                      <Flame
+                        className="h-4 w-4 animate-fire-fade"
+                        style={{ color: correctionColor, opacity: Math.max(correctionOpacity, 0.12) }}
+                      />
+                    </span>
+                  ) : null}
+                  <div className="flex w-7 justify-center">{tone ? <ReceiptStateIcon tone={tone} shredded={shredded} className="h-5 w-5" /> : null}</div>
                 </div>
 
                 <div className="min-w-0 flex-1">
@@ -422,7 +617,7 @@ export function ReceiptList() {
                   </div>
 
                   {receipt.correction_message ? (
-                    <p className="mt-1 text-[11px] font-semibold text-black/80">{receipt.correction_message}</p>
+                    <p className="mt-1 text-[11px] font-semibold text-ink/70">{receipt.correction_message}</p>
                   ) : null}
 
                   <div className="mt-3 flex items-center justify-between gap-2">
@@ -455,6 +650,272 @@ export function ReceiptList() {
           );
         })}
       </section>
+
+      {waterSpendOpen ? (
+        <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/45 px-4">
+          <Card className="w-full max-w-sm space-y-3 animate-incident-enter">
+            <h2 className="text-base font-semibold">Spend Water</h2>
+            <p className="text-sm text-ink/70">Choose how much water to spend to extinguish fire.</p>
+            <div>
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/60">Amount</label>
+              <Input
+                type="number"
+                min={1}
+                max={Math.max(maxWaterSpend, 1)}
+                value={waterSpendAmount}
+                onChange={(event) => {
+                  const next = Number(event.target.value) || 1;
+                  setWaterSpendAmount(Math.max(1, Math.min(next, Math.max(maxWaterSpend, 1))));
+                }}
+              />
+              <p className="mt-1 text-xs text-ink/60">Max now: {maxWaterSpend}</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setWaterSpendOpen(false)} disabled={spendWaterMutation.isPending}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => spendWaterMutation.mutate(waterSpendAmount)}
+                disabled={spendWaterMutation.isPending || maxWaterSpend <= 0}
+              >
+                {spendWaterMutation.isPending ? "Spending..." : "Extinguish"}
+              </Button>
+            </div>
+          </Card>
+        </div>
+      ) : null}
+
+      {debugToolsEnabled && debugPanelOpen ? (
+        <div className="fixed inset-0 z-[66] flex items-center justify-center bg-black/55 px-4">
+          <Card className="w-full max-w-lg space-y-3 animate-incident-enter">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold">Debug Seed Panel</h2>
+              <span className="text-xs text-ink/60">Enabled via terminal toggle</span>
+            </div>
+            {debugSeedQuery.isLoading ? <p className="text-sm text-ink/70">Loading seed...</p> : null}
+            {debugSeedQuery.isError ? (
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">Debug tools are disabled or unavailable.</p>
+            ) : null}
+
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={debugForm.enabled}
+                onChange={(event) => setDebugForm({ ...debugForm, enabled: event.target.checked })}
+              />
+              Seed enabled
+            </label>
+
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-xs font-semibold text-ink/70">
+                Water
+                <Input
+                  type="number"
+                  value={debugForm.water_units}
+                  onChange={(event) => setDebugForm({ ...debugForm, water_units: Math.max(Number(event.target.value) || 0, 0) })}
+                />
+              </label>
+              <label className="text-xs font-semibold text-ink/70">
+                Fire
+                <Input
+                  type="number"
+                  value={debugForm.fire_units}
+                  onChange={(event) => setDebugForm({ ...debugForm, fire_units: Math.max(Number(event.target.value) || 0, 0) })}
+                />
+              </label>
+              <label className="text-xs font-semibold text-ink/70">
+                Burn Count
+                <Input
+                  type="number"
+                  value={debugForm.burn_count}
+                  onChange={(event) => setDebugForm({ ...debugForm, burn_count: Math.max(Number(event.target.value) || 0, 0) })}
+                />
+              </label>
+              <label className="text-xs font-semibold text-ink/70">
+                Token Balance
+                <Input
+                  type="number"
+                  value={debugForm.token_balance}
+                  onChange={(event) => setDebugForm({ ...debugForm, token_balance: Math.max(Number(event.target.value) || 0, 0) })}
+                />
+              </label>
+              <label className="text-xs font-semibold text-ink/70">
+                Token Earned
+                <Input
+                  type="number"
+                  value={debugForm.token_earned_count}
+                  onChange={(event) => setDebugForm({ ...debugForm, token_earned_count: Math.max(Number(event.target.value) || 0, 0) })}
+                />
+              </label>
+              <label className="text-xs font-semibold text-ink/70">
+                Token Spent
+                <Input
+                  type="number"
+                  value={debugForm.token_spent_count}
+                  onChange={(event) => setDebugForm({ ...debugForm, token_spent_count: Math.max(Number(event.target.value) || 0, 0) })}
+                />
+              </label>
+              <label className="text-xs font-semibold text-ink/70">
+                Current Streak
+                <Input
+                  type="number"
+                  value={debugForm.current_streak}
+                  onChange={(event) => setDebugForm({ ...debugForm, current_streak: Math.max(Number(event.target.value) || 0, 0) })}
+                />
+              </label>
+              <label className="text-xs font-semibold text-ink/70">
+                Max Streak
+                <Input
+                  type="number"
+                  value={debugForm.max_streak}
+                  onChange={(event) => setDebugForm({ ...debugForm, max_streak: Math.max(Number(event.target.value) || 0, 0) })}
+                />
+              </label>
+              <label className="text-xs font-semibold text-ink/70">
+                Streak Group
+                <Input
+                  type="number"
+                  value={debugForm.active_streak_group_id}
+                  onChange={(event) =>
+                    setDebugForm({
+                      ...debugForm,
+                      active_streak_group_id: Math.max(Number(event.target.value) || 1, 1),
+                    })
+                  }
+                />
+              </label>
+            </div>
+
+            <label className="inline-flex items-center gap-2 text-xs text-ink/70">
+              <input
+                type="checkbox"
+                checked={debugResetFloors}
+                onChange={(event) => setDebugResetFloors(event.target.checked)}
+              />
+              Reset replay floors to now on save
+            </label>
+
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setDebugPanelOpen(false)}
+                disabled={saveDebugSeedMutation.isPending}
+              >
+                Close
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setDebugForm({
+                    enabled: false,
+                    water_units: 0,
+                    fire_units: 0,
+                    burn_count: 0,
+                    token_balance: 0,
+                    token_earned_count: 0,
+                    token_spent_count: 0,
+                    current_streak: 0,
+                    max_streak: 0,
+                    active_streak_group_id: 1,
+                  });
+                  setDebugResetFloors(true);
+                }}
+                disabled={saveDebugSeedMutation.isPending}
+              >
+                Zero Form
+              </Button>
+              <Button
+                onClick={() => saveDebugSeedMutation.mutate()}
+                disabled={saveDebugSeedMutation.isPending || debugSeedQuery.isError}
+              >
+                {saveDebugSeedMutation.isPending ? "Saving..." : "Save Seed"}
+              </Button>
+            </div>
+          </Card>
+        </div>
+      ) : null}
+
+      {activeIncident ? (
+        <div
+          className={cn(
+            "fixed inset-0 z-[70] flex items-center justify-center px-4",
+            activeIncident.severity === "critical" ? "bg-red-950/70 animate-burn-flash" : "bg-black/45",
+          )}
+        >
+          <Card className={cn("relative w-full max-w-lg overflow-hidden border-2 animate-incident-enter", severityClass(activeIncident))}>
+            {incidentWatersSpent > 0 || incidentWaterEarned > 0 ? (
+              <div className="pointer-events-none absolute inset-0">
+                {Array.from({ length: Math.min(Math.max(incidentWatersSpent, incidentWaterEarned), 8) }).map((_, index) => (
+                  <span
+                    key={`water-burst-${index}`}
+                    className={cn(
+                      "absolute block h-2.5 w-2.5 rounded-full animate-water-burst",
+                      incidentWaterEarned > 0 ? "bg-cyan-400/75" : "bg-sky-400/70",
+                    )}
+                    style={{
+                      left: `${12 + index * 10}%`,
+                      top: `${75 - (index % 2) * 20}%`,
+                      animationDelay: `${index * 60}ms`,
+                    }}
+                  />
+                ))}
+              </div>
+            ) : null}
+
+            <div className="relative space-y-3">
+              <div className="flex items-start gap-2">
+                {activeIncident.severity === "critical" ? (
+                  <AlertTriangle className="mt-0.5 h-5 w-5 text-red-700 animate-fire-fade" />
+                ) : (
+                  <Flame className="mt-0.5 h-5 w-5 text-amber-700 animate-fire-fade" />
+                )}
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Game Event</p>
+                  <h2 className="text-lg font-bold text-ink">{activeIncident.title}</h2>
+                </div>
+              </div>
+
+              <p className="text-sm text-ink/80">{activeIncident.message}</p>
+
+              {incidentBurnsTriggered > 0 ? (
+                <p className="rounded-xl bg-red-100 px-3 py-2 text-xs font-semibold text-red-800">
+                  Board burn triggered. Acknowledge to continue.
+                </p>
+              ) : null}
+              {incidentWaterEarned > 0 ? (
+                <p className="rounded-xl bg-sky-100 px-3 py-2 text-xs font-semibold text-sky-800">
+                  Water earned! Keep correcting categories for more.
+                </p>
+              ) : null}
+
+              <div className="flex items-center justify-between text-xs text-ink/60">
+                <span>{formatDistanceToNow(new Date(activeIncident.created_at), { addSuffix: true })}</span>
+                {incidentWaterEarned > 0 ? (
+                  <span className="inline-flex items-center gap-1 text-sky-700">
+                    <Droplets className="h-3.5 w-3.5" />
+                    Water earned: {incidentWaterEarned}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1">
+                    <Droplets className="h-3.5 w-3.5" />
+                    Waters spent: {incidentWatersSpent}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex justify-end">
+                <Button
+                  className={cn(activeIncident.severity === "critical" ? "bg-red-700 hover:bg-red-800" : undefined)}
+                  onClick={() => acknowledgeIncidentMutation.mutate(activeIncident.id)}
+                  disabled={acknowledgeIncidentMutation.isPending}
+                >
+                  {acknowledgeIncidentMutation.isPending ? "Acknowledging..." : "Acknowledge"}
+                </Button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      ) : null}
     </main>
   );
 }

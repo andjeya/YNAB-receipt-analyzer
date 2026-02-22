@@ -1,21 +1,30 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import app_settings, db_session
+from app.api.deps import app_settings, db_session, require_debug_tools_enabled
 from app.config import Settings
-from app.models import GameToken, ReceiptCorrection
+from app.models import GameDebugSeed, GameIncident, GameToken, ReceiptCorrection
 from app.schemas import (
+    GameDebugSeedOut,
+    GameDebugSeedUpdateRequest,
     GameCorrectnessRecomputeResponse,
     GameDashboardOut,
+    GameIncidentOut,
     GameRebuildResponse,
     GameReconcileResponse,
     GameShredResponse,
+    GameWaterSpendRequest,
+    GameWaterSpendResponse,
 )
-from app.services.correctness import recompute_correctness_state_from_history
+from app.services.correctness import get_or_create_correctness_state, recompute_correctness_state_from_history, spend_water_to_extinguish
+from app.services.debug_seed import apply_debug_seed_to_live_state, get_or_create_debug_seed, mark_debug_seed_floor_now
 from app.services.game import ALLOWED_WINDOWS, get_dashboard_data, rebuild_gamification_state, spend_shred_token
+from app.services.incidents import acknowledge_incident, list_incidents
 from app.services.reconciliation import run_ynab_reconciliation
 
 router = APIRouter(prefix="/game", tags=["game"])
@@ -95,3 +104,141 @@ def recompute_correctness(
         fire_units=values["fire_units"],
         burn_count=values["burn_count"],
     )
+
+
+def _to_incident_schema(row: GameIncident) -> GameIncidentOut:
+    return GameIncidentOut(
+        id=row.id,
+        incident_type=row.incident_type,
+        severity=row.severity,
+        title=row.title,
+        message=row.message,
+        details_json=row.details_json,
+        created_at=row.created_at,
+        acknowledged_at=row.acknowledged_at,
+    )
+
+
+@router.get("/incidents", response_model=list[GameIncidentOut])
+def get_incidents(
+    pending_only: bool = Query(default=True),
+    limit: int = Query(default=30, ge=1, le=200),
+    db: Session = Depends(db_session),
+) -> list[GameIncidentOut]:
+    rows = list_incidents(db, pending_only=pending_only, limit=limit)
+    return [_to_incident_schema(row) for row in rows]
+
+
+@router.post("/incidents/{incident_id}/ack", response_model=GameIncidentOut)
+def ack_incident(
+    incident_id: int,
+    db: Session = Depends(db_session),
+) -> GameIncidentOut:
+    row = acknowledge_incident(db, incident_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    db.commit()
+    db.refresh(row)
+    return _to_incident_schema(row)
+
+
+@router.post("/water/spend", response_model=GameWaterSpendResponse)
+def spend_water(
+    request: GameWaterSpendRequest,
+    db: Session = Depends(db_session),
+) -> GameWaterSpendResponse:
+    result = spend_water_to_extinguish(
+        db,
+        units=request.units,
+        receipt_id=None,
+        idempotency_key=f"manual_water_spend:{request.units}:{uuid4()}",
+    )
+    state = get_or_create_correctness_state(db)
+    db.commit()
+    return GameWaterSpendResponse(
+        waters_spent=int(result.get("waters_spent", 0)),
+        fires_extinguished=int(result.get("fires_extinguished", 0)),
+        water_units=state.water_units,
+        fire_units=state.fire_units,
+    )
+
+
+def _to_debug_seed_schema(row: GameDebugSeed) -> GameDebugSeedOut:
+    return GameDebugSeedOut(
+        enabled=row.enabled,
+        water_units=row.water_units,
+        water_earned_count=row.water_earned_count,
+        water_spent_count=row.water_spent_count,
+        fire_units=row.fire_units,
+        fire_added_count=row.fire_added_count,
+        fire_extinguished_count=row.fire_extinguished_count,
+        burn_count=row.burn_count,
+        token_balance=row.token_balance,
+        token_earned_count=row.token_earned_count,
+        token_spent_count=row.token_spent_count,
+        current_streak=row.current_streak,
+        max_streak=row.max_streak,
+        active_streak_group_id=row.active_streak_group_id,
+        break_reason=row.break_reason,
+        correctness_event_floor_id=row.correctness_event_floor_id,
+        sync_floor_unix_ms=row.sync_floor_unix_ms,
+    )
+
+
+@router.get("/debug-seed", response_model=GameDebugSeedOut)
+def get_debug_seed(
+    _: None = Depends(require_debug_tools_enabled),
+    db: Session = Depends(db_session),
+) -> GameDebugSeedOut:
+    seed = get_or_create_debug_seed(db)
+    return _to_debug_seed_schema(seed)
+
+
+@router.post("/debug-seed", response_model=GameDebugSeedOut)
+def update_debug_seed(
+    request: GameDebugSeedUpdateRequest,
+    _: None = Depends(require_debug_tools_enabled),
+    db: Session = Depends(db_session),
+) -> GameDebugSeedOut:
+    seed = get_or_create_debug_seed(db)
+
+    if request.enabled is not None:
+        seed.enabled = request.enabled
+    if request.water_units is not None:
+        seed.water_units = request.water_units
+    if request.water_earned_count is not None:
+        seed.water_earned_count = request.water_earned_count
+    if request.water_spent_count is not None:
+        seed.water_spent_count = request.water_spent_count
+    if request.fire_units is not None:
+        seed.fire_units = request.fire_units
+    if request.fire_added_count is not None:
+        seed.fire_added_count = request.fire_added_count
+    if request.fire_extinguished_count is not None:
+        seed.fire_extinguished_count = request.fire_extinguished_count
+    if request.burn_count is not None:
+        seed.burn_count = request.burn_count
+    if request.token_balance is not None:
+        seed.token_balance = request.token_balance
+    if request.token_earned_count is not None:
+        seed.token_earned_count = request.token_earned_count
+    if request.token_spent_count is not None:
+        seed.token_spent_count = request.token_spent_count
+    if request.current_streak is not None:
+        seed.current_streak = request.current_streak
+    if request.max_streak is not None:
+        seed.max_streak = request.max_streak
+    if request.active_streak_group_id is not None:
+        seed.active_streak_group_id = max(request.active_streak_group_id, 1)
+    if request.break_reason is not None:
+        seed.break_reason = request.break_reason or None
+
+    if request.reset_floors_to_now:
+        mark_debug_seed_floor_now(db, seed)
+
+    if request.apply_to_live_state:
+        apply_debug_seed_to_live_state(db, seed)
+
+    db.commit()
+    db.refresh(seed)
+    return _to_debug_seed_schema(seed)

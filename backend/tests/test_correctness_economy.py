@@ -5,7 +5,13 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.models import Base, GameCorrectnessState, ReceiptCorrection, YNABReconciliationRun
-from app.services.correctness import add_fire, award_water, fire_breakdown, recompute_correctness_state_from_history
+from app.services.correctness import (
+    add_fire,
+    award_water,
+    fire_breakdown,
+    recompute_correctness_state_from_history,
+    spend_water_to_extinguish,
+)
 
 
 def _memory_session() -> Session:
@@ -38,7 +44,7 @@ def test_award_water_caps_to_capacity():
         assert state.water_earned_count == 15
 
 
-def test_fire_uses_water_then_triggers_burn():
+def test_fire_forces_water_only_when_threshold_reached_then_can_burn():
     settings = Settings(_env_file=None, game_water_capacity=15, game_fire_burn_threshold=3)
     with _memory_session() as db:
         award_water(
@@ -61,22 +67,72 @@ def test_fire_uses_water_then_triggers_burn():
         state = db.get(GameCorrectnessState, 1)
         assert state is not None
         assert first["fires_added"] == 2
-        assert first["waters_spent"] == 2
-        assert state.water_units == 0
-        assert state.fire_units == 0
+        assert first["waters_spent"] == 0
+        assert state.water_units == 2
+        assert state.fire_units == 2
 
         second = add_fire(
             db,
             settings,
-            units=3,
+            units=1,
             receipt_id="r-1",
             idempotency_key="fire:test:second",
             reason="unit_test",
         )
-        assert second["fires_added"] == 3
-        assert second["burns_triggered"] == 1
+        assert second["fires_added"] == 1
+        assert second["waters_spent"] == 1
+        assert second["burns_triggered"] == 0
+        assert state.water_units == 1
+        assert state.fire_units == 2
+
+        third = add_fire(
+            db,
+            settings,
+            units=3,
+            receipt_id="r-1",
+            idempotency_key="fire:test:third",
+            reason="unit_test",
+        )
+        assert third["fires_added"] == 3
+        assert third["waters_spent"] == 1
+        assert third["burns_triggered"] == 1
+        assert state.water_units == 0
         assert state.fire_units == 0
         assert state.burn_count == 1
+
+
+def test_manual_water_spend_extinguishes_requested_amount():
+    settings = Settings(_env_file=None, game_water_capacity=15, game_fire_burn_threshold=15)
+    with _memory_session() as db:
+        award_water(
+            db,
+            settings,
+            units=5,
+            receipt_id="r-1",
+            idempotency_key="water:test:manual",
+            reason="unit_test",
+        )
+        add_fire(
+            db,
+            settings,
+            units=4,
+            receipt_id="r-1",
+            idempotency_key="fire:test:manual",
+            reason="unit_test",
+        )
+        result = spend_water_to_extinguish(
+            db,
+            units=3,
+            receipt_id="r-1",
+            idempotency_key="water:spend:test",
+            reason="manual_extinguish",
+        )
+        state = db.get(GameCorrectnessState, 1)
+        assert state is not None
+        assert result["waters_spent"] == 3
+        assert result["fires_extinguished"] == 3
+        assert state.water_units == 2
+        assert state.fire_units == 1
 
 
 def test_recompute_correctness_from_history_and_breakdown():

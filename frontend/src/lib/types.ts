@@ -124,6 +124,20 @@ export interface CacheEntity {
   fetched_at: string;
 }
 
+export interface FetchYnabUpdatesResponse {
+  refreshed_at: string;
+  category_count: number;
+  account_count: number;
+  payee_count: number;
+  run_id: number;
+  scanned_receipts: number;
+  detected_mistakes: number;
+  applied_penalties: number;
+  fires_added: number;
+  waters_spent: number;
+  burns_triggered: number;
+}
+
 export interface StatsSummary {
   status_counts: Record<string, number>;
   avg_extraction_duration_ms: number | null;
@@ -216,6 +230,7 @@ export interface GameCorrectness {
   bucket_capacity: number;
   buckets_filled: number;
   fire_units: number;
+  fires_to_burn: number;
   small_fires: number;
   medium_fires: number;
   large_fires: number;
@@ -227,6 +242,7 @@ export interface GameCorrectness {
 export interface GameDashboard {
   generated_at: string;
   window: GameWindow;
+  debug_tools_enabled: boolean;
   rules: GameRules;
   momentum: GameMomentum;
   forest: GameForest;
@@ -252,6 +268,9 @@ export interface GameReconcileResponse {
   scanned_receipts: number;
   detected_mistakes: number;
   applied_penalties: number;
+  fires_added: number;
+  waters_spent: number;
+  burns_triggered: number;
   run_id: number;
 }
 
@@ -260,4 +279,62 @@ export interface GameCorrectnessRecomputeResponse {
   water_units: number;
   fire_units: number;
   burn_count: number;
+}
+
+export interface GameWaterSpendResponse {
+  waters_spent: number;
+  fires_extinguished: number;
+  water_units: number;
+  fire_units: number;
+}
+
+export interface GameIncident {
+  id: number;
+  incident_type: string;
+  severity: "info" | "warning" | "critical" | string;
+  title: string;
+  message: string;
+  details_json: Record<string, unknown> | null;
+  created_at: string;
+  acknowledged_at: string | null;
+}
+
+export interface GameDebugSeed {
+  enabled: boolean;
+  water_units: number;
+  water_earned_count: number;
+  water_spent_count: number;
+  fire_units: number;
+  fire_added_count: number;
+  fire_extinguished_count: number;
+  burn_count: number;
+  token_balance: number;
+  token_earned_count: number;
+  token_spent_count: number;
+  current_streak: number;
+  max_streak: number;
+  active_streak_group_id: number;
+  break_reason: string | null;
+  correctness_event_floor_id: number;
+  sync_floor_unix_ms: number;
+}
+
+export interface GameDebugSeedUpdateRequest {
+  enabled?: boolean;
+  water_units?: number;
+  water_earned_count?: number;
+  water_spent_count?: number;
+  fire_units?: number;
+  fire_added_count?: number;
+  fire_extinguished_count?: number;
+  burn_count?: number;
+  token_balance?: number;
+  token_earned_count?: number;
+  token_spent_count?: number;
+  current_streak?: number;
+  max_streak?: number;
+  active_streak_group_id?: number;
+  break_reason?: string | null;
+  reset_floors_to_now?: boolean;
+  apply_to_live_state?: boolean;
 }
