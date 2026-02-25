@@ -86,6 +86,16 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
+Optional local override (gitignored), useful for machine-specific ingest paths:
+
+```bash
+cat > .env.local <<'EOF'
+INGEST_DIR=/absolute/path/to/folder/to/watch
+EOF
+```
+
+If `INGEST_DIR` is empty, the app falls back to `./data/ingest`.
+
 3. Run backend API:
 
 ```bash
@@ -131,7 +141,95 @@ The first container start installs:
 
 Detailed instructions: `.devcontainer/README.md`.
 
-Future runtime containerization plan: `plans/compose-plan.md`.
+If `INGEST_DIR` is set in `.env.local`, devcontainer init will automatically prepare a local mount shim and expose it inside the container at `/mnt/ingest-host`.
+
+## Production Runtime (Docker Compose)
+
+This repo now includes a production-oriented compose stack:
+
+- `docker-compose.yml`
+- `docker/backend.Dockerfile`
+- `docker/frontend.Dockerfile`
+
+Services:
+
+- `frontend` (Next.js on port `3000`)
+- `api` (FastAPI, bound to `127.0.0.1:8000`)
+- `worker` (RQ worker)
+- `scanner` (ingest scanner loop)
+- `redis` (queue backend)
+
+### First-time setup
+
+1. Create runtime environment file:
+
+```bash
+cp .env.example .env
+```
+
+2. Edit `.env` with your real `GEMINI_*` and `YNAB_*` values.
+
+3. Build images:
+
+```bash
+docker compose build
+```
+
+4. Run migrations (recommended before every deploy):
+
+```bash
+docker compose --profile ops run --rm migrate
+```
+
+5. Start the stack:
+
+```bash
+docker compose up -d
+```
+
+6. Verify:
+
+```bash
+docker compose ps
+docker compose logs -f api worker scanner frontend
+```
+
+### Updating on server
+
+Use this sequence for safe updates:
+
+1. Pull latest code:
+
+```bash
+git pull
+```
+
+2. Rebuild images with newest bases:
+
+```bash
+docker compose build --pull
+```
+
+3. Run migrations:
+
+```bash
+docker compose --profile ops run --rm migrate
+```
+
+4. Roll forward services:
+
+```bash
+docker compose up -d --remove-orphans
+```
+
+5. Confirm health/logs:
+
+```bash
+docker compose ps
+docker compose logs --tail=200 api worker scanner frontend
+```
+
+Data persists in named volumes (`app_data`, `redis_data`) across container restarts/rebuilds.
 
 ## API (MVP)
 

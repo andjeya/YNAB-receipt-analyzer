@@ -4,6 +4,11 @@
 
 # Environment files
 *.env
+.env.local
+
+# Local AI tool state/config
+.claude/
+.codex/
 
 # PDF receipts
 *.pdf
@@ -28,6 +33,7 @@ syncing
 
 # Local dev launcher runtime files
 .run/
+.devcontainer/.ingest-host
 
 # Planning
 plans/

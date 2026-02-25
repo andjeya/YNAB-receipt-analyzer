@@ -45,7 +45,11 @@ cd frontend && npm run lint
 
 ## Notes
 
-- `initializeCommand` auto-creates mount paths on host:
-  - `~/.codex`
-  - `~/.claude`
+- `initializeCommand` runs `.devcontainer/scripts/prepare-host-mounts.sh` on the host.
+- That script:
+  - creates `~/.codex` and `~/.claude` if needed
+  - reads `INGEST_DIR` from repo `.env.local` (if present)
+  - prepares `.devcontainer/.ingest-host` as a symlink to that host path
+- The devcontainer mounts `.devcontainer/.ingest-host` to `/mnt/ingest-host`.
+- Inside the container, `scripts/dev-env.sh` remaps `INGEST_DIR` to `/mnt/ingest-host` when the host-only absolute path is not directly available.
 - If you do not use Codex/Claude host config, remove the related mounts in `devcontainer.json`.
