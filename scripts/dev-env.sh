@@ -10,12 +10,17 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
-env_file="${repo_root}/.env"
+env_files=("${repo_root}/.env" "${repo_root}/.env.local")
 
-if [[ -f "${env_file}" ]]; then
+load_env_file() {
+  local file_path="$1"
+  if [[ ! -f "${file_path}" ]]; then
+    return
+  fi
+
   # Parse dotenv safely (supports spaces and comments) and export into current shell.
   eval "$(
-    ENV_FILE="${env_file}" python - <<'PY'
+    ENV_FILE="${file_path}" python - <<'PY'
 import os
 import shlex
 from dotenv import dotenv_values
@@ -26,8 +31,20 @@ for key, value in dotenv_values(os.environ["ENV_FILE"]).items():
     print(f"export {key}={shlex.quote(value)}")
 PY
   )"
-else
-  echo "Warning: ${env_file} not found; continuing with current environment." >&2
+}
+
+if [[ ! -f "${env_files[0]}" ]]; then
+  echo "Warning: ${env_files[0]} not found; continuing with current environment." >&2
+fi
+
+for file_path in "${env_files[@]}"; do
+  load_env_file "${file_path}"
+done
+
+# If INGEST_DIR points to a host-only absolute path, remap to the devcontainer
+# bind target prepared by .devcontainer/scripts/prepare-host-mounts.sh.
+if [[ -f "/.dockerenv" && -n "${INGEST_DIR:-}" && ! -e "${INGEST_DIR}" && -e "/mnt/ingest-host" ]]; then
+  export INGEST_DIR="/mnt/ingest-host"
 fi
 
 # Devcontainer default for reaching a Redis container started via Docker-outside-of-Docker.
@@ -55,6 +72,7 @@ fi
 echo "Loaded environment for YNAB Receipt Analyzer:"
 echo "  REDIS_URL=${REDIS_URL}"
 echo "  DATABASE_URL=${DATABASE_URL:-sqlite:///./data/app.db}"
+echo "  INGEST_DIR=${INGEST_DIR:-./data/ingest}"
 echo "  NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}"
 echo "  GEMINI_API_KEY=$([[ -n "${GEMINI_API_KEY:-}" ]] && echo set || echo missing)"
 echo "  YNAB_ACCESS_TOKEN=$([[ -n "${YNAB_ACCESS_TOKEN:-}" ]] && echo set || echo missing)"
