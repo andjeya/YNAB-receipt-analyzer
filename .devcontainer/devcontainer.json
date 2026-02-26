@@ -23,8 +23,12 @@
   "mounts": [
     "source=${localEnv:HOME}/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
-    "source=${localWorkspaceFolder}/.devcontainer/.ingest-host,target=/mnt/ingest-host,type=bind,consistency=cached"
+    "source=${localWorkspaceFolder}/.devcontainer/.ingest-host,target=/mnt/ingest-host,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/.devcontainer/.devtools-host,target=/opt/devtools,type=bind,consistency=cached"
   ],
+  "remoteEnv": {
+    "PATH": "/opt/devtools/bin:${containerEnv:PATH}"
+  },
   "containerEnv": {
     "PYTHONPATH": "${containerWorkspaceFolder}/backend:${containerWorkspaceFolder}/shared",
     "REDIS_URL": "redis://host.docker.internal:6379/0",

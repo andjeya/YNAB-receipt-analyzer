@@ -34,6 +34,7 @@ syncing
 # Local dev launcher runtime files
 .run/
 .devcontainer/.ingest-host
+.devcontainer/.devtools-host
 
 # Planning
 plans/

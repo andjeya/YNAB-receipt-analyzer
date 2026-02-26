@@ -49,7 +49,10 @@ cd frontend && npm run lint
 - That script:
   - creates `~/.codex` and `~/.claude` if needed
   - reads `INGEST_DIR` from repo `.env.local` (if present)
+  - reads optional `DEVTOOLS_DIR` from repo `.env.local` (if present)
   - prepares `.devcontainer/.ingest-host` as a symlink to that host path
+  - prepares `.devcontainer/.devtools-host` as a symlink to that host path
 - The devcontainer mounts `.devcontainer/.ingest-host` to `/mnt/ingest-host`.
+- The devcontainer mounts `.devcontainer/.devtools-host` to `/opt/devtools`.
 - Inside the container, `scripts/dev-env.sh` remaps `INGEST_DIR` to `/mnt/ingest-host` when the host-only absolute path is not directly available.
 - If you do not use Codex/Claude host config, remove the related mounts in `devcontainer.json`.

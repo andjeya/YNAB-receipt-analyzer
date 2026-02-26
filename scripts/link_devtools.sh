@@ -2,13 +2,10 @@
 
 set -euo pipefail
 
-mkdir -p "${HOME}/.codex" "${HOME}/.claude"
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "${script_dir}/../.." && pwd)"
+repo_root="$(cd "${script_dir}/.." && pwd)"
+link_path="${repo_root}/.devcontainer/.devtools-host"
 env_local="${repo_root}/.env.local"
-mount_link="${repo_root}/.devcontainer/.ingest-host"
-devtools_link="${repo_root}/.devcontainer/.devtools-host"
 
 read_env_value() {
   local env_key="$1"
@@ -36,24 +33,22 @@ for raw in env_local.read_text(encoding="utf-8").splitlines():
 PY
 }
 
-ingest_dir="$(read_env_value "INGEST_DIR")"
-devtools_dir="$(read_env_value "DEVTOOLS_DIR")"
+devtools_path="$(read_env_value "DEVTOOLS_DIR")"
 
-rm -rf "${mount_link}"
-rm -rf "${devtools_link}"
-
-if [[ -n "${ingest_dir}" && "${ingest_dir}" = /* ]]; then
-  mkdir -p "${ingest_dir}"
-  ln -s "${ingest_dir}" "${mount_link}"
-else
-  mkdir -p "${mount_link}"
+if [[ -z "${devtools_path}" ]]; then
+  echo "Warning: DEVTOOLS_DIR is not set in ${env_local}. Skipping link setup."
+  exit 0
 fi
 
-if [[ -n "${devtools_dir}" && "${devtools_dir}" = /* && -d "${devtools_dir}" ]]; then
-  ln -s "${devtools_dir}" "${devtools_link}"
+if [[ -d "${devtools_path}" ]]; then
+  rm -rf "${link_path}"
+  ln -s "${devtools_path}" "${link_path}"
+  echo "Linked ${link_path} -> ${devtools_path}"
 else
-  if [[ -n "${devtools_dir}" && ! -d "${devtools_dir}" ]]; then
-    echo "Warning: DEVTOOLS_DIR does not exist on host: ${devtools_dir}" >&2
+  echo "Warning: Devtools not found at ${devtools_path}. Skipping link setup."
+  if [[ -f "/.dockerenv" ]]; then
+    echo "Hint: this shell is inside a container. If DEVTOOLS_DIR is a host path, run this script from the host and reopen the devcontainer."
   fi
-  mkdir -p "${devtools_link}"
 fi
+
+exit 0
