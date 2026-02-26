@@ -143,6 +143,36 @@ Detailed instructions: `.devcontainer/README.md`.
 
 If `INGEST_DIR` is set in `.env.local`, devcontainer init will automatically prepare a local mount shim and expose it inside the container at `/mnt/ingest-host`.
 
+## Optional Devtools
+
+This repository supports optional integration for custom tooling (eg. tools that are shared across multiple repositories in a developer's workflow but not unique to a project)
+
+1. Set a machine-local path in `.env.local`:
+
+```bash
+cat >> .env.local <<'EOF'
+DEVTOOLS_DIR=/absolute/path/to/dev-tools
+EOF
+```
+
+2. Reopen the project in the devcontainer.
+
+`initializeCommand` will create `.devcontainer/.devtools-host` as a symlink to `DEVTOOLS_DIR` on the host.
+
+If you want to refresh the shim without reopening, run this on the host (not inside the container):
+
+```bash
+./scripts/link_devtools.sh
+```
+
+3. Install repo-local git hooks:
+
+```bash
+./scripts/install_git_hooks.sh
+```
+
+When optional devtools are available, the pre-commit hook runs `sanitize-git` automatically before commits.
+
 ## Production Runtime (Docker Compose)
 
 This repo now includes a production-oriented compose stack:

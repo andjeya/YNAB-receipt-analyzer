@@ -1,0 +1,66 @@
+#!/usr/bin/env sh
+
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "${repo_root}"
+
+sanitizer=""
+env_candidate=""
+
+if [ -x "/opt/devtools/bin/sanitize-git" ]; then
+  sanitizer="/opt/devtools/bin/sanitize-git"
+elif [ -x ".devcontainer/.devtools-host/bin/sanitize-git" ]; then
+  sanitizer=".devcontainer/.devtools-host/bin/sanitize-git"
+elif [ -x ".devtools/bin/sanitize-git" ]; then
+  sanitizer=".devtools/bin/sanitize-git"
+fi
+
+if [ -z "${sanitizer}" ] && [ -f ".env.local" ]; then
+  env_devtools_dir="$(
+    grep -E '^[[:space:]]*DEVTOOLS_DIR[[:space:]]*=' ".env.local" \
+      | tail -n 1 \
+      | cut -d= -f2- \
+      | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e "s/^['\"]//" -e "s/['\"]$//"
+  )"
+
+  if [ -n "${env_devtools_dir}" ]; then
+    env_candidate="${env_devtools_dir}/bin/sanitize-git"
+    if [ -x "${env_candidate}" ]; then
+      sanitizer="${env_candidate}"
+    fi
+  fi
+fi
+
+if [ -n "${sanitizer}" ]; then
+  if ! "${sanitizer}"; then
+    echo "Sanitization failed. Commit blocked."
+    exit 1
+  fi
+  exit 0
+fi
+
+echo "Devtools not detected. Commit proceeding without sanitization."
+echo "Checked: /opt/devtools/bin/sanitize-git, .devcontainer/.devtools-host/bin/sanitize-git, .devtools/bin/sanitize-git"
+if [ -n "${env_candidate}" ]; then
+  echo "DEVTOOLS_DIR candidate not executable: ${env_candidate}"
+fi
+
+if [ -t 0 ] && [ -t 1 ]; then
+  printf "Proceed anyway? (y/N) "
+  if ! read -r answer; then
+    echo "Commit aborted."
+    exit 1
+  fi
+  case "${answer}" in
+    y|Y|yes|YES)
+      exit 0
+      ;;
+    *)
+      echo "Commit aborted."
+      exit 1
+      ;;
+  esac
+fi
+
+exit 0
