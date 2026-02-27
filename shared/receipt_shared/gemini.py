@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import mimetypes
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 UNKNOWN_ACCOUNT_ID = "__unknown__"
 CATEGORY_GUIDANCE_PATH = Path(__file__).resolve().parent / "resources" / "category_guidance.json"
+UNSUPPORTED_GEMINI_SCHEMA_KEYS = frozenset({"additionalProperties", "additional_properties"})
 
 try:
     from google import genai
@@ -369,6 +371,13 @@ def _is_retryable_error(exc: Exception) -> bool:
     return any(pattern in error_str for pattern in retryable_patterns)
 
 
+def _is_unsupported_thinking_config_error(exc: Exception) -> bool:
+    error_str = str(exc).lower()
+    return "thinking level is not supported" in error_str or (
+        "thinking" in error_str and "not supported" in error_str
+    )
+
+
 def _to_dict_from_structured(parsed: Any) -> dict[str, Any] | None:
     if parsed is None:
         return None
@@ -381,6 +390,30 @@ def _to_dict_from_structured(parsed: Any) -> dict[str, Any] | None:
         if isinstance(maybe_dump, dict):
             return maybe_dump
     return None
+
+
+def _sanitize_gemini_response_json_schema(node: Any) -> Any:
+    if isinstance(node, dict):
+        sanitized: dict[str, Any] = {}
+        for key, value in node.items():
+            if key in UNSUPPORTED_GEMINI_SCHEMA_KEYS:
+                continue
+            sanitized[key] = _sanitize_gemini_response_json_schema(value)
+        return sanitized
+    if isinstance(node, list):
+        return [_sanitize_gemini_response_json_schema(item) for item in node]
+    return node
+
+
+@lru_cache(maxsize=16)
+def _cached_response_json_schema(response_schema: type[BaseModel]) -> dict[str, Any]:
+    return _sanitize_gemini_response_json_schema(response_schema.model_json_schema())
+
+
+def build_gemini_response_json_schema(response_schema: type[BaseModel]) -> dict[str, Any]:
+    """Build a Gemini-safe JSON schema dict from a Pydantic model class."""
+    # google-genai mutates dict schemas in-place; return a copy per request.
+    return copy.deepcopy(_cached_response_json_schema(response_schema))
 
 
 class GeminiAnalyzer:
@@ -406,17 +439,25 @@ class GeminiAnalyzer:
         inferred_mime = mime_type or mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
         started = time.perf_counter()
 
-        for attempt in range(self.max_retries):
+        attempt = 0
+        thinking_enabled = True
+        while attempt < self.max_retries:
             try:
                 client = genai.Client(api_key=self.api_key)
                 uploaded_file = client.files.upload(file=str(file_path))
 
                 config_kwargs: dict[str, Any] = {
                     "response_mime_type": "application/json",
-                    "thinking_config": types.ThinkingConfig(thinking_level="HIGH"),
                 }
+                if thinking_enabled:
+                    config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="HIGH")
                 if response_schema is not None:
-                    config_kwargs["response_schema"] = response_schema
+                    response_json_schema = build_gemini_response_json_schema(response_schema)
+                    supports_response_json_schema = "response_json_schema" in types.GenerateContentConfig.model_fields
+                    if supports_response_json_schema:
+                        config_kwargs["response_json_schema"] = response_json_schema
+                    else:
+                        config_kwargs["response_schema"] = response_json_schema
 
                 response = client.models.generate_content(
                     model=self.model,
@@ -431,19 +472,25 @@ class GeminiAnalyzer:
                 )
                 break
             except Exception as exc:
+                if thinking_enabled and _is_unsupported_thinking_config_error(exc):
+                    logger.warning("Gemini model does not support thinking config; retrying without thinking config")
+                    thinking_enabled = False
+                    continue
+
+                attempt += 1
                 is_retryable = _is_retryable_error(exc)
 
-                if not is_retryable or attempt == self.max_retries - 1:
+                if not is_retryable or attempt >= self.max_retries:
                     if is_retryable:
-                        error_msg = f"Gemini API failed after {self.max_retries} attempts: {exc}"
+                        error_msg = f"Gemini API failed after {attempt} attempts: {exc}"
                         logger.error(error_msg)
                         raise RuntimeError(error_msg) from exc
                     raise
 
-                wait_seconds = 2**attempt
+                wait_seconds = 2 ** (attempt - 1)
                 logger.warning(
                     "Gemini API call failed (attempt %d/%d), retrying in %ds: %s",
-                    attempt + 1,
+                    attempt,
                     self.max_retries,
                     wait_seconds,
                     exc,

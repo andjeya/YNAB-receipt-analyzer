@@ -251,6 +251,7 @@ def _validate_ynab_payload(
         initial_payload,
         allowed_category_ids=allowed_category_ids,
         allowed_account_ids=allowed_account_ids,
+        allow_unknown_account=True,
     )
 
 
@@ -597,6 +598,7 @@ def run_extraction_job(receipt_id: str) -> None:
                     final_validation_payload,
                     allowed_category_ids=allowed_category_ids,
                     allowed_account_ids=allowed_account_ids,
+                    allow_unknown_account=True,
                 )
                 if is_valid:
                     _create_validation(db, receipt=receipt, payload=normalized_payload, source="model")

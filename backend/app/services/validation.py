@@ -19,6 +19,7 @@ def validate_payload(
     *,
     allowed_category_ids: set[str] | None = None,
     allowed_account_ids: set[str] | None = None,
+    allow_unknown_account: bool = False,
 ) -> tuple[dict[str, Any], bool, list[str]]:
     try:
         parsed = ValidationPayload.model_validate(payload)
@@ -48,7 +49,8 @@ def validate_payload(
             errors.append(f"Invalid category_id: {parsed.category_id}")
 
     if parsed.account_id == UNKNOWN_ACCOUNT_ID:
-        errors.append("Account is unknown. Select a valid YNAB account before syncing")
+        if not allow_unknown_account:
+            errors.append("Account is unknown. Select a valid YNAB account before syncing")
     elif allowed_account_ids is not None:
         if not allowed_account_ids:
             errors.append("No YNAB accounts are currently cached")
