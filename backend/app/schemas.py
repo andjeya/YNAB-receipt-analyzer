@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -29,6 +29,9 @@ class ExtractionRunOut(BaseModel):
     parsed_json: dict[str, Any] | None = None
     raw_output: str
     duration_ms: int
+    attempt_kind: str = "unified"
+    is_primary_result: bool = False
+    parent_run_id: int | None = None
     created_at: datetime
 
 
@@ -39,6 +42,27 @@ class ValidationOut(BaseModel):
     payload: dict[str, Any]
     is_valid: bool
     errors: list[str] | None = None
+    created_at: datetime
+
+
+class LockedFieldsOut(BaseModel):
+    transaction_date: bool = False
+    transaction_time: bool = False
+    total_amount: bool = False
+
+
+class ConfirmedSectionsOut(BaseModel):
+    date_time: bool = False
+    total: bool = False
+
+
+class ReceiptTwinOut(BaseModel):
+    id: int
+    receipt_id: str
+    version: int
+    source: str
+    payload: dict[str, Any]
+    confirmed_sections: ConfirmedSectionsOut
     created_at: datetime
 
 
@@ -53,8 +77,11 @@ class ReceiptDetailOut(BaseModel):
     display_total_milliunits: int | None = None
     display_receipt_date: date | None = None
     latest_extraction: ExtractionRunOut | None = None
+    extraction_primary: ExtractionRunOut | None = None
     latest_validation: ValidationOut | None = None
     model_validation: ValidationOut | None = None
+    latest_twin: ReceiptTwinOut | None = None
+    locked_fields: LockedFieldsOut = Field(default_factory=LockedFieldsOut)
     ingested_at: datetime
     extraction_started_at: datetime | None = None
     extraction_completed_at: datetime | None = None
@@ -93,6 +120,7 @@ class SaveDraftRequest(BaseModel):
 class SaveDraftResponse(BaseModel):
     validation: ValidationOut
     can_sync: bool
+    lock_warnings: list[str] = Field(default_factory=list)
 
 
 class SyncRequest(BaseModel):
@@ -105,6 +133,27 @@ class SyncEnqueueResponse(BaseModel):
     queue_name: str
     job_id: str
     status: str
+
+
+class SaveTwinRequest(BaseModel):
+    base_version: int = Field(ge=0)
+    payload: dict[str, Any]
+    source: str = Field(default="user")
+
+
+class SaveTwinResponse(BaseModel):
+    twin: ReceiptTwinOut
+    changed: bool
+
+
+class TwinConfirmRequest(BaseModel):
+    section: Literal["date_time", "total"]
+    confirmed: bool
+
+
+class TwinConfirmResponse(BaseModel):
+    twin: ReceiptTwinOut
+    validation: ValidationOut | None = None
 
 
 class CacheEntityOut(BaseModel):
