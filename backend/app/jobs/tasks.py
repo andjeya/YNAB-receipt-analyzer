@@ -2,24 +2,295 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
+from typing import Any
+
+from sqlalchemy import update
 
 from app.config import get_settings
 from app.db import SessionLocal
 from app.enums import ReceiptStatus
-from app.models import ExtractionRun, Receipt, TimingMetric, Validation
+from app.models import ExtractionRun, Receipt, ReceiptTwin, TimingMetric, Validation
 from app.services.reconciliation import run_ynab_reconciliation
 from app.services.validation import build_initial_validation_payload, validate_payload
 from app.services.ynab import get_cached_reference_data, refresh_ynab_cache, sync_receipt_to_ynab
-from receipt_shared.gemini import GeminiAnalyzer, build_analysis_prompt
+from receipt_shared.contracts import GeminiReceiptExtraction, ReceiptTwinExtraction, UnifiedReceiptExtraction
+from receipt_shared.gemini import (
+    GeminiAnalysisResult,
+    GeminiAnalyzer,
+    build_analysis_prompt,
+    build_twin_extraction_prompt,
+    build_unified_prompt,
+)
 from receipt_shared.money import dollars_to_milliunits
 from receipt_shared.ynab_client import Category
 
 logger = logging.getLogger(__name__)
 
+ATTEMPT_UNIFIED = "unified"
+ATTEMPT_FALLBACK_YNAB = "fallback_ynab"
+ATTEMPT_FALLBACK_TWIN = "fallback_twin"
+
+TWIN_PAYLOAD_FIELDS = (
+    "store_name",
+    "store_address",
+    "transaction_date",
+    "transaction_time",
+    "currency",
+    "line_items",
+    "subtotal",
+    "tax_total",
+    "total_amount",
+    "payment_method",
+    "receipt_language",
+)
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _safe_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _normalize_twin_payload(parsed_json: dict[str, Any]) -> dict[str, Any]:
+    payload = {field: parsed_json.get(field) for field in TWIN_PAYLOAD_FIELDS}
+    line_items = payload.get("line_items")
+    if not isinstance(line_items, list):
+        payload["line_items"] = []
+    else:
+        payload["line_items"] = [item for item in line_items if isinstance(item, dict)]
+
+    if not payload.get("currency"):
+        payload["currency"] = "USD"
+    if not payload.get("receipt_language"):
+        payload["receipt_language"] = "en"
+    return payload
+
+
+def _is_twin_payload_minimally_usable(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    total = _safe_decimal(payload.get("total_amount"))
+    if total is None:
+        return False
+    if total <= Decimal("0"):
+        return False
+    return True
+
+
+def _evaluate_twin_quality(
+    payload: dict[str, Any],
+    *,
+    hard_fail_delta_abs: float,
+    hard_fail_delta_pct: float,
+) -> tuple[list[str], bool]:
+    warnings: list[str] = []
+    line_items = payload.get("line_items")
+    if not isinstance(line_items, list) or len(line_items) == 0:
+        warnings.append("line_items missing or empty")
+        return warnings, False
+
+    total = _safe_decimal(payload.get("total_amount"))
+    if total is None:
+        warnings.append("total_amount missing")
+        return warnings, False
+
+    additive_total = Decimal("0")
+    additive_count = 0
+    for item in line_items:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("item_type") or "product").strip().lower()
+        if item_type in {"subtotal", "total"}:
+            continue
+
+        line_total = _safe_decimal(item.get("line_total"))
+        if line_total is None:
+            continue
+
+        if item_type == "discount":
+            additive_total -= abs(line_total)
+        elif item_type in {"product", "fee", "tax"}:
+            additive_total += abs(line_total)
+        else:
+            additive_total += line_total
+        additive_count += 1
+
+    if additive_count == 0:
+        warnings.append("no additive line_item totals available for reconciliation")
+        return warnings, False
+
+    delta_abs = abs(total - additive_total)
+    delta_pct = (delta_abs / abs(total)) if total != 0 else Decimal("0")
+
+    if delta_abs > Decimal("0.05"):
+        warnings.append(
+            f"reconciliation drift abs_delta={float(delta_abs):.2f} pct_delta={float(delta_pct):.4f}"
+        )
+
+    hard_fail = (
+        delta_abs > Decimal(str(hard_fail_delta_abs))
+        and delta_pct > Decimal(str(hard_fail_delta_pct))
+    )
+    if hard_fail:
+        warnings.append("severe reconciliation mismatch")
+
+    return warnings, hard_fail
+
+
+def _record_extraction_run(
+    db,
+    *,
+    receipt_id: str,
+    model_name: str,
+    prompt_text: str,
+    analysis: GeminiAnalysisResult,
+    started_at: datetime,
+    completed_at: datetime,
+    attempt_kind: str,
+    parent_run_id: int | None = None,
+    schema_errors: list[str] | None = None,
+) -> ExtractionRun:
+    run = ExtractionRun(
+        receipt_id=receipt_id,
+        model_name=model_name,
+        prompt_text=prompt_text,
+        raw_output=analysis.raw_output,
+        parsed_json=analysis.parsed_json,
+        schema_valid=analysis.schema_valid,
+        schema_errors=schema_errors if schema_errors is not None else analysis.schema_errors,
+        duration_ms=analysis.duration_ms,
+        started_at=started_at,
+        completed_at=completed_at,
+        attempt_kind=attempt_kind,
+        parent_run_id=parent_run_id,
+        is_primary_result=False,
+    )
+    db.add(run)
+    db.flush()
+    return run
+
+
+def _set_primary_extraction_run(db, receipt_id: str, run_id: int) -> None:
+    db.execute(
+        update(ExtractionRun)
+        .where(ExtractionRun.receipt_id == receipt_id)
+        .values(is_primary_result=False)
+    )
+    db.execute(
+        update(ExtractionRun)
+        .where(ExtractionRun.id == run_id)
+        .values(is_primary_result=True)
+    )
+
+
+def _create_validation(
+    db,
+    *,
+    receipt: Receipt,
+    payload: dict[str, Any],
+    source: str,
+) -> Validation:
+    next_version = receipt.latest_validation_version + 1
+    validation = Validation(
+        receipt_id=receipt.id,
+        version=next_version,
+        source=source,
+        payload=payload,
+        is_valid=True,
+        errors=[],
+    )
+    db.add(validation)
+    receipt.latest_validation_version = next_version
+
+    normalized_payee = str(payload.get("payee_name") or "").strip()
+    receipt.display_payee_name = normalized_payee or None
+    receipt.display_total_milliunits = dollars_to_milliunits(payload.get("total_amount", 0), outflow=False)
+    if payload.get("transaction_date"):
+        receipt.display_receipt_date = datetime.fromisoformat(str(payload["transaction_date"])).date()
+
+    return validation
+
+
+def _create_model_twin(
+    db,
+    *,
+    receipt: Receipt,
+    payload: dict[str, Any],
+) -> ReceiptTwin:
+    next_version = receipt.latest_twin_version + 1
+    twin = ReceiptTwin(
+        receipt_id=receipt.id,
+        version=next_version,
+        source="model",
+        payload=payload,
+        confirmed_sections={"date_time": False, "total": False},
+    )
+    db.add(twin)
+    receipt.latest_twin_version = next_version
+    return twin
+
+
+def _validate_ynab_payload(
+    parsed_json: dict[str, Any],
+    *,
+    default_account_id: str | None,
+    allowed_category_ids: set[str],
+    allowed_account_ids: set[str],
+) -> tuple[dict[str, Any], bool, list[str]]:
+    initial_payload = build_initial_validation_payload(parsed_json, default_account_id)
+    return validate_payload(
+        initial_payload,
+        allowed_category_ids=allowed_category_ids,
+        allowed_account_ids=allowed_account_ids,
+    )
+
+
+def _apply_twin_reality_to_validation(
+    validation_payload: dict[str, Any],
+    twin_payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    updated = dict(validation_payload)
+    disagreements: list[str] = []
+
+    for field in ("transaction_date", "transaction_time", "total_amount"):
+        twin_value = twin_payload.get(field)
+        if updated.get(field) != twin_value:
+            disagreements.append(field)
+        updated[field] = twin_value
+
+    return updated, disagreements
+
+
+def _attach_traceability(parsed_json: dict[str, Any] | None, key: str, value: Any) -> dict[str, Any] | None:
+    if not isinstance(parsed_json, dict):
+        return parsed_json
+    updated = dict(parsed_json)
+    traceability = updated.get("_traceability")
+    if not isinstance(traceability, dict):
+        traceability = {}
+    traceability[key] = value
+    updated["_traceability"] = traceability
+    return updated
+
+
+def _summarize_errors(groups: list[tuple[str, list[str]]]) -> str:
+    flattened: list[str] = []
+    for label, errors in groups:
+        for error in errors:
+            text = str(error).strip()
+            if not text:
+                continue
+            flattened.append(f"{label}: {text}")
+    return "; ".join(flattened)
 
 
 def run_extraction_job(receipt_id: str) -> None:
@@ -31,10 +302,10 @@ def run_extraction_job(receipt_id: str) -> None:
             logger.warning("Receipt %s not found for extraction", receipt_id)
             return
 
-        started_at = utcnow()
+        extraction_started_at = utcnow()
         receipt.status = ReceiptStatus.EXTRACTING.value
         receipt.status_reason = None
-        receipt.extraction_started_at = started_at
+        receipt.extraction_started_at = extraction_started_at
         db.commit()
 
         try:
@@ -63,78 +334,306 @@ def run_extraction_job(receipt_id: str) -> None:
             ]
             prompt_accounts = [account.raw_json for account in accounts]
             prompt_payees = [payee.name for payee in payees]
-            prompt_text = build_analysis_prompt(
+
+            file_path = Path(settings.object_store_root) / receipt.storage_key
+            analyzer = GeminiAnalyzer(settings.gemini_api_key, settings.gemini_model, settings.gemini_max_retries)
+
+            if not settings.twin_extraction_enabled:
+                prompt_text = build_analysis_prompt(
+                    settings.gemini_prompt,
+                    prompt_categories,
+                    prompt_accounts,
+                    prompt_payees,
+                )
+                started_at = utcnow()
+                analysis = analyzer.analyze_file(
+                    file_path,
+                    prompt_text,
+                    receipt.mime_type,
+                    response_schema=GeminiReceiptExtraction,
+                )
+                completed_at = utcnow()
+                run = _record_extraction_run(
+                    db,
+                    receipt_id=receipt.id,
+                    model_name=settings.gemini_model,
+                    prompt_text=prompt_text,
+                    analysis=analysis,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    attempt_kind=ATTEMPT_UNIFIED,
+                )
+
+                run_errors = list(analysis.schema_errors)
+                if analysis.schema_valid and analysis.parsed_json:
+                    normalized_payload, is_valid, errors = _validate_ynab_payload(
+                        analysis.parsed_json,
+                        default_account_id=settings.ynab_default_account_id,
+                        allowed_category_ids=allowed_category_ids,
+                        allowed_account_ids=allowed_account_ids,
+                    )
+                    if is_valid:
+                        _create_validation(db, receipt=receipt, payload=normalized_payload, source="model")
+                        _set_primary_extraction_run(db, receipt.id, run.id)
+                        receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+                        receipt.status_reason = None
+                    else:
+                        run_errors.extend([f"ynab_critical: {error}" for error in errors])
+                        receipt.status = ReceiptStatus.ERROR_EXTRACT.value
+                        receipt.status_reason = _summarize_errors([("unified", run_errors)])
+                else:
+                    receipt.status = ReceiptStatus.ERROR_EXTRACT.value
+                    receipt.status_reason = _summarize_errors([("unified", run_errors)])
+
+                run.schema_errors = run_errors
+                receipt.extraction_completed_at = completed_at
+                if receipt.status == ReceiptStatus.NEEDS_REVIEW.value:
+                    db.add(
+                        TimingMetric(
+                            receipt_id=receipt.id,
+                            metric_name="extraction_duration_ms",
+                            metric_value_ms=analysis.duration_ms,
+                            metadata_json={"model": settings.gemini_model, "attempt_kind": ATTEMPT_UNIFIED},
+                        )
+                    )
+                db.commit()
+                logger.info("Finished extraction receipt_id=%s status=%s", receipt.id, receipt.status)
+                return
+
+            unified_prompt = build_unified_prompt(
                 settings.gemini_prompt,
                 prompt_categories,
                 prompt_accounts,
                 prompt_payees,
             )
-
-            file_path = Path(settings.object_store_root) / receipt.storage_key
-            analyzer = GeminiAnalyzer(settings.gemini_api_key, settings.gemini_model, settings.gemini_max_retries)
-            analysis = analyzer.analyze_file(file_path, prompt_text, receipt.mime_type)
-            completed_at = utcnow()
-            logger.info(
-                "Gemini extraction receipt_id=%s schema_valid=%s duration_ms=%s raw_output=%s",
-                receipt.id,
-                analysis.schema_valid,
-                analysis.duration_ms,
-                analysis.raw_output,
+            unified_started_at = utcnow()
+            unified_analysis = analyzer.analyze_file(
+                file_path,
+                unified_prompt,
+                receipt.mime_type,
+                response_schema=UnifiedReceiptExtraction,
             )
+            unified_completed_at = utcnow()
 
-            run = ExtractionRun(
+            unified_errors = list(unified_analysis.schema_errors)
+            unified_run = _record_extraction_run(
+                db,
                 receipt_id=receipt.id,
                 model_name=settings.gemini_model,
-                prompt_text=prompt_text,
-                raw_output=analysis.raw_output,
-                parsed_json=analysis.parsed_json,
-                schema_valid=analysis.schema_valid,
-                schema_errors=analysis.schema_errors,
-                duration_ms=analysis.duration_ms,
-                started_at=started_at,
-                completed_at=completed_at,
+                prompt_text=unified_prompt,
+                analysis=unified_analysis,
+                started_at=unified_started_at,
+                completed_at=unified_completed_at,
+                attempt_kind=ATTEMPT_UNIFIED,
+                schema_errors=unified_errors,
             )
-            db.add(run)
 
-            if analysis.schema_valid and analysis.parsed_json:
-                payload = build_initial_validation_payload(analysis.parsed_json, settings.ynab_default_account_id)
-                normalized_payload, is_valid, errors = validate_payload(
-                    payload,
+            unified_validation_payload: dict[str, Any] | None = None
+            unified_twin_payload: dict[str, Any] | None = None
+            unified_ynab_critical_ok = False
+
+            if unified_analysis.schema_valid and unified_analysis.parsed_json:
+                normalized_payload, is_valid, validation_errors = _validate_ynab_payload(
+                    unified_analysis.parsed_json,
+                    default_account_id=settings.ynab_default_account_id,
                     allowed_category_ids=allowed_category_ids,
                     allowed_account_ids=allowed_account_ids,
                 )
-                validation = Validation(
-                    receipt_id=receipt.id,
-                    version=receipt.latest_validation_version + 1,
-                    source="model",
-                    payload=normalized_payload,
-                    is_valid=is_valid,
-                    errors=errors,
+                unified_twin_payload = _normalize_twin_payload(unified_analysis.parsed_json)
+                twin_warnings, twin_hard_fail = _evaluate_twin_quality(
+                    unified_twin_payload,
+                    hard_fail_delta_abs=settings.twin_recon_hard_fail_delta_abs,
+                    hard_fail_delta_pct=settings.twin_recon_hard_fail_delta_pct,
                 )
-                db.add(validation)
 
-                receipt.latest_validation_version += 1
+                if not is_valid:
+                    unified_errors.extend([f"ynab_critical: {error}" for error in validation_errors])
+                else:
+                    unified_validation_payload = normalized_payload
+                    unified_ynab_critical_ok = True
+
+                if twin_warnings:
+                    unified_errors.extend([f"twin_quality: {warning}" for warning in twin_warnings])
+
+                if settings.twin_strict_mode and twin_hard_fail:
+                    unified_ynab_critical_ok = False
+                    unified_errors.append("twin_quality: strict mode escalated severe mismatch")
+            else:
+                unified_errors.extend(unified_analysis.schema_errors)
+
+            if unified_ynab_critical_ok and unified_validation_payload is not None:
+                _create_validation(db, receipt=receipt, payload=unified_validation_payload, source="model")
+                if _is_twin_payload_minimally_usable(unified_twin_payload):
+                    _create_model_twin(db, receipt=receipt, payload=unified_twin_payload or {})
+                _set_primary_extraction_run(db, receipt.id, unified_run.id)
+                unified_run.schema_errors = unified_errors
+
                 receipt.status = ReceiptStatus.NEEDS_REVIEW.value
                 receipt.status_reason = None
-                receipt.extraction_completed_at = completed_at
-                normalized_payee = str(normalized_payload.get("payee_name") or "").strip()
-                receipt.display_payee_name = normalized_payee or None
-                receipt.display_total_milliunits = dollars_to_milliunits(normalized_payload.get("total_amount", 0), outflow=False)
-                if normalized_payload.get("transaction_date"):
-                    receipt.display_receipt_date = datetime.fromisoformat(normalized_payload["transaction_date"]).date()
-
+                receipt.extraction_completed_at = unified_completed_at
                 db.add(
                     TimingMetric(
                         receipt_id=receipt.id,
                         metric_name="extraction_duration_ms",
-                        metric_value_ms=analysis.duration_ms,
-                        metadata_json={"model": settings.gemini_model},
+                        metric_value_ms=unified_analysis.duration_ms,
+                        metadata_json={"model": settings.gemini_model, "attempt_kind": ATTEMPT_UNIFIED},
                     )
                 )
+                db.commit()
+                logger.info("Finished extraction receipt_id=%s status=%s", receipt.id, receipt.status)
+                return
+
+            fallback_ynab_prompt = build_analysis_prompt(
+                settings.gemini_prompt,
+                prompt_categories,
+                prompt_accounts,
+                prompt_payees,
+            )
+            fallback_ynab_started_at = utcnow()
+            fallback_ynab_analysis = analyzer.analyze_file(
+                file_path,
+                fallback_ynab_prompt,
+                receipt.mime_type,
+                response_schema=GeminiReceiptExtraction,
+            )
+            fallback_ynab_completed_at = utcnow()
+
+            fallback_ynab_errors = list(fallback_ynab_analysis.schema_errors)
+            fallback_ynab_run = _record_extraction_run(
+                db,
+                receipt_id=receipt.id,
+                model_name=settings.gemini_model,
+                prompt_text=fallback_ynab_prompt,
+                analysis=fallback_ynab_analysis,
+                started_at=fallback_ynab_started_at,
+                completed_at=fallback_ynab_completed_at,
+                attempt_kind=ATTEMPT_FALLBACK_YNAB,
+                parent_run_id=unified_run.id,
+                schema_errors=fallback_ynab_errors,
+            )
+
+            fallback_ynab_payload: dict[str, Any] | None = None
+            fallback_ynab_valid = False
+            if fallback_ynab_analysis.schema_valid and fallback_ynab_analysis.parsed_json:
+                normalized_payload, is_valid, validation_errors = _validate_ynab_payload(
+                    fallback_ynab_analysis.parsed_json,
+                    default_account_id=settings.ynab_default_account_id,
+                    allowed_category_ids=allowed_category_ids,
+                    allowed_account_ids=allowed_account_ids,
+                )
+                if is_valid:
+                    fallback_ynab_payload = normalized_payload
+                    fallback_ynab_valid = True
+                else:
+                    fallback_ynab_errors.extend([f"ynab_critical: {error}" for error in validation_errors])
             else:
+                fallback_ynab_errors.extend(fallback_ynab_analysis.schema_errors)
+
+            fallback_twin_payload: dict[str, Any] | None = None
+            fallback_twin_errors: list[str] = []
+            fallback_twin_analysis: GeminiAnalysisResult | None = None
+            fallback_twin_run: ExtractionRun | None = None
+            fallback_twin_completed_at = fallback_ynab_completed_at
+
+            fallback_twin_prompt = build_twin_extraction_prompt(settings.gemini_prompt)
+            fallback_twin_started_at = utcnow()
+            fallback_twin_analysis = analyzer.analyze_file(
+                file_path,
+                fallback_twin_prompt,
+                receipt.mime_type,
+                response_schema=ReceiptTwinExtraction,
+            )
+            fallback_twin_completed_at = utcnow()
+
+            fallback_twin_errors = list(fallback_twin_analysis.schema_errors)
+            fallback_twin_run = _record_extraction_run(
+                db,
+                receipt_id=receipt.id,
+                model_name=settings.gemini_model,
+                prompt_text=fallback_twin_prompt,
+                analysis=fallback_twin_analysis,
+                started_at=fallback_twin_started_at,
+                completed_at=fallback_twin_completed_at,
+                attempt_kind=ATTEMPT_FALLBACK_TWIN,
+                parent_run_id=unified_run.id,
+                schema_errors=fallback_twin_errors,
+            )
+
+            if fallback_twin_analysis.schema_valid and fallback_twin_analysis.parsed_json:
+                fallback_twin_payload = _normalize_twin_payload(fallback_twin_analysis.parsed_json)
+                twin_warnings, _ = _evaluate_twin_quality(
+                    fallback_twin_payload,
+                    hard_fail_delta_abs=settings.twin_recon_hard_fail_delta_abs,
+                    hard_fail_delta_pct=settings.twin_recon_hard_fail_delta_pct,
+                )
+                if twin_warnings:
+                    fallback_twin_errors.extend([f"twin_quality: {warning}" for warning in twin_warnings])
+            else:
+                fallback_twin_errors.extend(fallback_twin_analysis.schema_errors)
+
+            final_validation_payload = fallback_ynab_payload
+            disagreements: list[str] = []
+
+            if fallback_ynab_valid and final_validation_payload is not None and _is_twin_payload_minimally_usable(fallback_twin_payload):
+                final_validation_payload, disagreements = _apply_twin_reality_to_validation(
+                    final_validation_payload,
+                    fallback_twin_payload or {},
+                )
+                if disagreements:
+                    fallback_ynab_run.parsed_json = _attach_traceability(
+                        fallback_ynab_run.parsed_json,
+                        "reality_field_disagreement",
+                        disagreements,
+                    )
+                    if fallback_twin_run:
+                        fallback_twin_run.parsed_json = _attach_traceability(
+                            fallback_twin_run.parsed_json,
+                            "reality_field_disagreement",
+                            disagreements,
+                        )
+
+            if fallback_ynab_valid and final_validation_payload is not None:
+                normalized_payload, is_valid, validation_errors = validate_payload(
+                    final_validation_payload,
+                    allowed_category_ids=allowed_category_ids,
+                    allowed_account_ids=allowed_account_ids,
+                )
+                if is_valid:
+                    _create_validation(db, receipt=receipt, payload=normalized_payload, source="model")
+                    if _is_twin_payload_minimally_usable(fallback_twin_payload):
+                        _create_model_twin(db, receipt=receipt, payload=fallback_twin_payload or {})
+
+                    _set_primary_extraction_run(db, receipt.id, fallback_ynab_run.id)
+                    receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+                    receipt.status_reason = None
+                    receipt.extraction_completed_at = max(fallback_ynab_completed_at, fallback_twin_completed_at)
+                    db.add(
+                        TimingMetric(
+                            receipt_id=receipt.id,
+                            metric_name="extraction_duration_ms",
+                            metric_value_ms=fallback_ynab_analysis.duration_ms,
+                            metadata_json={"model": settings.gemini_model, "attempt_kind": ATTEMPT_FALLBACK_YNAB},
+                        )
+                    )
+                else:
+                    fallback_ynab_valid = False
+                    fallback_ynab_errors.extend([f"ynab_critical: {error}" for error in validation_errors])
+
+            if not fallback_ynab_valid:
                 receipt.status = ReceiptStatus.ERROR_EXTRACT.value
-                receipt.status_reason = "; ".join(analysis.schema_errors)
-                receipt.extraction_completed_at = completed_at
+                receipt.status_reason = _summarize_errors(
+                    [
+                        ("unified", unified_errors),
+                        ("fallback_ynab", fallback_ynab_errors),
+                        ("fallback_twin", fallback_twin_errors),
+                    ]
+                )
+                receipt.extraction_completed_at = max(fallback_ynab_completed_at, fallback_twin_completed_at)
+
+            unified_run.schema_errors = unified_errors
+            fallback_ynab_run.schema_errors = fallback_ynab_errors
+            if fallback_twin_run:
+                fallback_twin_run.schema_errors = fallback_twin_errors
 
             db.commit()
             logger.info("Finished extraction receipt_id=%s status=%s", receipt.id, receipt.status)

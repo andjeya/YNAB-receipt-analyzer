@@ -6,29 +6,38 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import app_settings, db_session
 from app.config import Settings
 from app.enums import GameEventType, ReceiptStatus, YNABSyncStatus
-from app.jobs.queue import SYNC_QUEUE_NAME, enqueue_sync_job
-from app.models import ExtractionRun, GameEvent, Receipt, ReceiptCorrection, TimingMetric, Validation, YNABSync
+from app.jobs.queue import EXTRACTION_QUEUE_NAME, SYNC_QUEUE_NAME, enqueue_extraction_job, enqueue_sync_job
+from app.models import ExtractionRun, GameEvent, Receipt, ReceiptCorrection, ReceiptTwin, TimingMetric, Validation, YNABSync
 from app.schemas import (
+    ConfirmedSectionsOut,
     ExtractionRunOut,
+    LockedFieldsOut,
     ReceiptCorrectionOut,
     ReceiptDetailOut,
     ReceiptSummary,
+    ReceiptTwinOut,
     SaveDraftRequest,
     SaveDraftResponse,
+    SaveTwinRequest,
+    SaveTwinResponse,
     SyncEnqueueResponse,
     SyncRequest,
+    TwinConfirmRequest,
+    TwinConfirmResponse,
     ValidationOut,
 )
 from app.services.correctness import award_water
 from app.services.incidents import record_incident
 from app.services.validation import validate_payload
 from app.services.ynab import get_cached_reference_data
+from receipt_shared.contracts import ReceiptTwinExtraction
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 
@@ -51,6 +60,30 @@ def _latest_extraction(db: Session, receipt_id: str) -> ExtractionRun | None:
         select(ExtractionRun)
         .where(ExtractionRun.receipt_id == receipt_id)
         .order_by(ExtractionRun.created_at.desc())
+        .limit(1)
+    )
+
+
+def _primary_extraction(db: Session, receipt_id: str) -> ExtractionRun | None:
+    primary = db.scalar(
+        select(ExtractionRun)
+        .where(
+            ExtractionRun.receipt_id == receipt_id,
+            ExtractionRun.is_primary_result.is_(True),
+        )
+        .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
+        .limit(1)
+    )
+    if primary is not None:
+        return primary
+    return _latest_extraction(db, receipt_id)
+
+
+def _latest_twin(db: Session, receipt_id: str) -> ReceiptTwin | None:
+    return db.scalar(
+        select(ReceiptTwin)
+        .where(ReceiptTwin.receipt_id == receipt_id)
+        .order_by(ReceiptTwin.version.desc())
         .limit(1)
     )
 
@@ -85,6 +118,9 @@ def _to_extraction_schema(run: ExtractionRun) -> ExtractionRunOut:
         parsed_json=run.parsed_json,
         raw_output=run.raw_output,
         duration_ms=run.duration_ms,
+        attempt_kind=run.attempt_kind,
+        is_primary_result=run.is_primary_result,
+        parent_run_id=run.parent_run_id,
         created_at=run.created_at,
     )
 
@@ -99,6 +135,142 @@ def _to_validation_schema(validation: Validation) -> ValidationOut:
         errors=validation.errors,
         created_at=validation.created_at,
     )
+
+
+def _normalize_confirmed_sections(value: dict[str, Any] | None) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {"date_time": False, "total": False}
+    return {
+        "date_time": bool(value.get("date_time", False)),
+        "total": bool(value.get("total", False)),
+    }
+
+
+def _to_twin_schema(twin: ReceiptTwin) -> ReceiptTwinOut:
+    normalized = _normalize_confirmed_sections(twin.confirmed_sections)
+    return ReceiptTwinOut(
+        id=twin.id,
+        receipt_id=twin.receipt_id,
+        version=twin.version,
+        source=twin.source,
+        payload=twin.payload,
+        confirmed_sections=ConfirmedSectionsOut(
+            date_time=normalized["date_time"],
+            total=normalized["total"],
+        ),
+        created_at=twin.created_at,
+    )
+
+
+def _locked_fields_for_twin(twin: ReceiptTwin | None) -> LockedFieldsOut:
+    normalized = _normalize_confirmed_sections(twin.confirmed_sections if twin else None)
+    return LockedFieldsOut(
+        transaction_date=normalized["date_time"],
+        transaction_time=normalized["date_time"],
+        total_amount=normalized["total"],
+    )
+
+
+def _normalize_twin_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    parsed = ReceiptTwinExtraction.model_validate(payload)
+    return parsed.model_dump(mode="json")
+
+
+def _apply_twin_locks_to_payload(payload: dict[str, Any], twin: ReceiptTwin | None) -> tuple[dict[str, Any], list[str]]:
+    if twin is None:
+        return payload, []
+
+    locked_payload = dict(payload)
+    warnings: list[str] = []
+    confirmed_sections = _normalize_confirmed_sections(twin.confirmed_sections)
+    twin_payload = twin.payload if isinstance(twin.payload, dict) else {}
+
+    if confirmed_sections["date_time"]:
+        for field in ("transaction_date", "transaction_time"):
+            if locked_payload.get(field) != twin_payload.get(field):
+                warnings.append(f"{field} is locked by confirmed receipt twin and was overridden")
+            locked_payload[field] = twin_payload.get(field)
+
+    if confirmed_sections["total"]:
+        if locked_payload.get("total_amount") != twin_payload.get("total_amount"):
+            warnings.append("total_amount is locked by confirmed receipt twin and was overridden")
+        locked_payload["total_amount"] = twin_payload.get("total_amount")
+
+    return locked_payload, warnings
+
+
+def _update_receipt_display_fields_from_payload(receipt: Receipt, payload: dict[str, Any]) -> None:
+    normalized_payee = str(payload.get("payee_name") or "").strip()
+    receipt.display_payee_name = normalized_payee or None
+    if payload.get("total_amount") is not None:
+        receipt.display_total_milliunits = int(float(payload["total_amount"]) * 1000)
+    if payload.get("transaction_date"):
+        receipt.display_receipt_date = datetime.fromisoformat(str(payload["transaction_date"])).date()
+
+
+def _create_validation_version(
+    db: Session,
+    *,
+    receipt: Receipt,
+    payload: dict[str, Any],
+    source: str,
+    is_valid: bool,
+    errors: list[str],
+) -> Validation:
+    next_version = receipt.latest_validation_version + 1
+    validation = Validation(
+        receipt_id=receipt.id,
+        version=next_version,
+        source=source,
+        payload=payload,
+        is_valid=is_valid,
+        errors=errors,
+    )
+    db.add(validation)
+    receipt.latest_validation_version = next_version
+    _update_receipt_display_fields_from_payload(receipt, payload)
+    db.flush()
+    return validation
+
+
+def _refresh_validation_from_confirmed_twin_sections(
+    db: Session,
+    *,
+    receipt: Receipt,
+    twin: ReceiptTwin,
+    settings: Settings,
+    source: str,
+) -> Validation | None:
+    latest_validation = _latest_validation(db, receipt.id)
+    if latest_validation is None:
+        return None
+
+    locked_payload, _ = _apply_twin_locks_to_payload(latest_validation.payload, twin)
+    if locked_payload == latest_validation.payload:
+        return None
+
+    reference_data = get_cached_reference_data(db, settings)
+    allowed_category_ids = {item.entity_id for item in reference_data["categories"]}
+    allowed_account_ids = {item.entity_id for item in reference_data["accounts"]}
+    normalized_payload, is_valid, errors = validate_payload(
+        locked_payload,
+        allowed_category_ids=allowed_category_ids,
+        allowed_account_ids=allowed_account_ids,
+    )
+    validation = _create_validation_version(
+        db,
+        receipt=receipt,
+        payload=normalized_payload,
+        source=source,
+        is_valid=is_valid,
+        errors=errors,
+    )
+
+    if receipt.status in {ReceiptStatus.SYNCED.value, ReceiptStatus.ERROR_SYNC.value}:
+        receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+        receipt.status_reason = None
+
+    return validation
 
 
 def _has_successful_sync(db: Session, receipt_id: str) -> bool:
@@ -234,8 +406,10 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
         raise HTTPException(status_code=404, detail="Receipt not found")
 
     extraction = _latest_extraction(db, receipt_id)
+    extraction_primary = _primary_extraction(db, receipt_id)
     validation = _latest_validation(db, receipt_id)
     model_validation = _first_model_validation(db, receipt_id)
+    twin = _latest_twin(db, receipt_id)
     has_successful_sync = _has_successful_sync(db, receipt_id)
     correction = _latest_correction(db, receipt.id)
     correction_history = list(
@@ -259,8 +433,11 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
         display_total_milliunits=receipt.display_total_milliunits,
         display_receipt_date=receipt.display_receipt_date,
         latest_extraction=_to_extraction_schema(extraction) if extraction else None,
+        extraction_primary=_to_extraction_schema(extraction_primary) if extraction_primary else None,
         latest_validation=_to_validation_schema(validation) if validation else None,
         model_validation=_to_validation_schema(model_validation) if model_validation else None,
+        latest_twin=_to_twin_schema(twin) if twin else None,
+        locked_fields=_locked_fields_for_twin(twin),
         ingested_at=receipt.ingested_at,
         extraction_started_at=receipt.extraction_started_at,
         extraction_completed_at=receipt.extraction_completed_at,
@@ -299,6 +476,168 @@ def get_receipt_file(
     )
 
 
+@router.get("/{receipt_id}/twin", response_model=ReceiptTwinOut)
+def get_receipt_twin(receipt_id: str, db: Session = Depends(db_session)) -> ReceiptTwinOut:
+    receipt = db.get(Receipt, receipt_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    twin = _latest_twin(db, receipt_id)
+    if twin is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "twin_unavailable", "message": "Twin unavailable for receipt"},
+        )
+    return _to_twin_schema(twin)
+
+
+@router.put("/{receipt_id}/twin", response_model=SaveTwinResponse)
+def save_receipt_twin(
+    receipt_id: str,
+    request: SaveTwinRequest,
+    db: Session = Depends(db_session),
+    settings: Settings = Depends(app_settings),
+) -> SaveTwinResponse:
+    receipt = db.get(Receipt, receipt_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    latest_twin = _latest_twin(db, receipt_id)
+    if latest_twin is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "twin_unavailable", "message": "Twin unavailable for receipt"},
+        )
+
+    if request.base_version != latest_twin.version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "stale_twin_version",
+                "message": f"Stale base_version {request.base_version}; latest is {latest_twin.version}",
+            },
+        )
+
+    try:
+        normalized_payload = _normalize_twin_payload(request.payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+    if normalized_payload == latest_twin.payload:
+        return SaveTwinResponse(twin=_to_twin_schema(latest_twin), changed=False)
+
+    confirmed_sections = _normalize_confirmed_sections(latest_twin.confirmed_sections)
+    next_version = latest_twin.version + 1
+    new_twin = ReceiptTwin(
+        receipt_id=receipt.id,
+        version=next_version,
+        source=request.source or "user",
+        payload=normalized_payload,
+        confirmed_sections=confirmed_sections,
+    )
+    db.add(new_twin)
+    db.flush()
+    receipt.latest_twin_version = next_version
+
+    should_refresh_validation = False
+    if confirmed_sections["date_time"]:
+        should_refresh_validation = should_refresh_validation or (
+            latest_twin.payload.get("transaction_date") != normalized_payload.get("transaction_date")
+            or latest_twin.payload.get("transaction_time") != normalized_payload.get("transaction_time")
+        )
+    if confirmed_sections["total"]:
+        should_refresh_validation = should_refresh_validation or (
+            latest_twin.payload.get("total_amount") != normalized_payload.get("total_amount")
+        )
+
+    if should_refresh_validation:
+        _refresh_validation_from_confirmed_twin_sections(
+            db,
+            receipt=receipt,
+            twin=new_twin,
+            settings=settings,
+            source="twin",
+        )
+
+    db.commit()
+    db.refresh(new_twin)
+    return SaveTwinResponse(twin=_to_twin_schema(new_twin), changed=True)
+
+
+@router.post("/{receipt_id}/twin/confirm", response_model=TwinConfirmResponse)
+def confirm_receipt_twin_section(
+    receipt_id: str,
+    request: TwinConfirmRequest,
+    db: Session = Depends(db_session),
+    settings: Settings = Depends(app_settings),
+) -> TwinConfirmResponse:
+    receipt = db.get(Receipt, receipt_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    twin = _latest_twin(db, receipt_id)
+    if twin is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "twin_unavailable", "message": "Twin unavailable for receipt"},
+        )
+
+    confirmed_sections = _normalize_confirmed_sections(twin.confirmed_sections)
+    current_state = confirmed_sections[request.section]
+    if current_state == request.confirmed:
+        return TwinConfirmResponse(twin=_to_twin_schema(twin), validation=None)
+
+    confirmed_sections[request.section] = request.confirmed
+    twin.confirmed_sections = confirmed_sections
+
+    validation: Validation | None = None
+    if request.confirmed:
+        validation = _refresh_validation_from_confirmed_twin_sections(
+            db,
+            receipt=receipt,
+            twin=twin,
+            settings=settings,
+            source="twin_confirm",
+        )
+
+    db.commit()
+    db.refresh(twin)
+    if validation is not None:
+        db.refresh(validation)
+
+    return TwinConfirmResponse(
+        twin=_to_twin_schema(twin),
+        validation=_to_validation_schema(validation) if validation else None,
+    )
+
+
+@router.post("/{receipt_id}/twin/retry-extract", response_model=SyncEnqueueResponse)
+def retry_twin_extraction(
+    receipt_id: str,
+    db: Session = Depends(db_session),
+) -> SyncEnqueueResponse:
+    receipt = db.get(Receipt, receipt_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    try:
+        job_id = enqueue_extraction_job(receipt_id=receipt.id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to enqueue extraction job: {exc}") from exc
+
+    receipt.status = ReceiptStatus.EXTRACTING.value
+    receipt.status_reason = None
+    receipt.extraction_started_at = utcnow()
+    db.commit()
+
+    return SyncEnqueueResponse(
+        receipt_id=receipt.id,
+        queue_name=EXTRACTION_QUEUE_NAME,
+        job_id=job_id,
+        status=ReceiptStatus.EXTRACTING.value,
+    )
+
+
 @router.post("/{receipt_id}/draft", response_model=SaveDraftResponse)
 def save_draft(
     receipt_id: str,
@@ -321,40 +660,30 @@ def save_draft(
         .limit(1)
     )
     model_validation = _first_model_validation(db, receipt.id)
+    latest_validation_before = _latest_validation(db, receipt.id)
+    latest_twin = _latest_twin(db, receipt.id)
+    locked_payload, lock_warnings = _apply_twin_locks_to_payload(request.payload, latest_twin)
 
     reference_data = get_cached_reference_data(db, settings)
     allowed_category_ids = {item.entity_id for item in reference_data["categories"]}
     allowed_account_ids = {item.entity_id for item in reference_data["accounts"]}
     normalized_payload, is_valid, errors = validate_payload(
-        request.payload,
+        locked_payload,
         allowed_category_ids=allowed_category_ids,
         allowed_account_ids=allowed_account_ids,
     )
-    next_version = receipt.latest_validation_version + 1
-
-    validation = Validation(
-        receipt_id=receipt.id,
-        version=next_version,
-        source=request.source,
+    validation = _create_validation_version(
+        db,
+        receipt=receipt,
         payload=normalized_payload,
+        source=request.source,
         is_valid=is_valid,
         errors=errors,
     )
-    db.add(validation)
-    db.flush()
+    next_version = validation.version
 
-    receipt.latest_validation_version = next_version
-    normalized_payee = str(normalized_payload.get("payee_name") or "").strip()
-    receipt.display_payee_name = normalized_payee or None
-    if normalized_payload.get("total_amount") is not None:
-        receipt.display_total_milliunits = int(float(normalized_payload["total_amount"]) * 1000)
-    if normalized_payload.get("transaction_date"):
-        receipt.display_receipt_date = datetime.fromisoformat(normalized_payload["transaction_date"]).date()
-
-    if receipt.status in {
-        ReceiptStatus.SYNCED.value,
-        ReceiptStatus.ERROR_SYNC.value,
-    }:
+    payload_changed = latest_validation_before is None or latest_validation_before.payload != normalized_payload
+    if payload_changed and receipt.status in {ReceiptStatus.SYNCED.value, ReceiptStatus.ERROR_SYNC.value}:
         receipt.status = ReceiptStatus.NEEDS_REVIEW.value
         receipt.status_reason = None
 
@@ -404,7 +733,11 @@ def save_draft(
     db.commit()
     db.refresh(validation)
 
-    return SaveDraftResponse(validation=_to_validation_schema(validation), can_sync=is_valid)
+    return SaveDraftResponse(
+        validation=_to_validation_schema(validation),
+        can_sync=is_valid,
+        lock_warnings=lock_warnings,
+    )
 
 
 @router.post("/{receipt_id}/reject", response_model=SaveDraftResponse)
