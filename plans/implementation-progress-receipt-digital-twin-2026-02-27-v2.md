@@ -51,28 +51,31 @@ Tasks:
 - [x] Confirm idempotency and degraded mode
 
 ### Phase 5: Frontend Twin UX
-Status: `IN_PROGRESS`
+Status: `DONE`
 
 Tasks:
-- [ ] Add twin types and API client methods
-- [ ] Add `receipt-twin-viewer.tsx`
-- [ ] Update receipt detail to dual-view layout and lock-aware draft fields
-- [ ] Add twin edit mode + save/cancel + warnings
-- [ ] Add fallback/degraded panel
+- [x] Add twin types and API client methods
+- [x] Add `receipt-twin-viewer.tsx`
+- [x] Update receipt detail to dual-view layout and lock-aware draft fields
+- [x] Add twin edit mode + save/cancel + warnings
+- [x] Add fallback/degraded panel
 
 ### Phase 6: Frontend Tests + Verification
-Status: `TODO`
+Status: `DONE`
 
 Tasks:
-- [ ] Add/update frontend unit tests for twin mapping and lock behavior
-- [ ] Run backend tests
-- [ ] Run frontend tests/lint/build checks
-- [ ] Final docs/progress update with commit SHAs
+- [x] Add/update frontend unit tests for twin mapping and lock behavior
+- [x] Run backend tests
+- [x] Run frontend tests/lint/build checks
+- [x] Final docs/progress update with commit SHAs
 
 ## Checkpoint Commits
 - `b8923cf` — backend foundation/migration/config/schema bootstrap
+- `0e78d1a` — unified extraction fallback, twin lock APIs, backend v2 tests
 
 ## Execution Notes
 - 2026-02-27: Added backend foundation for twins/attempt metadata and verified Alembic upgrade on a fresh SQLite database (`data/migration_test.db`).
 - 2026-02-27: Implemented unified extraction + fallback flow, twin APIs/locking, and added `backend/tests/test_receipt_twin_v2.py`.
 - 2026-02-27: Backend test suite passing (`47 passed`).
+- 2026-02-27: Added frontend twin viewer, responsive twin/scan layout, lock-aware draft fields, and twin edit/confirm/retry wiring.
+- 2026-02-27: Frontend verification passing (`npm --prefix frontend run test:unit`, `lint`, `build`).

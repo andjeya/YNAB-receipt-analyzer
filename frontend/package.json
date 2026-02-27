@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:unit": "tsx --test src/lib/receipt-id.test.ts"
+    "test:unit": "tsx --test src/lib/*.test.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.5",
