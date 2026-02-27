@@ -14,8 +14,13 @@ import {
   ReceiptDetail,
   ReceiptSummary,
   SaveDraftResponse,
+  SaveTwinRequest,
+  SaveTwinResponse,
   StatsSummary,
   SyncEnqueueResponse,
+  TwinConfirmRequest,
+  TwinConfirmResponse,
+  ReceiptTwin,
   ValidationPayloadInput,
 } from "@/lib/types";
 
@@ -77,6 +82,31 @@ export function enqueueSync(receiptId: string) {
 
 export function rejectReceipt(receiptId: string) {
   return request<SaveDraftResponse>(`/receipts/${receiptId}/reject`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function getReceiptTwin(receiptId: string) {
+  return request<ReceiptTwin>(`/receipts/${receiptId}/twin`);
+}
+
+export function saveReceiptTwin(receiptId: string, payload: SaveTwinRequest) {
+  return request<SaveTwinResponse>(`/receipts/${receiptId}/twin`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function confirmTwinSection(receiptId: string, payload: TwinConfirmRequest) {
+  return request<TwinConfirmResponse>(`/receipts/${receiptId}/twin/confirm`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function retryTwinExtraction(receiptId: string) {
+  return request<SyncEnqueueResponse>(`/receipts/${receiptId}/twin/retry-extract`, {
     method: "POST",
     body: "{}",
   });

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Droplets, Flame, Plus, Trash2 } from "lucide-react";
 
@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
+import { ReceiptTwinViewer } from "@/components/receipt-twin-viewer";
 
 const UNKNOWN_ACCOUNT_ID = "__unknown__";
 const PAYEE_SUGGESTION_LIMIT = 12;
@@ -250,8 +251,10 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const [cancelBaseline, setCancelBaseline] = useState<ValidationPayloadInput | null>(null);
   const [baselineReceiptId, setBaselineReceiptId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
   const [payeeMenuOpen, setPayeeMenuOpen] = useState(false);
+  const [lockWarnings, setLockWarnings] = useState<string[]>([]);
+  const [mobileView, setMobileView] = useState<"twin" | "scan">("twin");
+  const mobilePanelRef = useRef<HTMLDivElement | null>(null);
 
   const receiptQuery = useQuery({
     queryKey: ["receipt", receiptId],
@@ -274,6 +277,8 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
       setCancelBaseline(toModelBaselineDraft(receiptQuery.data));
       setDraft(toDraft(receiptQuery.data));
       setDirty(false);
+      setLockWarnings([]);
+      setMobileView("twin");
       return;
     }
     if (!dirty) {
@@ -287,8 +292,9 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
         ...nextDraft,
         transaction_time: nextDraft.transaction_time?.trim() ? nextDraft.transaction_time : null,
       }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       setDirty(false);
+      setLockWarnings(result.lock_warnings ?? []);
       queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
@@ -307,6 +313,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     mutationFn: () => rejectReceipt(receiptId),
     onSuccess: () => {
       setDirty(false);
+      setLockWarnings([]);
       queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
@@ -323,6 +330,11 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     }, 900);
     return () => clearTimeout(timer);
   }, [draft, dirty, saveMutation]);
+
+  useEffect(() => {
+    if (!mobilePanelRef.current) return;
+    mobilePanelRef.current.scrollTo({ top: 0, behavior: "auto" });
+  }, [mobileView, receiptId]);
 
   const categories = useMemo(
     () => (cacheQuery.data?.filter((item) => item.entity_type === "category") ?? []) as CategoryOption[],
@@ -401,9 +413,46 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     setDraft(cancelBaseline);
     saveMutation.mutate(cancelBaseline);
   };
+  const refreshReceiptContext = () => {
+    queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
+    queryClient.invalidateQueries({ queryKey: ["receipts"] });
+    queryClient.invalidateQueries({ queryKey: ["stats"] });
+  };
+  const dateLocked = receipt.locked_fields?.transaction_date ?? false;
+  const timeLocked = receipt.locked_fields?.transaction_time ?? false;
+  const totalLocked = receipt.locked_fields?.total_amount ?? false;
+
+  const scanPanel = (
+    <Card className="h-full overflow-hidden p-0">
+      <div className="border-b border-ink/10 px-3 py-2">
+        <h2 className="text-sm font-semibold">Original Scan</h2>
+      </div>
+      <div className="h-[28rem] overflow-auto bg-black/5 p-2">
+        {receipt.mime_type.startsWith("image/") ? (
+          <div className="relative h-full min-h-[22rem] w-full">
+            <Image
+              src={receiptFileUrl(receiptId)}
+              alt={receipt.original_filename}
+              fill
+              unoptimized
+              className="object-contain"
+            />
+          </div>
+        ) : (
+          <object
+            data={`${receiptFileUrl(receiptId)}#toolbar=1&view=FitH`}
+            type="application/pdf"
+            className="h-full min-h-[22rem] w-full"
+          >
+            <iframe src={receiptFileUrl(receiptId)} title="Receipt scan" className="h-full w-full border-0" />
+          </object>
+        )}
+      </div>
+    </Card>
+  );
 
   return (
-    <main className="mx-auto flex max-w-3xl flex-col gap-4 px-4 pb-28 pt-4">
+    <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 pb-28 pt-4">
       <header className="animate-reveal rounded-3xl bg-white/90 p-4 shadow-float">
         <Link href="/" className="inline-flex items-center gap-2 text-sm font-semibold text-ink/70">
           <ArrowLeft className="h-4 w-4" /> Back
@@ -422,10 +471,54 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             {receipt.correction_message}
           </p>
         ) : null}
-        <Button variant="outline" size="sm" className="mt-3" onClick={() => setPreviewOpen(true)}>
-          Open Receipt Preview
-        </Button>
       </header>
+
+      <section className="animate-reveal space-y-3" style={{ animationDelay: "55ms" }}>
+        <div className="hidden gap-3 md:grid md:grid-cols-2">
+          <ReceiptTwinViewer
+            receiptId={receiptId}
+            twin={receipt.latest_twin}
+            onUpdated={() => {
+              setDirty(false);
+              refreshReceiptContext();
+            }}
+          />
+          {scanPanel}
+        </div>
+
+        <div className="space-y-2 md:hidden">
+          <div className="inline-flex rounded-xl border border-ink/15 bg-white p-1 text-xs">
+            <button
+              type="button"
+              className={`rounded-lg px-3 py-1 ${mobileView === "twin" ? "bg-ink text-white" : "text-ink/70"}`}
+              onClick={() => setMobileView("twin")}
+            >
+              Receipt Details
+            </button>
+            <button
+              type="button"
+              className={`rounded-lg px-3 py-1 ${mobileView === "scan" ? "bg-ink text-white" : "text-ink/70"}`}
+              onClick={() => setMobileView("scan")}
+            >
+              Original Scan
+            </button>
+          </div>
+          <div ref={mobilePanelRef} className="max-h-[32rem] overflow-auto">
+            {mobileView === "twin" ? (
+              <ReceiptTwinViewer
+                receiptId={receiptId}
+                twin={receipt.latest_twin}
+                onUpdated={() => {
+                  setDirty(false);
+                  refreshReceiptContext();
+                }}
+              />
+            ) : (
+              scanPanel
+            )}
+          </div>
+        </div>
+      </section>
 
       <Card className="animate-reveal space-y-3" style={{ animationDelay: "70ms" }}>
         <h2 className="font-semibold">Payee + Account</h2>
@@ -513,22 +606,30 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             <Input
               type="date"
               value={draft.transaction_date}
+              readOnly={dateLocked}
+              className={dateLocked ? "bg-sand/60" : undefined}
               onChange={(event) => {
+                if (dateLocked) return;
                 setDraft({ ...draft, transaction_date: event.target.value });
                 setDirty(true);
               }}
             />
+            {dateLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
           </div>
           <div>
             <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Receipt time (optional)</label>
             <Input
               type="time"
               value={draft.transaction_time ?? ""}
+              readOnly={timeLocked}
+              className={timeLocked ? "bg-sand/60" : undefined}
               onChange={(event) => {
+                if (timeLocked) return;
                 setDraft({ ...draft, transaction_time: event.target.value || "" });
                 setDirty(true);
               }}
             />
+            {timeLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
           </div>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-1">
@@ -538,11 +639,15 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
               type="number"
               step="0.01"
               value={draft.total_amount}
+              readOnly={totalLocked}
+              className={totalLocked ? "bg-sand/60" : undefined}
               onChange={(event) => {
+                if (totalLocked) return;
                 setDraft({ ...draft, total_amount: Number(event.target.value) || 0 });
                 setDirty(true);
               }}
             />
+            {totalLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
           </div>
         </div>
         <div>
@@ -687,6 +792,13 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
         <p className="mb-2 font-semibold text-ink/70">
           {saveMutation.isPending ? "Autosaving..." : dirty ? "Changes pending autosave" : "Draft saved"}
         </p>
+        {lockWarnings.length > 0 ? (
+          <div className="mb-2 space-y-1 rounded-xl border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
+            {lockWarnings.map((warning) => (
+              <p key={warning}>- {warning}</p>
+            ))}
+          </div>
+        ) : null}
         {validationErrors.length ? (
           <ul className="space-y-1 text-red-700">
             {validationErrors.map((error) => (
@@ -710,7 +822,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
       ) : null}
 
       <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink/15 bg-white/95 px-4 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-3xl items-center gap-2">
+        <div className="mx-auto flex max-w-6xl items-center gap-2">
           <Button
             variant="outline"
             className="flex-1 border-red-300 text-red-700 hover:bg-red-50"
@@ -738,36 +850,6 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
         </div>
       </div>
 
-      {previewOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="relative flex h-full w-full max-w-4xl flex-col rounded-2xl bg-black/90 p-2">
-            <Button variant="outline" size="sm" className="self-end bg-white" onClick={() => setPreviewOpen(false)}>
-              Close
-            </Button>
-            <div className="mt-2 flex-1 overflow-hidden rounded-xl bg-white">
-              {receipt.mime_type.startsWith("image/") ? (
-                <div className="relative h-full w-full">
-                  <Image
-                    src={receiptFileUrl(receiptId)}
-                    alt={receipt.original_filename}
-                    fill
-                    unoptimized
-                    className="object-contain"
-                  />
-                </div>
-              ) : (
-                <object
-                  data={`${receiptFileUrl(receiptId)}#toolbar=1&view=FitH`}
-                  type="application/pdf"
-                  className="h-full w-full"
-                >
-                  <iframe src={receiptFileUrl(receiptId)} title="Receipt preview" className="h-full w-full border-0" />
-                </object>
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
     </main>
   );
 }

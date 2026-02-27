@@ -30,6 +30,9 @@ export interface ExtractionRun {
   parsed_json: Record<string, unknown> | null;
   raw_output: string;
   duration_ms: number;
+  attempt_kind: "unified" | "fallback_ynab" | "fallback_twin" | string;
+  is_primary_result: boolean;
+  parent_run_id: number | null;
   created_at: string;
 }
 
@@ -40,6 +43,52 @@ export interface Validation {
   payload: Record<string, unknown>;
   is_valid: boolean;
   errors: string[] | null;
+  created_at: string;
+}
+
+export interface ConfirmedSections {
+  date_time: boolean;
+  total: boolean;
+}
+
+export interface LockedFields {
+  transaction_date: boolean;
+  transaction_time: boolean;
+  total_amount: boolean;
+}
+
+export interface ReceiptLineItem {
+  index: number;
+  raw_text: string;
+  translated_text: string;
+  quantity: number | null;
+  unit_price: number | null;
+  line_total: number | null;
+  tax_code: string | null;
+  item_type: "product" | "discount" | "tax" | "fee" | "subtotal" | "total" | "other" | string;
+}
+
+export interface ReceiptTwinPayload {
+  store_name: string;
+  store_address: string;
+  transaction_date: string | null;
+  transaction_time: string | null;
+  currency: string;
+  line_items: ReceiptLineItem[];
+  subtotal: number | null;
+  tax_total: number | null;
+  total_amount: number;
+  payment_method: string;
+  receipt_language: string;
+}
+
+export interface ReceiptTwin {
+  id: number;
+  receipt_id: string;
+  version: number;
+  source: string;
+  payload: ReceiptTwinPayload;
+  confirmed_sections: ConfirmedSections;
   created_at: string;
 }
 
@@ -54,8 +103,11 @@ export interface ReceiptDetail {
   display_total_milliunits: number | null;
   display_receipt_date: string | null;
   latest_extraction: ExtractionRun | null;
+  extraction_primary: ExtractionRun | null;
   latest_validation: Validation | null;
   model_validation: Validation | null;
+  latest_twin: ReceiptTwin | null;
+  locked_fields: LockedFields;
   ingested_at: string;
   extraction_started_at: string | null;
   extraction_completed_at: string | null;
@@ -106,6 +158,28 @@ export interface ValidationPayloadInput {
 export interface SaveDraftResponse {
   validation: Validation;
   can_sync: boolean;
+  lock_warnings: string[];
+}
+
+export interface SaveTwinRequest {
+  base_version: number;
+  payload: ReceiptTwinPayload;
+  source?: string;
+}
+
+export interface SaveTwinResponse {
+  twin: ReceiptTwin;
+  changed: boolean;
+}
+
+export interface TwinConfirmRequest {
+  section: "date_time" | "total";
+  confirmed: boolean;
+}
+
+export interface TwinConfirmResponse {
+  twin: ReceiptTwin;
+  validation: Validation | null;
 }
 
 export interface SyncEnqueueResponse {
