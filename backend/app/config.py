@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3-flash-preview"
     gemini_prompt: str = "Categorize receipt line items into the most appropriate YNAB categories."
     gemini_max_retries: int = 3
+    twin_extraction_enabled: bool = True
+    twin_strict_mode: bool = False
+    twin_recon_hard_fail_delta_abs: float = 2.00
+    twin_recon_hard_fail_delta_pct: float = 0.02
 
     ynab_access_token: str | None = None
     ynab_budget_id: str | None = None
@@ -128,6 +132,20 @@ class Settings(BaseSettings):
     def validate_reconciliation_lookback(cls, value: int) -> int:
         if value < 1:
             raise ValueError("YNAB_RECONCILIATION_LOOKBACK_DAYS must be at least 1")
+        return value
+
+    @field_validator("twin_recon_hard_fail_delta_abs")
+    @classmethod
+    def validate_twin_delta_abs(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("TWIN_RECON_HARD_FAIL_DELTA_ABS cannot be negative")
+        return value
+
+    @field_validator("twin_recon_hard_fail_delta_pct")
+    @classmethod
+    def validate_twin_delta_pct(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("TWIN_RECON_HARD_FAIL_DELTA_PCT cannot be negative")
         return value
 
     @field_validator("game_water_capacity", "game_bucket_capacity", "game_fire_burn_threshold", "correction_fade_days")

@@ -30,6 +30,7 @@ class Receipt(Base):
     status_reason: Mapped[str | None] = mapped_column(Text)
 
     latest_validation_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latest_twin_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     display_payee_name: Mapped[str | None] = mapped_column(String(255))
     display_total_milliunits: Mapped[int | None] = mapped_column(Integer)
@@ -45,6 +46,7 @@ class Receipt(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
     extraction_runs: Mapped[list["ExtractionRun"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
+    twins: Mapped[list["ReceiptTwin"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
     validations: Mapped[list["Validation"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
     ynab_sync_runs: Mapped[list["YNABSync"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
     timing_metrics: Mapped[list["TimingMetric"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
@@ -70,12 +72,47 @@ class ExtractionRun(Base):
     schema_valid: Mapped[bool] = mapped_column(Boolean, nullable=False)
     schema_errors: Mapped[list[str] | None] = mapped_column(JSON)
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="unified", index=True)
+    is_primary_result: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    parent_run_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("extraction_runs.id", ondelete="SET NULL"),
+        index=True,
+    )
 
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     receipt: Mapped[Receipt] = relationship(back_populates="extraction_runs")
+    parent_run: Mapped["ExtractionRun | None"] = relationship(
+        remote_side="ExtractionRun.id",
+        back_populates="fallback_runs",
+        foreign_keys=[parent_run_id],
+    )
+    fallback_runs: Mapped[list["ExtractionRun"]] = relationship(
+        back_populates="parent_run",
+        foreign_keys=[parent_run_id],
+    )
+
+
+class ReceiptTwin(Base):
+    __tablename__ = "receipt_twins"
+    __table_args__ = (UniqueConstraint("receipt_id", "version", name="uq_receipt_twin_receipt_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    receipt_id: Mapped[str] = mapped_column(String(36), ForeignKey("receipts.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    confirmed_sections: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=lambda: {"date_time": False, "total": False},
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    receipt: Mapped[Receipt] = relationship(back_populates="twins")
 
 
 class Validation(Base):
