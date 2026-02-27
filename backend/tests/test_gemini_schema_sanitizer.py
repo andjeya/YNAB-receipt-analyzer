@@ -5,7 +5,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from receipt_shared.contracts import GeminiReceiptExtraction, ReceiptTwinExtraction, UnifiedReceiptExtraction
-from receipt_shared.gemini import GeminiAnalyzer, build_gemini_response_json_schema
+from receipt_shared.gemini import (
+    GeminiAnalyzer,
+    _default_thinking_config_for_model,
+    build_gemini_response_json_schema,
+)
 import receipt_shared.gemini as gemini_module
 
 
@@ -58,6 +62,12 @@ def test_build_gemini_response_json_schema_returns_isolated_copy():
 
     second = build_gemini_response_json_schema(GeminiReceiptExtraction)
     assert "payee_name" in second["properties"]
+
+
+def test_default_thinking_config_is_model_aware():
+    assert _default_thinking_config_for_model("gemini-2.5-flash") == {"thinking_budget": -1}
+    assert _default_thinking_config_for_model("gemini-3-flash-preview") == {"thinking_level": "high"}
+    assert _default_thinking_config_for_model("gemini-2.0-flash") == {}
 
 
 class _FakeThinkingConfig:

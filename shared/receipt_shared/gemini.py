@@ -371,6 +371,16 @@ def _is_retryable_error(exc: Exception) -> bool:
     return any(pattern in error_str for pattern in retryable_patterns)
 
 
+def _default_thinking_config_for_model(model_name: str) -> dict[str, Any]:
+    normalized = model_name.strip().lower()
+    if "gemini-2.5" in normalized:
+        # Gemini 2.5 uses thinking_budget; -1 enables dynamic thinking.
+        return {"thinking_budget": -1}
+    if "gemini-3" in normalized:
+        return {"thinking_level": "high"}
+    return {}
+
+
 def _is_unsupported_thinking_config_error(exc: Exception) -> bool:
     error_str = str(exc).lower()
     return "thinking level is not supported" in error_str or (
@@ -441,6 +451,7 @@ class GeminiAnalyzer:
 
         attempt = 0
         thinking_enabled = True
+        thinking_kwargs = _default_thinking_config_for_model(self.model)
         while attempt < self.max_retries:
             try:
                 client = genai.Client(api_key=self.api_key)
@@ -449,8 +460,8 @@ class GeminiAnalyzer:
                 config_kwargs: dict[str, Any] = {
                     "response_mime_type": "application/json",
                 }
-                if thinking_enabled:
-                    config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="HIGH")
+                if thinking_enabled and thinking_kwargs:
+                    config_kwargs["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
                 if response_schema is not None:
                     response_json_schema = build_gemini_response_json_schema(response_schema)
                     supports_response_json_schema = "response_json_schema" in types.GenerateContentConfig.model_fields
