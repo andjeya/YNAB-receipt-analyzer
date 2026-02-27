@@ -21,37 +21,37 @@ Tasks:
 - [x] Validate migration imports/startup compatibility
 
 ### Phase 2: Extraction Flow + Gemini Contracts
-Status: `IN_PROGRESS`
+Status: `DONE`
 
 Tasks:
-- [ ] Add `ReceiptLineItem`, `UnifiedReceiptExtraction`, `ReceiptTwinExtraction`
-- [ ] Add unified/twin prompt builders and schema-aware Gemini analyzer
-- [ ] Add tiered validation (YNAB-critical vs twin-quality)
-- [ ] Add deterministic fallback A/B and disagreement metadata
-- [ ] Persist twin versions from model output when available
+- [x] Add `ReceiptLineItem`, `UnifiedReceiptExtraction`, `ReceiptTwinExtraction`
+- [x] Add unified/twin prompt builders and schema-aware Gemini analyzer
+- [x] Add tiered validation (YNAB-critical vs twin-quality)
+- [x] Add deterministic fallback A/B and disagreement metadata
+- [x] Persist twin versions from model output when available
 
 ### Phase 3: API + Lock Enforcement
-Status: `TODO`
+Status: `DONE`
 
 Tasks:
-- [ ] Add twin endpoints (`GET/PUT/POST confirm`)
-- [ ] Add twin base_version concurrency handling and no-op save semantics
-- [ ] Enforce lock behavior in `POST /receipts/{id}/draft`
-- [ ] Ensure `GET /receipts/{id}` returns primary extraction + lock metadata + latest twin
-- [ ] Add degraded twin-unavailable behavior
+- [x] Add twin endpoints (`GET/PUT/POST confirm`)
+- [x] Add twin base_version concurrency handling and no-op save semantics
+- [x] Enforce lock behavior in `POST /receipts/{id}/draft`
+- [x] Ensure `GET /receipts/{id}` returns primary extraction + lock metadata + latest twin
+- [x] Add degraded twin-unavailable behavior
 
 ### Phase 4: Backend Tests
-Status: `TODO`
+Status: `DONE`
 
 Tasks:
-- [ ] Unified success + primary run selection
-- [ ] Unified YNAB-critical fail fallback behavior
-- [ ] Draft lock enforcement
-- [ ] Twin save concurrency (409 on stale)
-- [ ] Confirm idempotency and degraded mode
+- [x] Unified success + primary run selection
+- [x] Unified YNAB-critical fail fallback behavior
+- [x] Draft lock enforcement
+- [x] Twin save concurrency (409 on stale)
+- [x] Confirm idempotency and degraded mode
 
 ### Phase 5: Frontend Twin UX
-Status: `TODO`
+Status: `IN_PROGRESS`
 
 Tasks:
 - [ ] Add twin types and API client methods
@@ -70,7 +70,9 @@ Tasks:
 - [ ] Final docs/progress update with commit SHAs
 
 ## Checkpoint Commits
-- Pending
+- `b8923cf` — backend foundation/migration/config/schema bootstrap
 
 ## Execution Notes
 - 2026-02-27: Added backend foundation for twins/attempt metadata and verified Alembic upgrade on a fresh SQLite database (`data/migration_test.db`).
+- 2026-02-27: Implemented unified extraction + fallback flow, twin APIs/locking, and added `backend/tests/test_receipt_twin_v2.py`.
+- 2026-02-27: Backend test suite passing (`47 passed`).
