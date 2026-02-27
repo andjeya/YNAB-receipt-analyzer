@@ -72,6 +72,7 @@ Tasks:
 ## Checkpoint Commits
 - `b8923cf` — backend foundation/migration/config/schema bootstrap
 - `0e78d1a` — unified extraction fallback, twin lock APIs, backend v2 tests
+- `3030b7c` — frontend twin viewer, dual-view layout, lock-aware draft UX, twin unit tests
 
 ## Execution Notes
 - 2026-02-27: Added backend foundation for twins/attempt metadata and verified Alembic upgrade on a fresh SQLite database (`data/migration_test.db`).
@@ -79,3 +80,4 @@ Tasks:
 - 2026-02-27: Backend test suite passing (`47 passed`).
 - 2026-02-27: Added frontend twin viewer, responsive twin/scan layout, lock-aware draft fields, and twin edit/confirm/retry wiring.
 - 2026-02-27: Frontend verification passing (`npm --prefix frontend run test:unit`, `lint`, `build`).
+- 2026-02-27: End-to-end v2 implementation completed across backend + frontend phases.
