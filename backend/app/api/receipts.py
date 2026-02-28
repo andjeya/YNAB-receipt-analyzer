@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -335,23 +336,42 @@ def _correction_shade_opacity(correction: ReceiptCorrection | None, now: datetim
     return round(max(min(remaining_seconds / total_seconds, 1.0), 0.0), 4)
 
 
-def _payload_category_signature(payload: dict[str, Any] | None) -> tuple[str, list[tuple[str, str, str]]]:
+def _amount_signature(value: Any) -> int:
+    try:
+        return int((Decimal(str(value or 0)).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP) * 1000))
+    except Exception:
+        return 0
+
+
+def _payload_category_signature(payload: dict[str, Any] | None) -> tuple[str | None, list[tuple[int, str]]]:
     if not payload:
-        return "", []
-    category_id = str(payload.get("category_id") or "")
+        return None, []
+    category_id = str(payload.get("category_id") or "") or None
     splits = payload.get("splits", [])
-    signature: list[tuple[str, str, str]] = []
+    signature: list[tuple[int, str]] = []
     if isinstance(splits, list):
         for split in splits:
             if not isinstance(split, dict):
                 continue
             signature.append(
                 (
+                    _amount_signature(split.get("amount", 0)),
                     str(split.get("category_id") or ""),
-                    str(split.get("amount") or ""),
-                    str(split.get("memo") or ""),
                 )
             )
+    # A single split with the full amount and same category is equivalent to
+    # single-category mode.
+    if len(signature) == 1:
+        split_amount, split_category = signature[0]
+        if (
+            split_category
+            and split_amount == _amount_signature(payload.get("total_amount", 0))
+            and (category_id is None or category_id == split_category)
+        ):
+            return split_category, []
+    # In split mode, ignore top-level category_id and split memo text. We only
+    # award water for category/split-amount corrections.
+    category_id = None if signature else category_id
     return category_id, sorted(signature)
 
 
