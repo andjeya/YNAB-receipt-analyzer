@@ -159,6 +159,8 @@ export function ReceiptTwinViewer({
   const totalConfirmed = twin.confirmed_sections.total;
   const isDateTimeEditing = editMode || sectionEditMode === "date_time";
   const isTotalEditing = editMode || sectionEditMode === "total";
+  const isScopedDateTimeEditing = !editMode && sectionEditMode === "date_time";
+  const isScopedTotalEditing = !editMode && sectionEditMode === "total";
   const isDateTimeDirty =
     !!draft &&
     ((draft.transaction_date ?? null) !== (twin.payload.transaction_date ?? null) ||
@@ -264,29 +266,32 @@ export function ReceiptTwinViewer({
         <div className="mb-2 flex items-center justify-between">
           <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Date + Time</p>
           <div className="flex gap-2">
-            <Button
-              variant={dateTimeConfirmed ? "outline" : "solid"}
-              size="sm"
-              className="h-7 px-2"
-              onClick={() => {
-                void handleConfirm("date_time");
-              }}
-              disabled={confirmMutation.isPending || saveMutation.isPending}
-            >
-              <Check className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 px-2"
-              onClick={() => {
-                void handleNeedsEdit("date_time");
-              }}
-              disabled={confirmMutation.isPending || saveMutation.isPending}
-            >
-              <X className="h-3.5 w-3.5" />
-            </Button>
-            {!editMode && sectionEditMode === "date_time" ? (
+            {!isScopedDateTimeEditing ? (
+              <>
+                <Button
+                  variant={dateTimeConfirmed ? "outline" : "solid"}
+                  size="sm"
+                  className="h-7 px-2"
+                  onClick={() => {
+                    void handleConfirm("date_time");
+                  }}
+                  disabled={confirmMutation.isPending || saveMutation.isPending}
+                >
+                  <Check className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2"
+                  onClick={() => {
+                    void handleNeedsEdit("date_time");
+                  }}
+                  disabled={confirmMutation.isPending || saveMutation.isPending}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </>
+            ) : (
               <>
                 <Button
                   variant="outline"
@@ -301,14 +306,14 @@ export function ReceiptTwinViewer({
                   size="sm"
                   className="h-7 px-2 text-xs"
                   onClick={() => {
-                    void saveScopedSection("date_time");
+                    void handleConfirm("date_time");
                   }}
-                  disabled={saveMutation.isPending || !isDateTimeDirty}
+                  disabled={saveMutation.isPending || confirmMutation.isPending}
                 >
                   Save
                 </Button>
               </>
-            ) : null}
+            )}
           </div>
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
@@ -338,29 +343,32 @@ export function ReceiptTwinViewer({
         <div className="mb-2 flex items-center justify-between">
           <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Total</p>
           <div className="flex gap-2">
-            <Button
-              variant={totalConfirmed ? "outline" : "solid"}
-              size="sm"
-              className="h-7 px-2"
-              onClick={() => {
-                void handleConfirm("total");
-              }}
-              disabled={confirmMutation.isPending || saveMutation.isPending}
-            >
-              <Check className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 px-2"
-              onClick={() => {
-                void handleNeedsEdit("total");
-              }}
-              disabled={confirmMutation.isPending || saveMutation.isPending}
-            >
-              <X className="h-3.5 w-3.5" />
-            </Button>
-            {!editMode && sectionEditMode === "total" ? (
+            {!isScopedTotalEditing ? (
+              <>
+                <Button
+                  variant={totalConfirmed ? "outline" : "solid"}
+                  size="sm"
+                  className="h-7 px-2"
+                  onClick={() => {
+                    void handleConfirm("total");
+                  }}
+                  disabled={confirmMutation.isPending || saveMutation.isPending}
+                >
+                  <Check className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2"
+                  onClick={() => {
+                    void handleNeedsEdit("total");
+                  }}
+                  disabled={confirmMutation.isPending || saveMutation.isPending}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </>
+            ) : (
               <>
                 <Button
                   variant="outline"
@@ -375,14 +383,14 @@ export function ReceiptTwinViewer({
                   size="sm"
                   className="h-7 px-2 text-xs"
                   onClick={() => {
-                    void saveScopedSection("total");
+                    void handleConfirm("total");
                   }}
-                  disabled={saveMutation.isPending || !isTotalDirty}
+                  disabled={saveMutation.isPending || confirmMutation.isPending}
                 >
                   Save
                 </Button>
               </>
-            ) : null}
+            )}
           </div>
         </div>
         {isTotalEditing ? (
