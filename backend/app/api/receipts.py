@@ -110,6 +110,19 @@ def _first_model_validation(db: Session, receipt_id: str) -> Validation | None:
     )
 
 
+def _latest_model_validation(db: Session, receipt_id: str) -> Validation | None:
+    return db.scalar(
+        select(Validation)
+        .where(
+            Validation.receipt_id == receipt_id,
+            Validation.source == "model",
+            Validation.is_valid.is_(True),
+        )
+        .order_by(Validation.version.desc())
+        .limit(1)
+    )
+
+
 def _to_extraction_schema(run: ExtractionRun) -> ExtractionRunOut:
     return ExtractionRunOut(
         id=run.id,
@@ -428,7 +441,7 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
     extraction = _latest_extraction(db, receipt_id)
     extraction_primary = _primary_extraction(db, receipt_id)
     validation = _latest_validation(db, receipt_id)
-    model_validation = _first_model_validation(db, receipt_id)
+    model_validation = _latest_model_validation(db, receipt_id)
     twin = _latest_twin(db, receipt_id)
     has_successful_sync = _has_successful_sync(db, receipt_id)
     correction = _latest_correction(db, receipt.id)

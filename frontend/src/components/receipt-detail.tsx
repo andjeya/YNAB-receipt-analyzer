@@ -190,9 +190,25 @@ function toDraft(receipt: ReceiptDetail): ValidationPayloadInput {
   return toDraftFromPayload(payload, receipt.display_payee_name ?? "");
 }
 
+function toBlankDraft(): ValidationPayloadInput {
+  return {
+    payee_name: "",
+    account_id: "",
+    transaction_date: "",
+    transaction_time: "",
+    memo: "",
+    total_amount: 0,
+    category_id: "",
+    splits: [],
+  };
+}
+
 function toModelBaselineDraft(receipt: ReceiptDetail): ValidationPayloadInput {
-  const payload = (receipt.model_validation?.payload ?? receipt.latest_extraction?.parsed_json ?? {}) as Record<string, unknown>;
-  return toDraftFromPayload(payload, receipt.display_payee_name ?? "");
+  const payload = receipt.model_validation?.payload;
+  if (!payload || typeof payload !== "object") {
+    return toBlankDraft();
+  }
+  return toDraftFromPayload(payload as Record<string, unknown>, "");
 }
 
 function validateDraft(
@@ -350,6 +366,18 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     () => (draft ? validateDraft(draft, { categoryIds, accountIds }) : []),
     [draft, categoryIds, accountIds],
   );
+  const dateTimeConfirmed = receiptQuery.data?.latest_twin?.confirmed_sections.date_time ?? false;
+  const totalConfirmed = receiptQuery.data?.latest_twin?.confirmed_sections.total ?? false;
+  const twinConfirmationErrors = useMemo(() => {
+    const errors: string[] = [];
+    if (!dateTimeConfirmed) {
+      errors.push("Confirm Date + Time in Receipt Twin before syncing");
+    }
+    if (!totalConfirmed) {
+      errors.push("Confirm Total in Receipt Twin before syncing");
+    }
+    return errors;
+  }, [dateTimeConfirmed, totalConfirmed]);
   const payeeSuggestions = useMemo(() => {
     if (!draft) return [];
     const query = draft.payee_name.trim().toLowerCase();
@@ -366,7 +394,8 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
       })
       .slice(0, PAYEE_SUGGESTION_LIMIT);
   }, [draft, payees]);
-  const canSync = !!draft && validationErrors.length === 0 && !saveMutation.isPending && !dirty;
+  const syncReadinessErrors = useMemo(() => [...twinConfirmationErrors, ...validationErrors], [twinConfirmationErrors, validationErrors]);
+  const canSync = !!draft && syncReadinessErrors.length === 0 && !saveMutation.isPending && !dirty;
   const isSplitMode = !!draft && draft.splits.length > 0;
   const splitTotal = draft ? draft.splits.reduce((sum, split) => sum + Number(split.amount || 0), 0) : 0;
   const accountNeedsAttention = draft?.account_id === UNKNOWN_ACCOUNT_ID;
@@ -799,9 +828,9 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             ))}
           </div>
         ) : null}
-        {validationErrors.length ? (
+        {syncReadinessErrors.length ? (
           <ul className="space-y-1 text-red-700">
-            {validationErrors.map((error) => (
+            {syncReadinessErrors.map((error) => (
               <li key={error}>- {error}</li>
             ))}
           </ul>
