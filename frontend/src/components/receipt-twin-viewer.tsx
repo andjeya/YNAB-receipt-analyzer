@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
+type TwinSection = "date_time" | "total";
+
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
     return error.message;
@@ -56,17 +58,18 @@ export function ReceiptTwinViewer({
   onUpdated: () => void;
 }) {
   const [editMode, setEditMode] = useState(false);
+  const [sectionEditMode, setSectionEditMode] = useState<TwinSection | null>(null);
   const [allowRawEdit, setAllowRawEdit] = useState(false);
   const [draft, setDraft] = useState<ReceiptTwinPayload | null>(twin ? cloneTwinPayload(twin.payload) : null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!editMode) {
+    if (!editMode && !sectionEditMode) {
       setDraft(twin ? cloneTwinPayload(twin.payload) : null);
       setAllowRawEdit(false);
       setActionError(null);
     }
-  }, [editMode, twin]);
+  }, [editMode, sectionEditMode, twin]);
 
   const isDirty = useMemo(() => {
     if (!twin || !draft) return false;
@@ -154,6 +157,54 @@ export function ReceiptTwinViewer({
 
   const dateTimeConfirmed = twin.confirmed_sections.date_time;
   const totalConfirmed = twin.confirmed_sections.total;
+  const isDateTimeEditing = editMode || sectionEditMode === "date_time";
+  const isTotalEditing = editMode || sectionEditMode === "total";
+  const isDateTimeDirty =
+    !!draft &&
+    ((draft.transaction_date ?? null) !== (twin.payload.transaction_date ?? null) ||
+      (draft.transaction_time ?? null) !== (twin.payload.transaction_time ?? null));
+  const isTotalDirty = !!draft && draft.total_amount !== twin.payload.total_amount;
+
+  const resetScopedEdits = () => {
+    setSectionEditMode(null);
+    setDraft(cloneTwinPayload(twin.payload));
+    setActionError(null);
+  };
+
+  const saveScopedSection = async (section: TwinSection) => {
+    if (editMode) return;
+    const sectionChanged = section === "date_time" ? isDateTimeDirty : isTotalDirty;
+    if (sectionChanged) {
+      await saveMutation.mutateAsync(draft);
+    }
+    setSectionEditMode(null);
+    setActionError(null);
+  };
+
+  const handleConfirm = async (section: TwinSection) => {
+    try {
+      if (!editMode && sectionEditMode === section) {
+        await saveScopedSection(section);
+      }
+      await confirmMutation.mutateAsync({ section, confirmed: true });
+      setSectionEditMode(null);
+      setActionError(null);
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  };
+
+  const handleNeedsEdit = async (section: TwinSection) => {
+    try {
+      await confirmMutation.mutateAsync({ section, confirmed: false });
+      if (!editMode) {
+        setSectionEditMode(section);
+      }
+      setActionError(null);
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  };
 
   return (
     <Card className="space-y-4">
@@ -165,7 +216,15 @@ export function ReceiptTwinViewer({
         </div>
         <div className="flex items-center gap-2">
           {!editMode ? (
-            <Button variant="outline" size="sm" className="gap-1" onClick={() => setEditMode(true)}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1"
+              onClick={() => {
+                setSectionEditMode(null);
+                setEditMode(true);
+              }}
+            >
               <Pencil className="h-4 w-4" /> Edit
             </Button>
           ) : (
@@ -177,6 +236,7 @@ export function ReceiptTwinViewer({
                   if (isDirty && !window.confirm("Discard unsaved twin edits?")) {
                     return;
                   }
+                  setSectionEditMode(null);
                   setEditMode(false);
                 }}
               >
@@ -208,8 +268,10 @@ export function ReceiptTwinViewer({
               variant={dateTimeConfirmed ? "outline" : "solid"}
               size="sm"
               className="h-7 px-2"
-              onClick={() => confirmMutation.mutate({ section: "date_time", confirmed: true })}
-              disabled={confirmMutation.isPending}
+              onClick={() => {
+                void handleConfirm("date_time");
+              }}
+              disabled={confirmMutation.isPending || saveMutation.isPending}
             >
               <Check className="h-3.5 w-3.5" />
             </Button>
@@ -217,24 +279,49 @@ export function ReceiptTwinViewer({
               variant="outline"
               size="sm"
               className="h-7 px-2"
-              onClick={() => confirmMutation.mutate({ section: "date_time", confirmed: false })}
-              disabled={confirmMutation.isPending}
+              onClick={() => {
+                void handleNeedsEdit("date_time");
+              }}
+              disabled={confirmMutation.isPending || saveMutation.isPending}
             >
               <X className="h-3.5 w-3.5" />
             </Button>
+            {!editMode && sectionEditMode === "date_time" ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={resetScopedEdits}
+                  disabled={saveMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => {
+                    void saveScopedSection("date_time");
+                  }}
+                  disabled={saveMutation.isPending || !isDateTimeDirty}
+                >
+                  Save
+                </Button>
+              </>
+            ) : null}
           </div>
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
           <Input
             type="date"
             value={draft.transaction_date ?? ""}
-            readOnly={!editMode}
+            readOnly={!isDateTimeEditing}
             onChange={(event) => setDraft({ ...draft, transaction_date: event.target.value || null })}
           />
           <Input
             type="time"
             value={normalizeTwinTimeForInput(draft.transaction_time)}
-            readOnly={!editMode}
+            readOnly={!isDateTimeEditing}
             onChange={(event) => {
               const raw = event.target.value.trim();
               setDraft({ ...draft, transaction_time: raw ? raw : null });
@@ -255,8 +342,10 @@ export function ReceiptTwinViewer({
               variant={totalConfirmed ? "outline" : "solid"}
               size="sm"
               className="h-7 px-2"
-              onClick={() => confirmMutation.mutate({ section: "total", confirmed: true })}
-              disabled={confirmMutation.isPending}
+              onClick={() => {
+                void handleConfirm("total");
+              }}
+              disabled={confirmMutation.isPending || saveMutation.isPending}
             >
               <Check className="h-3.5 w-3.5" />
             </Button>
@@ -264,14 +353,39 @@ export function ReceiptTwinViewer({
               variant="outline"
               size="sm"
               className="h-7 px-2"
-              onClick={() => confirmMutation.mutate({ section: "total", confirmed: false })}
-              disabled={confirmMutation.isPending}
+              onClick={() => {
+                void handleNeedsEdit("total");
+              }}
+              disabled={confirmMutation.isPending || saveMutation.isPending}
             >
               <X className="h-3.5 w-3.5" />
             </Button>
+            {!editMode && sectionEditMode === "total" ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={resetScopedEdits}
+                  disabled={saveMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => {
+                    void saveScopedSection("total");
+                  }}
+                  disabled={saveMutation.isPending || !isTotalDirty}
+                >
+                  Save
+                </Button>
+              </>
+            ) : null}
           </div>
         </div>
-        {editMode ? (
+        {isTotalEditing ? (
           <Input
             type="number"
             step="0.01"
