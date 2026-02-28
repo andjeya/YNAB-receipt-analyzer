@@ -41,27 +41,63 @@ def _active_subtransactions(transaction: dict[str, Any]) -> list[dict[str, Any]]
     return [sub for sub in transaction.get("subtransactions", []) if not sub.get("deleted")]
 
 
-def _split_signature(subtransactions: list[dict[str, Any]]) -> list[tuple[int, str, str]]:
-    signature: list[tuple[int, str, str]] = []
+def _split_signature(subtransactions: list[dict[str, Any]]) -> list[tuple[int, str]]:
+    signature: list[tuple[int, str]] = []
     for sub in subtransactions:
         signature.append(
             (
                 int(sub.get("amount", 0)),
                 str(sub.get("category_id") or ""),
-                str(sub.get("memo") or ""),
             )
         )
     return sorted(signature)
 
 
-def _sync_payload_signature(transaction_payload: dict[str, Any]) -> tuple[str | None, list[tuple[int, str, str]]]:
-    category_id = str(transaction_payload.get("category_id") or "") or None
-    return category_id, _split_signature(transaction_payload.get("subtransactions", []))
+def _normalize_category_and_splits(
+    *,
+    category_id: str | None,
+    split_signature: list[tuple[int, str]],
+    total_amount_milliunits: int,
+) -> tuple[str | None, list[tuple[int, str]]]:
+    normalized_category_id = str(category_id or "") or None
+
+    # A single split with the full amount and same category is semantically
+    # equivalent to a single-category transaction.
+    if len(split_signature) == 1:
+        split_amount, split_category = split_signature[0]
+        if (
+            split_category
+            and abs(split_amount) == abs(int(total_amount_milliunits))
+            and (normalized_category_id is None or normalized_category_id == split_category)
+        ):
+            return split_category, []
+
+    # In split mode, top-level category is not semantically meaningful.
+    if split_signature:
+        return None, split_signature
+
+    return normalized_category_id, split_signature
 
 
-def _ynab_transaction_signature(transaction: dict[str, Any]) -> tuple[str | None, list[tuple[int, str, str]]]:
-    category_id = str(transaction.get("category_id") or "") or None
-    return category_id, _split_signature(_active_subtransactions(transaction))
+def _sync_payload_signature(transaction_payload: dict[str, Any]) -> tuple[str | None, list[tuple[int, str]]]:
+    subtransactions_raw = transaction_payload.get("subtransactions", [])
+    subtransactions = subtransactions_raw if isinstance(subtransactions_raw, list) else []
+    split_signature = _split_signature(subtransactions)
+    return _normalize_category_and_splits(
+        category_id=str(transaction_payload.get("category_id") or "") or None,
+        split_signature=split_signature,
+        total_amount_milliunits=int(transaction_payload.get("amount", 0)),
+    )
+
+
+def _ynab_transaction_signature(transaction: dict[str, Any]) -> tuple[str | None, list[tuple[int, str]]]:
+    active_subtransactions = _active_subtransactions(transaction)
+    split_signature = _split_signature(active_subtransactions)
+    return _normalize_category_and_splits(
+        category_id=str(transaction.get("category_id") or "") or None,
+        split_signature=split_signature,
+        total_amount_milliunits=int(transaction.get("amount", 0)),
+    )
 
 
 def _latest_successful_sync_rows(db: Session, since_at: datetime) -> list[YNABSync]:

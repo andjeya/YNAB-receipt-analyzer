@@ -16,6 +16,61 @@ def test_sync_and_ynab_signatures_match_for_equivalent_single_category():
     assert _sync_payload_signature(sync_payload) == _ynab_transaction_signature(ynab_transaction)
 
 
+def test_sync_and_ynab_signatures_match_for_equivalent_split_even_with_parent_category_and_memo_diff():
+    sync_payload = {
+        "category_id": None,
+        "subtransactions": [
+            {"amount": -85210, "category_id": "cat-a", "memo": "model memo a"},
+            {"amount": -12710, "category_id": "cat-b", "memo": "model memo b"},
+        ],
+    }
+    ynab_transaction = {
+        "category_id": "ynab-parent-category",
+        "subtransactions": [
+            {"amount": -12710, "category_id": "cat-b", "memo": "user changed memo b"},
+            {"amount": -85210, "category_id": "cat-a", "memo": "user changed memo a"},
+        ],
+    }
+
+    assert _sync_payload_signature(sync_payload) == _ynab_transaction_signature(ynab_transaction)
+
+
+def test_sync_and_ynab_signatures_differ_when_split_category_changes():
+    sync_payload = {
+        "category_id": None,
+        "subtransactions": [
+            {"amount": -85210, "category_id": "cat-a"},
+            {"amount": -12710, "category_id": "cat-b"},
+        ],
+    }
+    ynab_transaction = {
+        "category_id": "ynab-parent-category",
+        "subtransactions": [
+            {"amount": -85210, "category_id": "cat-a"},
+            {"amount": -12710, "category_id": "cat-c"},
+        ],
+    }
+
+    assert _sync_payload_signature(sync_payload) != _ynab_transaction_signature(ynab_transaction)
+
+
+def test_sync_and_ynab_signatures_match_for_single_category_vs_equivalent_one_split():
+    sync_payload = {
+        "amount": -23040,
+        "category_id": "cat-a",
+        "subtransactions": [],
+    }
+    ynab_transaction = {
+        "amount": -23040,
+        "category_id": "cat-a",
+        "subtransactions": [
+            {"amount": -23040, "category_id": "cat-a", "memo": ""},
+        ],
+    }
+
+    assert _sync_payload_signature(sync_payload) == _ynab_transaction_signature(ynab_transaction)
+
+
 def test_build_corrected_payload_switches_to_split_mode():
     prior_payload = {
         "payee_name": "Store",
