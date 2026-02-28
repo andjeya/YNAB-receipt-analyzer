@@ -164,7 +164,14 @@ class _FakeAnalyzer:
     def __init__(self, *_args, **_kwargs):
         pass
 
-    def analyze_file(self, _file_path: Path, _prompt_text: str, _mime_type: str | None = None, response_schema=None):  # noqa: ANN001
+    def analyze_file(  # noqa: ANN001
+        self,
+        _file_path: Path,
+        _prompt_text: str,
+        _mime_type: str | None = None,
+        response_schema=None,
+        **_kwargs,
+    ):
         if not self.responses:
             raise AssertionError("No fake Gemini response queued")
         return self.responses.pop(0)

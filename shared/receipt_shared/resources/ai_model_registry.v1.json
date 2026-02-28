@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "currency": "USD",
+  "retrieved_at_utc": "2026-02-28T00:00:00Z",
+  "models": [
+    {
+      "id": "gemini-3-flash-preview",
+      "provider": "google_gemini",
+      "provider_model": "gemini-3-flash-preview",
+      "pricing": {
+        "currency": "USD",
+        "version": "2026-02-28-google-ai-pricing",
+        "dimensions": {
+          "input_tokens": {
+            "unit": "1M_tokens",
+            "price_usd": 0.5
+          },
+          "output_tokens": {
+            "unit": "1M_tokens",
+            "price_usd": 3.0
+          },
+          "cached_input_tokens": {
+            "unit": "1M_tokens",
+            "price_usd": 0.05
+          },
+          "cache_storage_token_hours": {
+            "unit": "1M_token_hours",
+            "price_usd": 1.0
+          }
+        },
+        "assumptions": [
+          "Uses Gemini Developer API paid-tier text/image/video rates.",
+          "Output token pricing includes thinking tokens per provider pricing table.",
+          "Audio-specific rates are not used for receipt extraction in this project.",
+          "Context cache storage token-hour charges are modeled for forward compatibility but not currently metered by this gateway."
+        ]
+      },
+      "metadata": {
+        "default_output_tokens_estimate": 1024,
+        "notes": "Primary production model for receipt extraction."
+      }
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "provider": "google_gemini",
+      "provider_model": "gemini-2.5-flash",
+      "pricing": {
+        "currency": "USD",
+        "version": "2026-02-28-google-ai-pricing",
+        "dimensions": {
+          "input_tokens": {
+            "unit": "1M_tokens",
+            "price_usd": 0.3
+          },
+          "output_tokens": {
+            "unit": "1M_tokens",
+            "price_usd": 2.5
+          },
+          "cached_input_tokens": {
+            "unit": "1M_tokens",
+            "price_usd": 0.03
+          },
+          "cache_storage_token_hours": {
+            "unit": "1M_token_hours",
+            "price_usd": 1.0
+          }
+        },
+        "assumptions": [
+          "Uses Gemini Developer API paid-tier text/image/video rates.",
+          "Output token pricing includes thinking tokens per provider pricing table.",
+          "Audio-specific rates are not used for receipt extraction in this project.",
+          "Context cache storage token-hour charges are modeled for forward compatibility but not currently metered by this gateway."
+        ]
+      },
+      "metadata": {
+        "default_output_tokens_estimate": 1024,
+        "notes": "Alternative model used in scripts and fallback experiments."
+      }
+    }
+  ]
+}
