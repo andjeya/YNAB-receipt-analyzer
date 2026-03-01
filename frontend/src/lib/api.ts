@@ -5,6 +5,8 @@ import {
   GameDebugSeedUpdateRequest,
   GameCorrectnessRecomputeResponse,
   GameDashboard,
+  DuplicateConfirmResponse,
+  DuplicateOverrideResponse,
   GameIncident,
   GameReconcileResponse,
   GameRebuildResponse,
@@ -81,10 +83,17 @@ export function enqueueSync(receiptId: string) {
   });
 }
 
-export function rejectReceipt(receiptId: string) {
-  return request<SaveDraftResponse>(`/receipts/${receiptId}/reject`, {
+export function confirmDuplicateReceipt(receiptId: string) {
+  return request<DuplicateConfirmResponse>(`/receipts/${receiptId}/duplicate/confirm`, {
     method: "POST",
     body: "{}",
+  });
+}
+
+export function overrideDuplicateReceipt(receiptId: string) {
+  return request<DuplicateOverrideResponse>(`/receipts/${receiptId}/duplicate/override`, {
+    method: "POST",
+    body: JSON.stringify({ confirmed: true }),
   });
 }
 

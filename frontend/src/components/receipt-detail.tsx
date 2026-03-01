@@ -2,11 +2,20 @@
 
 import Link from "next/link";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Droplets, Flame, Plus, Trash2 } from "lucide-react";
 
-import { enqueueSync, getReceiptDetail, getYnabCache, receiptFileUrl, rejectReceipt, saveDraft } from "@/lib/api";
+import {
+  confirmDuplicateReceipt,
+  enqueueSync,
+  getReceiptDetail,
+  getYnabCache,
+  overrideDuplicateReceipt,
+  receiptFileUrl,
+  saveDraft,
+} from "@/lib/api";
 import { ReceiptDetail, ValidationPayloadInput } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -627,9 +636,89 @@ function ValidationStatusSection({ isAutosaving, dirty, lockWarnings, syncReadin
   );
 }
 
-function ActionButtonBar({ onReject, isRejecting, isSyncing, onReset, canReset, isAutosaving, onSync, canSync, syncButtonLabel }: {
-  onReject: () => void;
-  isRejecting: boolean;
+function DuplicateReviewSection({
+  receipt,
+  matchedReceipt,
+  isLoadingMatch,
+  onConfirmDuplicate,
+  onOverrideDuplicate,
+  isConfirmingDuplicate,
+  isOverridingDuplicate,
+}: {
+  receipt: ReceiptDetail;
+  matchedReceipt: ReceiptDetail | null;
+  isLoadingMatch: boolean;
+  onConfirmDuplicate: () => void;
+  onOverrideDuplicate: () => void;
+  isConfirmingDuplicate: boolean;
+  isOverridingDuplicate: boolean;
+}) {
+  return (
+    <section className="animate-reveal space-y-4">
+      <Card className="space-y-3 border-2 border-orange-300 bg-orange-50/60">
+        <h2 className="text-lg font-semibold text-orange-900">Duplicate Detected</h2>
+        <p className="text-sm text-orange-900/90">
+          This receipt matches an existing transaction by payee, date, time, and total. Sync is blocked until resolved.
+        </p>
+        {receipt.status_reason ? <p className="text-xs text-orange-800">{receipt.status_reason}</p> : null}
+      </Card>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <Card className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Incoming Receipt</p>
+          <p className="text-sm font-semibold">{receipt.display_payee_name ?? receipt.original_filename}</p>
+          <p className="text-xs text-ink/70">Date {receipt.display_receipt_date ?? "--"}</p>
+          <p className="text-xs text-ink/70">Total {formatAmount(receipt.display_total_milliunits)}</p>
+          <div className="h-80 overflow-hidden rounded-xl border border-ink/10 bg-black/5">
+            <ScanPanel receiptId={receipt.id} mimeType={receipt.mime_type} originalFilename={receipt.original_filename} />
+          </div>
+        </Card>
+
+        <Card className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Existing Receipt</p>
+          {isLoadingMatch ? <p className="text-sm text-ink/70">Loading matched receipt...</p> : null}
+          {!isLoadingMatch && matchedReceipt ? (
+            <>
+              <p className="text-sm font-semibold">{matchedReceipt.display_payee_name ?? matchedReceipt.original_filename}</p>
+              <p className="text-xs text-ink/70">Date {matchedReceipt.display_receipt_date ?? "--"}</p>
+              <p className="text-xs text-ink/70">Total {formatAmount(matchedReceipt.display_total_milliunits)}</p>
+              <div className="h-80 overflow-hidden rounded-xl border border-ink/10 bg-black/5">
+                <ScanPanel
+                  receiptId={matchedReceipt.id}
+                  mimeType={matchedReceipt.mime_type}
+                  originalFilename={matchedReceipt.original_filename}
+                />
+              </div>
+            </>
+          ) : null}
+          {!isLoadingMatch && !matchedReceipt ? <p className="text-sm text-red-700">Matched receipt could not be loaded.</p> : null}
+        </Card>
+      </div>
+
+      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink/15 bg-white/95 px-4 py-3 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center gap-2">
+          <Button
+            className="flex-1 bg-red-700 hover:bg-red-800"
+            onClick={onConfirmDuplicate}
+            disabled={isConfirmingDuplicate || isOverridingDuplicate}
+          >
+            {isConfirmingDuplicate ? "Discarding..." : "Confirm Duplicate (Discard Incoming)"}
+          </Button>
+          <Button
+            variant="outline"
+            className="flex-1"
+            onClick={onOverrideDuplicate}
+            disabled={isConfirmingDuplicate || isOverridingDuplicate}
+          >
+            {isOverridingDuplicate ? "Unlocking..." : "Detection Inaccurate"}
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ActionButtonBar({ isSyncing, onReset, canReset, isAutosaving, onSync, canSync, syncButtonLabel }: {
   isSyncing: boolean;
   onReset: () => void;
   canReset: boolean;
@@ -641,10 +730,7 @@ function ActionButtonBar({ onReject, isRejecting, isSyncing, onReset, canReset, 
   return (
     <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink/15 bg-white/95 px-4 py-3 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center gap-2">
-        <Button variant="outline" className="flex-1 border-red-300 text-red-700 hover:bg-red-50" onClick={onReject} disabled={isRejecting || isSyncing}>
-          {isRejecting ? "Rejecting..." : "Reject"}
-        </Button>
-        <Button variant="outline" className="flex-1" onClick={onReset} disabled={!canReset || isAutosaving || isRejecting}>
+        <Button variant="outline" className="flex-1" onClick={onReset} disabled={!canReset || isAutosaving}>
           Cancel
         </Button>
         <Button className="flex-1" variant={isSyncing ? "outline" : "solid"} onClick={onSync} disabled={!canSync || isSyncing}>
@@ -656,6 +742,7 @@ function ActionButtonBar({ onReject, isRejecting, isSyncing, onReset, canReset, 
 }
 
 export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
+  const router = useRouter();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<ValidationPayloadInput | null>(null);
   const [cancelBaseline, setCancelBaseline] = useState<ValidationPayloadInput | null>(null);
@@ -715,15 +802,21 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     },
   });
 
-  const rejectMutation = useMutation({
-    mutationFn: () => rejectReceipt(receiptId),
+  const confirmDuplicateMutation = useMutation({
+    mutationFn: () => confirmDuplicateReceipt(receiptId),
     onSuccess: () => {
-      setDirty(false);
-      setLockWarnings([]);
-      queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+    },
+  });
+
+  const overrideDuplicateMutation = useMutation({
+    mutationFn: () => overrideDuplicateReceipt(receiptId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
     },
   });
 
@@ -775,8 +868,9 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
       .slice(0, PAYEE_SUGGESTION_LIMIT);
   }, [draft, payees]);
 
+  const isDuplicateReview = receiptQuery.data?.status === "duplicate_review";
   const syncReadinessErrors = useMemo(() => [...twinConfirmationErrors, ...validationErrors], [twinConfirmationErrors, validationErrors]);
-  const canSync = !!draft && syncReadinessErrors.length === 0 && !saveMutation.isPending && !dirty;
+  const canSync = !!draft && syncReadinessErrors.length === 0 && !saveMutation.isPending && !dirty && !isDuplicateReview;
   const isSplitMode = !!draft && draft.splits.length > 0;
   const splitTotal = draft ? draft.splits.reduce((sum, split) => sum + Math.round(Number(split.amount || 0) * 100), 0) / 100 : 0;
   const accountNeedsAttention = draft?.account_id === UNKNOWN_ACCOUNT_ID;
@@ -785,6 +879,13 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     [receiptQuery.data?.latest_extraction?.parsed_json],
   );
   const canResetToBaseline = !!draft && !!cancelBaseline && JSON.stringify(draft) !== JSON.stringify(cancelBaseline);
+  const duplicateMatchId = receiptQuery.data?.duplicate_of_receipt_id ?? null;
+  const duplicateMatchQuery = useQuery({
+    queryKey: ["receipt", duplicateMatchId],
+    queryFn: () => getReceiptDetail(duplicateMatchId as string),
+    enabled: Boolean(isDuplicateReview && duplicateMatchId),
+    refetchInterval: 6000,
+  });
 
   if (receiptQuery.isError) {
     return (
@@ -820,6 +921,22 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     queryClient.invalidateQueries({ queryKey: ["receipts"] });
     queryClient.invalidateQueries({ queryKey: ["stats"] });
   };
+  const handleConfirmDuplicate = () => {
+    if (!window.confirm("Confirm duplicate and permanently discard the incoming receipt data and scan?")) {
+      return;
+    }
+    confirmDuplicateMutation.mutate(undefined, {
+      onSuccess: (result) => {
+        router.push(`/receipts/${result.kept_receipt_id}`);
+      },
+    });
+  };
+  const handleOverrideDuplicate = () => {
+    if (!window.confirm("Confirm this duplicate detection is inaccurate and continue to manual editing?")) {
+      return;
+    }
+    overrideDuplicateMutation.mutate();
+  };
 
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 pb-28 pt-4">
@@ -843,75 +960,87 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
         ) : null}
       </header>
 
-      <TwinAndScanSection
-        receiptId={receiptId}
-        receipt={receipt}
-        mobileView={mobileView}
-        setMobileView={setMobileView}
-        mobilePanelRef={mobilePanelRef}
-        onTwinUpdated={() => { setDirty(false); refreshReceiptContext(); }}
-      />
+      {isDuplicateReview ? (
+        <DuplicateReviewSection
+          receipt={receipt}
+          matchedReceipt={duplicateMatchQuery.data ?? null}
+          isLoadingMatch={duplicateMatchQuery.isLoading}
+          onConfirmDuplicate={handleConfirmDuplicate}
+          onOverrideDuplicate={handleOverrideDuplicate}
+          isConfirmingDuplicate={confirmDuplicateMutation.isPending}
+          isOverridingDuplicate={overrideDuplicateMutation.isPending}
+        />
+      ) : (
+        <>
+          <TwinAndScanSection
+            receiptId={receiptId}
+            receipt={receipt}
+            mobileView={mobileView}
+            setMobileView={setMobileView}
+            mobilePanelRef={mobilePanelRef}
+            onTwinUpdated={() => { setDirty(false); refreshReceiptContext(); }}
+          />
 
-      <PayeeAccountCard
-        draft={draft}
-        setDraft={setDraft}
-        setDirty={setDirty}
-        accounts={accounts}
-        payeeSuggestions={payeeSuggestions}
-        payeeMenuOpen={payeeMenuOpen}
-        setPayeeMenuOpen={setPayeeMenuOpen}
-        accountNeedsAttention={accountNeedsAttention}
-      />
+          <PayeeAccountCard
+            draft={draft}
+            setDraft={setDraft}
+            setDirty={setDirty}
+            accounts={accounts}
+            payeeSuggestions={payeeSuggestions}
+            payeeMenuOpen={payeeMenuOpen}
+            setPayeeMenuOpen={setPayeeMenuOpen}
+            accountNeedsAttention={accountNeedsAttention}
+          />
 
-      {ambiguityFlags.length > 0 ? (
-        <section className="animate-reveal rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900" style={{ animationDelay: "95ms" }}>
-          <p className="inline-flex items-center gap-1 font-semibold">
-            <Droplets className="h-3.5 w-3.5" />
-            Extra water opportunity: category ambiguity detected
-          </p>
-          {ambiguityFlags.slice(0, 3).map((flag, index) => (
-            <p key={`${flag.line_item}-${index}`} className="mt-1 text-[11px] text-sky-800">
-              {flag.line_item || "Item"} ({Math.round(flag.confidence * 100)}%):{" "}
-              {flag.note || "Could belong to multiple categories."}
-            </p>
-          ))}
-        </section>
-      ) : null}
+          {ambiguityFlags.length > 0 ? (
+            <section className="animate-reveal rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900" style={{ animationDelay: "95ms" }}>
+              <p className="inline-flex items-center gap-1 font-semibold">
+                <Droplets className="h-3.5 w-3.5" />
+                Extra water opportunity: category ambiguity detected
+              </p>
+              {ambiguityFlags.slice(0, 3).map((flag, index) => (
+                <p key={`${flag.line_item}-${index}`} className="mt-1 text-[11px] text-sky-800">
+                  {flag.line_item || "Item"} ({Math.round(flag.confidence * 100)}%):{" "}
+                  {flag.note || "Could belong to multiple categories."}
+                </p>
+              ))}
+            </section>
+          ) : null}
 
-      <MemoCard
-        draft={draft}
-        setDraft={setDraft}
-        setDirty={setDirty}
-      />
+          <MemoCard
+            draft={draft}
+            setDraft={setDraft}
+            setDirty={setDirty}
+          />
 
-      <CategorySplitCard
-        draft={draft}
-        setDraft={setDraft}
-        setDirty={setDirty}
-        categories={categories}
-        isSplitMode={isSplitMode}
-        splitTotal={splitTotal}
-      />
+          <CategorySplitCard
+            draft={draft}
+            setDraft={setDraft}
+            setDirty={setDirty}
+            categories={categories}
+            isSplitMode={isSplitMode}
+            splitTotal={splitTotal}
+          />
 
-      <ValidationStatusSection
-        isAutosaving={saveMutation.isPending}
-        dirty={dirty}
-        lockWarnings={lockWarnings}
-        syncReadinessErrors={syncReadinessErrors}
-        correctionHistory={receipt.correction_history}
-      />
+          <ValidationStatusSection
+            isAutosaving={saveMutation.isPending}
+            dirty={dirty}
+            lockWarnings={lockWarnings}
+            syncReadinessErrors={syncReadinessErrors}
+            correctionHistory={receipt.correction_history}
+          />
 
-      <ActionButtonBar
-        onReject={() => rejectMutation.mutate()}
-        isRejecting={rejectMutation.isPending}
-        isSyncing={isSyncing}
-        onReset={resetDraft}
-        canReset={canResetToBaseline}
-        isAutosaving={saveMutation.isPending}
-        onSync={() => syncMutation.mutate()}
-        canSync={canSync}
-        syncButtonLabel={syncButtonLabel}
-      />
+          <ActionButtonBar
+            isSyncing={isSyncing}
+            onReset={resetDraft}
+            canReset={canResetToBaseline}
+            isAutosaving={saveMutation.isPending}
+            onSync={() => syncMutation.mutate()}
+            canSync={canSync}
+            syncButtonLabel={syncButtonLabel}
+          />
+        </>
+      )}
     </main>
   );
 }

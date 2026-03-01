@@ -19,6 +19,7 @@ class ReceiptSummary(BaseModel):
     correction_expires_at: datetime | None = None
     correction_shade_opacity: float | None = None
     correction_message: str | None = None
+    duplicate_of_receipt_id: str | None = None
 
 
 class ExtractionRunOut(BaseModel):
@@ -92,6 +93,7 @@ class ReceiptDetailOut(BaseModel):
     correction_expires_at: datetime | None = None
     correction_shade_opacity: float | None = None
     correction_message: str | None = None
+    duplicate_of_receipt_id: str | None = None
     correction_history: list["ReceiptCorrectionOut"] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -133,6 +135,21 @@ class SyncEnqueueResponse(BaseModel):
     queue_name: str
     job_id: str
     status: str
+
+
+class DuplicateConfirmResponse(BaseModel):
+    deleted_receipt_id: str
+    kept_receipt_id: str
+
+
+class DuplicateOverrideRequest(BaseModel):
+    confirmed: bool = False
+
+
+class DuplicateOverrideResponse(BaseModel):
+    receipt_id: str
+    status: str
+    duplicate_of_receipt_id: str | None = None
 
 
 class SaveTwinRequest(BaseModel):

@@ -17,6 +17,7 @@ from app.config import Settings
 from app.enums import ReceiptStatus, YNABCacheEntityType, YNABSyncStatus
 from app.utils import utcnow
 from app.models import Receipt, ReceiptCorrection, TimingMetric, Validation, YNABCache, YNABSync
+from app.services.duplicates import apply_semantic_duplicate_state
 from app.services.game import apply_sync_gamification
 from app.services.incidents import record_incident
 from app.services.validation import UNKNOWN_ACCOUNT_ID
@@ -804,6 +805,17 @@ def sync_receipt_to_ynab(
     validation = get_latest_validation(db, receipt_id)
     if not validation or not validation.is_valid:
         raise ValueError("Receipt does not have a valid validation draft")
+
+    duplicate_state = apply_semantic_duplicate_state(
+        db,
+        receipt=receipt,
+        payload=validation.payload,
+    )
+    if duplicate_state.duplicate_of_receipt_id:
+        db.commit()
+        raise ValueError(
+            f"Duplicate detected against receipt {duplicate_state.duplicate_of_receipt_id}. Resolve duplicate review before syncing."
+        )
 
     prior_success_sync = _latest_successful_sync_for_receipt(db, receipt.id)
     idempotency_key = make_idempotency_key(receipt_id, validation.id, force_create, allow_update_match)

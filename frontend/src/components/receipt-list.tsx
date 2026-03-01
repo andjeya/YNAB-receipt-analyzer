@@ -44,6 +44,7 @@ import { ReceiptStateIcon } from "@/components/receipt-state-icon";
 const FILTERS: Array<{ label: string; value: "" | ReceiptStatus }> = [
   { label: "All", value: "" },
   { label: "Needs review", value: "needs_review" },
+  { label: "Duplicates", value: "duplicate_review" },
   { label: "Extracting", value: "extracting" },
   { label: "Syncing", value: "syncing" },
   { label: "Errors", value: "error_extract" },
@@ -364,7 +365,14 @@ function ReceiptListItem({
 
   return (
     <Card
-      className={cn("animate-reveal transition", receipt.status === "needs_review" ? "border-amber-300 bg-amber-50/70" : undefined)}
+      className={cn(
+        "animate-reveal transition",
+        receipt.status === "needs_review"
+          ? "border-amber-300 bg-amber-50/70"
+          : receipt.status === "duplicate_review"
+            ? "border-orange-300 bg-orange-50/70"
+            : undefined,
+      )}
       style={{ animationDelay: `${120 + index * 28}ms` }}
     >
       <div className="flex items-start gap-3">
@@ -847,7 +855,9 @@ export function ReceiptList() {
   const statusCounts = statsQuery.data?.status_counts ?? {};
 
   const highlightedCount = useMemo(() => {
-    return receiptsQuery.data?.filter((receipt) => receipt.status === "needs_review").length ?? 0;
+    return receiptsQuery.data?.filter(
+      (receipt) => receipt.status === "needs_review" || receipt.status === "duplicate_review",
+    ).length ?? 0;
   }, [receiptsQuery.data]);
 
   const tileByReceiptId = useMemo(() => {
