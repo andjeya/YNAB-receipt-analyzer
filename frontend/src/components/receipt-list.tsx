@@ -108,6 +108,536 @@ type DebugSeedForm = {
   active_streak_group_id: number;
 };
 
+function ActionMenu({
+  menuRef, menuOpen, setMenuOpen,
+  onScan, isScanPending,
+  onFetchUpdates, isFetchUpdatesPending,
+  onRebuild, isRebuildPending,
+  onRecompute, isRecomputePending,
+  debugToolsEnabled, onOpenDebugPanel,
+  onNavigate,
+}: {
+  menuRef: { current: HTMLDivElement | null };
+  menuOpen: boolean;
+  setMenuOpen: (v: boolean | ((prev: boolean) => boolean)) => void;
+  onScan: () => void; isScanPending: boolean;
+  onFetchUpdates: () => void; isFetchUpdatesPending: boolean;
+  onRebuild: () => void; isRebuildPending: boolean;
+  onRecompute: () => void; isRecomputePending: boolean;
+  debugToolsEnabled: boolean;
+  onOpenDebugPanel: () => void;
+  onNavigate: (path: string) => void;
+}) {
+  const [receiptLookupInput, setReceiptLookupInput] = useState("");
+  const [receiptLookupError, setReceiptLookupError] = useState<string | null>(null);
+
+  const openReceiptById = () => {
+    const parsedId = extractReceiptIdFromText(receiptLookupInput.trim());
+    if (!parsedId) {
+      setReceiptLookupError("Enter a valid receipt ID (UUID) or memo token containing one.");
+      return;
+    }
+    setReceiptLookupError(null);
+    setMenuOpen(false);
+    onNavigate(`/receipts/${parsedId}`);
+  };
+
+  return (
+    <div ref={menuRef} className="absolute right-4 top-3 z-30">
+      <button
+        type="button"
+        className="rounded-full border border-ink/20 bg-white/90 p-2 text-ink shadow-float transition hover:bg-white"
+        onClick={() => setMenuOpen((current) => !current)}
+        aria-label="Open actions menu"
+      >
+        <Menu className="h-5 w-5" />
+      </button>
+      {menuOpen ? (
+        <Card className="absolute right-0 mt-2 w-[22rem] rounded-2xl p-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Actions</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <Button variant="outline" size="sm" className="justify-start gap-1" onClick={onScan} disabled={isScanPending}>
+              <ScanSearch className="h-3.5 w-3.5" />
+              {isScanPending ? "Checking" : "Check ingestion queue"}
+            </Button>
+            <Button variant="outline" size="sm" className="justify-start gap-1" onClick={onFetchUpdates} disabled={isFetchUpdatesPending}>
+              <RefreshCcw className="h-3.5 w-3.5" />
+              {isFetchUpdatesPending ? "Fetching" : "Fetch YNAB updates"}
+            </Button>
+            <Button variant="outline" size="sm" className="justify-start gap-1" onClick={onRebuild} disabled={isRebuildPending}>
+              <RefreshCcw className="h-3.5 w-3.5" />
+              {isRebuildPending ? "Rebuilding" : "Rebuild game"}
+            </Button>
+            <Button variant="outline" size="sm" className="justify-start gap-1" onClick={onRecompute} disabled={isRecomputePending}>
+              {isRecomputePending ? "Recomputing" : "Recompute correctness"}
+            </Button>
+            {debugToolsEnabled ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="justify-start gap-1 sm:col-span-2"
+                onClick={() => { setMenuOpen(false); onOpenDebugPanel(); }}
+              >
+                Debug panel
+              </Button>
+            ) : null}
+          </div>
+          <div className="mt-3 border-t border-ink/10 pt-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Open by ID</p>
+            <div className="mt-2 flex gap-2">
+              <Input
+                value={receiptLookupInput}
+                onChange={(event) => setReceiptLookupInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") { event.preventDefault(); openReceiptById(); }
+                }}
+                placeholder="Receipt UUID or memo token"
+                className="h-10"
+              />
+              <Button size="sm" onClick={openReceiptById}>Open</Button>
+            </div>
+            {receiptLookupError ? <p className="mt-1 text-xs text-red-700">{receiptLookupError}</p> : null}
+          </div>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+function ReceiptListHeader({
+  dashboardData, highlightedCount, maxWaterSpend, fireUnits, fireToBurn, isSpendWaterPending, onOpenWaterSpend,
+}: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dashboardData: any;
+  highlightedCount: number;
+  maxWaterSpend: number;
+  fireUnits: number;
+  fireToBurn: number;
+  isSpendWaterPending: boolean;
+  onOpenWaterSpend: () => void;
+}) {
+  return (
+    <Card className="animate-reveal space-y-3 bg-ink p-4 text-sand">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-mint">Receipt -&gt; YNAB</p>
+          <h1 className="mt-1 font-[var(--font-heading)] text-3xl font-bold">Snappy</h1>
+          <p className="mt-1 text-sm text-sand/80">
+            {dashboardData
+              ? tokenHint(dashboardData.momentum.next_token_in)
+              : `${highlightedCount} receipt${highlightedCount === 1 ? "" : "s"} waiting for review`}
+          </p>
+        </div>
+        <div className="flex items-center gap-1 rounded-2xl bg-white/10 px-3 py-2 text-xs">
+          <Scissors className="h-3.5 w-3.5 text-amber-300" />
+          <span className="font-semibold">Shred tokens:</span>
+          <span>{dashboardData?.momentum.token_balance ?? 0}</span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+        <div className="rounded-xl bg-white/10 px-3 py-2">
+          <p className="text-sand/70">Streak</p>
+          <p className="mt-1 text-base font-semibold">{dashboardData?.momentum.current_streak ?? 0}</p>
+        </div>
+        <div className="rounded-xl bg-white/10 px-3 py-2">
+          <p className="text-sand/70">Validation wait</p>
+          <p className="mt-1 text-base font-semibold">{formatWaitTime(dashboardData?.summary.avg_validation_age_hours)}</p>
+        </div>
+        <button
+          type="button"
+          className={cn(
+            "rounded-xl bg-white/10 px-3 py-2 text-left transition",
+            maxWaterSpend > 0 ? "hover:bg-white/20" : "cursor-not-allowed opacity-80",
+            isSpendWaterPending ? "animate-water-pulse" : undefined,
+          )}
+          onClick={onOpenWaterSpend}
+          disabled={maxWaterSpend <= 0 || isSpendWaterPending}
+          title={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
+        >
+          <p className="text-sand/70">Water</p>
+          <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
+            <Waves className="h-3.5 w-3.5 text-sky-300" />
+            {dashboardData ? `${dashboardData.correctness.water_units}/${dashboardData.correctness.water_capacity}` : "0/0"}
+          </p>
+        </button>
+        <div className="rounded-xl bg-white/10 px-3 py-2">
+          <p className="text-sand/70">Fire</p>
+          <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
+            <Flame className="h-3.5 w-3.5 text-rose-300" />
+            {fireUnits}
+          </p>
+          <p className="mt-1 text-[11px] text-sand/70">
+            {fireToBurn > 0 ? `${fireToBurn} to burn` : "Burn threshold reached"}
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-sand/70">
+          <p>Past 9 weeks</p>
+          <p>Weekly score = lowest non-shredded receipt</p>
+        </div>
+        <div className="grid grid-cols-9 gap-1.5 rounded-2xl bg-black/20 p-2">
+          {(dashboardData?.forest.weekly_slots ?? []).map((slot: { index: number; start_at: string; end_at: string; receipt_count: number; display_state: GameDisplayState | null }) => (
+            <div
+              key={`week-slot-${slot.index}`}
+              className="flex h-11 flex-col items-center justify-center rounded-lg bg-white/5"
+              title={`${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} | scored receipts: ${slot.receipt_count}`}
+            >
+              {slot.display_state ? (
+                <ReceiptStateIcon tone={slot.display_state} shredded={false} className="h-[18px] w-[18px]" />
+              ) : (
+                <span className="h-[18px] w-[18px] rounded-full border border-sand/25" />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function FilterBar({ statusFilter, setStatusFilter, statusCounts, sortOrder, setSortOrder }: {
+  statusFilter: "" | ReceiptStatus;
+  setStatusFilter: (v: "" | ReceiptStatus) => void;
+  statusCounts: Record<string, number>;
+  sortOrder: "newest" | "oldest";
+  setSortOrder: (v: "newest" | "oldest") => void;
+}) {
+  return (
+    <section className="animate-reveal rounded-3xl bg-white/85 p-3 shadow-float" style={{ animationDelay: "90ms" }}>
+      <div className="flex flex-wrap gap-2">
+        {FILTERS.map((filter) => (
+          <button
+            key={filter.label}
+            type="button"
+            onClick={() => setStatusFilter(filter.value)}
+            className={cn(
+              "rounded-full px-3 py-1 text-xs font-semibold transition",
+              statusFilter === filter.value ? "bg-ink text-white" : "bg-ink/10 text-ink",
+            )}
+          >
+            {filter.label}
+            {filter.value ? ` (${statusCounts[filter.value] ?? 0})` : ""}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => setSortOrder(sortOrder === "newest" ? "oldest" : "newest")}
+          className="ml-auto rounded-full bg-ink/10 px-3 py-1 text-xs font-semibold text-ink transition hover:bg-ink/15"
+        >
+          Sort: {sortOrder}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ReceiptListItem({
+  receipt, tile, currentWeekSlot, spendableNow, onShred, isShredPending, index,
+}: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  receipt: any;
+  tile: GameForestTile | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  currentWeekSlot: any;
+  spendableNow: boolean;
+  onShred: (receiptId: string) => void;
+  isShredPending: boolean;
+  index: number;
+}) {
+  const { tone, shredded } = deriveIconState(tile);
+  const correctionOpacity = receipt.correction_shade_opacity ?? 0;
+  const correctionVisible = correctionOpacity > 0.01;
+  const correctionColor = `rgba(15, 23, 42, ${Math.max(0.16, Math.min(0.2 + correctionOpacity * 0.75, 1))})`;
+
+  const canShred =
+    tile?.shredded_at == null &&
+    (tile?.display_state === "yellow" || tile?.display_state === "brown") &&
+    spendableNow &&
+    Boolean(tile && currentWeekSlot && isWithinSlot(tile.validated_at, currentWeekSlot.start_at, currentWeekSlot.end_at));
+
+  return (
+    <Card
+      className={cn("animate-reveal transition", receipt.status === "needs_review" ? "border-amber-300 bg-amber-50/70" : undefined)}
+      style={{ animationDelay: `${120 + index * 28}ms` }}
+    >
+      <div className="flex items-start gap-3">
+        <div className="mt-1 flex shrink-0 items-center gap-1.5">
+          {correctionVisible ? (
+            <span title="YNAB correction tracked">
+              <Flame
+                className="h-4 w-4 animate-fire-fade"
+                style={{ color: correctionColor, opacity: Math.max(correctionOpacity, 0.12) }}
+              />
+            </span>
+          ) : null}
+          <div className="flex w-7 justify-center">
+            {tone ? <ReceiptStateIcon tone={tone} shredded={shredded} className="h-5 w-5" /> : null}
+          </div>
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <Link href={`/receipts/${receipt.id}`} className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">
+                {receipt.display_payee_name ?? receipt.original_filename}
+              </p>
+              <p className="mt-1 text-xs text-ink/65">
+                {formatDistanceToNow(new Date(receipt.ingested_at), { addSuffix: true })}
+              </p>
+            </Link>
+            <div className="text-right text-xs">
+              <p className="uppercase tracking-wide text-ink/55">Validation wait</p>
+              <p className="mt-1 font-semibold">{formatWaitTime(tile?.age_hours_at_validation)}</p>
+            </div>
+          </div>
+
+          {receipt.correction_message ? (
+            <p className="mt-1 text-[11px] font-semibold text-ink/70">{receipt.correction_message}</p>
+          ) : null}
+
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <p className="text-sm font-semibold">{formatAmount(receipt.display_total_milliunits)}</p>
+            <div className="flex items-center gap-2">
+              {tile?.display_state === "shredded" ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700">
+                  <Sparkles className="h-3 w-3" />
+                  Shredded
+                </span>
+              ) : null}
+              {canShred ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1 border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
+                  onClick={() => onShred(receipt.id)}
+                  disabled={isShredPending}
+                >
+                  <Scissors className="h-3.5 w-3.5" />
+                  {isShredPending ? "Shredding..." : "Shred"}
+                </Button>
+              ) : null}
+              <StatusBadge status={receipt.status} />
+            </div>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function WaterSpendModal({ waterSpendAmount, setWaterSpendAmount, maxWaterSpend, onSpend, isSpendPending, onClose }: {
+  waterSpendAmount: number;
+  setWaterSpendAmount: (v: number) => void;
+  maxWaterSpend: number;
+  onSpend: (units: number) => void;
+  isSpendPending: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/45 px-4">
+      <Card className="w-full max-w-sm space-y-3 animate-incident-enter">
+        <h2 className="text-base font-semibold">Spend Water</h2>
+        <p className="text-sm text-ink/70">Choose how much water to spend to extinguish fire.</p>
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/60">Amount</label>
+          <Input
+            type="number"
+            min={1}
+            max={Math.max(maxWaterSpend, 1)}
+            value={waterSpendAmount}
+            onChange={(event) => {
+              const next = Number(event.target.value) || 1;
+              setWaterSpendAmount(Math.max(1, Math.min(next, Math.max(maxWaterSpend, 1))));
+            }}
+          />
+          <p className="mt-1 text-xs text-ink/60">Max now: {maxWaterSpend}</p>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose} disabled={isSpendPending}>Cancel</Button>
+          <Button onClick={() => onSpend(waterSpendAmount)} disabled={isSpendPending || maxWaterSpend <= 0}>
+            {isSpendPending ? "Spending..." : "Extinguish"}
+          </Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function DebugPanel({ debugForm, setDebugForm, debugResetFloors, setDebugResetFloors, isSeedLoading, isSeedError, isSaving, onSave, onClose }: {
+  debugForm: DebugSeedForm;
+  setDebugForm: (v: DebugSeedForm) => void;
+  debugResetFloors: boolean;
+  setDebugResetFloors: (v: boolean) => void;
+  isSeedLoading: boolean;
+  isSeedError: boolean;
+  isSaving: boolean;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const numField = (key: keyof DebugSeedForm, label: string, min = 0) => (
+    <label className="text-xs font-semibold text-ink/70">
+      {label}
+      <Input
+        type="number"
+        value={debugForm[key] as number}
+        onChange={(event) => setDebugForm({ ...debugForm, [key]: Math.max(Number(event.target.value) || 0, min) })}
+      />
+    </label>
+  );
+
+  return (
+    <div className="fixed inset-0 z-[66] flex items-center justify-center bg-black/55 px-4">
+      <Card className="w-full max-w-lg space-y-3 animate-incident-enter">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold">Debug Seed Panel</h2>
+          <span className="text-xs text-ink/60">Enabled via terminal toggle</span>
+        </div>
+        {isSeedLoading ? <p className="text-sm text-ink/70">Loading seed...</p> : null}
+        {isSeedError ? (
+          <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">Debug tools are disabled or unavailable.</p>
+        ) : null}
+
+        <label className="inline-flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={debugForm.enabled}
+            onChange={(event) => setDebugForm({ ...debugForm, enabled: event.target.checked })}
+          />
+          Seed enabled
+        </label>
+
+        <div className="grid grid-cols-2 gap-2">
+          {numField("water_units", "Water")}
+          {numField("fire_units", "Fire")}
+          {numField("burn_count", "Burn Count")}
+          {numField("token_balance", "Token Balance")}
+          {numField("token_earned_count", "Token Earned")}
+          {numField("token_spent_count", "Token Spent")}
+          {numField("current_streak", "Current Streak")}
+          {numField("max_streak", "Max Streak")}
+          {numField("active_streak_group_id", "Streak Group", 1)}
+        </div>
+
+        <label className="inline-flex items-center gap-2 text-xs text-ink/70">
+          <input
+            type="checkbox"
+            checked={debugResetFloors}
+            onChange={(event) => setDebugResetFloors(event.target.checked)}
+          />
+          Reset replay floors to now on save
+        </label>
+
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" onClick={onClose} disabled={isSaving}>Close</Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setDebugForm({ enabled: false, water_units: 0, fire_units: 0, burn_count: 0, token_balance: 0, token_earned_count: 0, token_spent_count: 0, current_streak: 0, max_streak: 0, active_streak_group_id: 1 });
+              setDebugResetFloors(true);
+            }}
+            disabled={isSaving}
+          >
+            Zero Form
+          </Button>
+          <Button onClick={onSave} disabled={isSaving || isSeedError}>
+            {isSaving ? "Saving..." : "Save Seed"}
+          </Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function GameIncidentModal({ incident, incidentWatersSpent, incidentBurnsTriggered, incidentWaterEarned, onAcknowledge, isAcknowledging }: {
+  incident: GameIncident;
+  incidentWatersSpent: number;
+  incidentBurnsTriggered: number;
+  incidentWaterEarned: number;
+  onAcknowledge: (id: number) => void;
+  isAcknowledging: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "fixed inset-0 z-[70] flex items-center justify-center px-4",
+        incident.severity === "critical" ? "bg-red-950/70 animate-burn-flash" : "bg-black/45",
+      )}
+    >
+      <Card className={cn("relative w-full max-w-lg overflow-hidden border-2 animate-incident-enter", severityClass(incident))}>
+        {incidentWatersSpent > 0 || incidentWaterEarned > 0 ? (
+          <div className="pointer-events-none absolute inset-0">
+            {Array.from({ length: Math.min(Math.max(incidentWatersSpent, incidentWaterEarned), 8) }).map((_, index) => (
+              <span
+                key={`water-burst-${index}`}
+                className={cn(
+                  "absolute block h-2.5 w-2.5 rounded-full animate-water-burst",
+                  incidentWaterEarned > 0 ? "bg-cyan-400/75" : "bg-sky-400/70",
+                )}
+                style={{ left: `${12 + index * 10}%`, top: `${75 - (index % 2) * 20}%`, animationDelay: `${index * 60}ms` }}
+              />
+            ))}
+          </div>
+        ) : null}
+
+        <div className="relative space-y-3">
+          <div className="flex items-start gap-2">
+            {incident.severity === "critical" ? (
+              <AlertTriangle className="mt-0.5 h-5 w-5 text-red-700 animate-fire-fade" />
+            ) : (
+              <Flame className="mt-0.5 h-5 w-5 text-amber-700 animate-fire-fade" />
+            )}
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Game Event</p>
+              <h2 className="text-lg font-bold text-ink">{incident.title}</h2>
+            </div>
+          </div>
+
+          <p className="text-sm text-ink/80">{incident.message}</p>
+
+          {incidentBurnsTriggered > 0 ? (
+            <p className="rounded-xl bg-red-100 px-3 py-2 text-xs font-semibold text-red-800">
+              Board burn triggered. Acknowledge to continue.
+            </p>
+          ) : null}
+          {incidentWaterEarned > 0 ? (
+            <p className="rounded-xl bg-sky-100 px-3 py-2 text-xs font-semibold text-sky-800">
+              Water earned! Keep correcting categories for more.
+            </p>
+          ) : null}
+
+          <div className="flex items-center justify-between text-xs text-ink/60">
+            <span>{formatDistanceToNow(new Date(incident.created_at), { addSuffix: true })}</span>
+            {incidentWaterEarned > 0 ? (
+              <span className="inline-flex items-center gap-1 text-sky-700">
+                <Droplets className="h-3.5 w-3.5" />
+                Water earned: {incidentWaterEarned}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1">
+                <Droplets className="h-3.5 w-3.5" />
+                Waters spent: {incidentWatersSpent}
+              </span>
+            )}
+          </div>
+
+          <div className="flex justify-end">
+            <Button
+              className={cn(incident.severity === "critical" ? "bg-red-700 hover:bg-red-800" : undefined)}
+              onClick={() => onAcknowledge(incident.id)}
+              disabled={isAcknowledging}
+            >
+              {isAcknowledging ? "Acknowledging..." : "Acknowledge"}
+            </Button>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 export function ReceiptList() {
   const router = useRouter();
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -324,7 +854,7 @@ export function ReceiptList() {
       map.set(tile.receipt_id, tile);
     }
     return map;
-  }, [dashboardQuery.data]);
+  }, [dashboardQuery.data?.forest.receipts]);
 
   const currentWeekSlot = dashboardQuery.data?.forest.weekly_slots[dashboardQuery.data.forest.weekly_slots.length - 1];
   const activeIncident = incidentsQuery.data?.[0] ?? null;
@@ -351,205 +881,40 @@ export function ReceiptList() {
 
   return (
     <main className="relative mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 pb-24 pt-14">
-      <div ref={menuRef} className="absolute right-4 top-3 z-30">
-        <button
-          type="button"
-          className="rounded-full border border-ink/20 bg-white/90 p-2 text-ink shadow-float transition hover:bg-white"
-          onClick={() => setMenuOpen((current) => !current)}
-          aria-label="Open actions menu"
-        >
-          <Menu className="h-5 w-5" />
-        </button>
-        {menuOpen ? (
-          <Card className="absolute right-0 mt-2 w-[22rem] rounded-2xl p-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Actions</p>
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="justify-start gap-1"
-                onClick={() => scanMutation.mutate()}
-                disabled={scanMutation.isPending}
-              >
-                <ScanSearch className="h-3.5 w-3.5" />
-                {scanMutation.isPending ? "Checking" : "Check ingestion queue"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="justify-start gap-1"
-                onClick={() => fetchUpdatesMutation.mutate()}
-                disabled={fetchUpdatesMutation.isPending}
-              >
-                <RefreshCcw className="h-3.5 w-3.5" />
-                {fetchUpdatesMutation.isPending ? "Fetching" : "Fetch YNAB updates"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="justify-start gap-1"
-                onClick={() => rebuildMutation.mutate()}
-                disabled={rebuildMutation.isPending}
-              >
-                <RefreshCcw className="h-3.5 w-3.5" />
-                {rebuildMutation.isPending ? "Rebuilding" : "Rebuild game"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="justify-start gap-1"
-                onClick={() => recomputeMutation.mutate()}
-                disabled={recomputeMutation.isPending}
-              >
-                {recomputeMutation.isPending ? "Recomputing" : "Recompute correctness"}
-              </Button>
-              {debugToolsEnabled ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="justify-start gap-1 sm:col-span-2"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setDebugPanelOpen(true);
-                  }}
-                >
-                  Debug panel
-                </Button>
-              ) : null}
-            </div>
-            <div className="mt-3 border-t border-ink/10 pt-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Open by ID</p>
-              <div className="mt-2 flex gap-2">
-                <Input
-                  value={receiptLookupInput}
-                  onChange={(event) => setReceiptLookupInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      openReceiptById();
-                    }
-                  }}
-                  placeholder="Receipt UUID or memo token"
-                  className="h-10"
-                />
-                <Button size="sm" onClick={openReceiptById}>
-                  Open
-                </Button>
-              </div>
-              {receiptLookupError ? <p className="mt-1 text-xs text-red-700">{receiptLookupError}</p> : null}
-            </div>
-          </Card>
-        ) : null}
-      </div>
+      <ActionMenu
+        menuRef={menuRef}
+        menuOpen={menuOpen}
+        setMenuOpen={setMenuOpen}
+        onScan={() => scanMutation.mutate()} isScanPending={scanMutation.isPending}
+        onFetchUpdates={() => fetchUpdatesMutation.mutate()} isFetchUpdatesPending={fetchUpdatesMutation.isPending}
+        onRebuild={() => rebuildMutation.mutate()} isRebuildPending={rebuildMutation.isPending}
+        onRecompute={() => recomputeMutation.mutate()} isRecomputePending={recomputeMutation.isPending}
+        debugToolsEnabled={debugToolsEnabled}
+        onOpenDebugPanel={() => setDebugPanelOpen(true)}
+        onNavigate={(path) => router.push(path)}
+      />
 
-      <Card className="animate-reveal space-y-3 bg-ink p-4 text-sand">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-mint">Receipt -&gt; YNAB</p>
-            <h1 className="mt-1 font-[var(--font-heading)] text-3xl font-bold">Snappy</h1>
-            <p className="mt-1 text-sm text-sand/80">
-              {dashboardQuery.data
-                ? tokenHint(dashboardQuery.data.momentum.next_token_in)
-                : `${highlightedCount} receipt${highlightedCount === 1 ? "" : "s"} waiting for review`}
-            </p>
-          </div>
-          <div className="flex items-center gap-1 rounded-2xl bg-white/10 px-3 py-2 text-xs">
-            <Scissors className="h-3.5 w-3.5 text-amber-300" />
-            <span className="font-semibold">Shred tokens:</span>
-            <span>{dashboardQuery.data?.momentum.token_balance ?? 0}</span>
-          </div>
-        </div>
+      <ReceiptListHeader
+        dashboardData={dashboardQuery.data}
+        highlightedCount={highlightedCount}
+        maxWaterSpend={maxWaterSpend}
+        fireUnits={fireUnits}
+        fireToBurn={fireToBurn}
+        isSpendWaterPending={spendWaterMutation.isPending}
+        onOpenWaterSpend={() => {
+          if (maxWaterSpend <= 0) return;
+          setWaterSpendAmount(Math.min(1, maxWaterSpend) || 1);
+          setWaterSpendOpen(true);
+        }}
+      />
 
-        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-          <div className="rounded-xl bg-white/10 px-3 py-2">
-            <p className="text-sand/70">Streak</p>
-            <p className="mt-1 text-base font-semibold">{dashboardQuery.data?.momentum.current_streak ?? 0}</p>
-          </div>
-          <div className="rounded-xl bg-white/10 px-3 py-2">
-            <p className="text-sand/70">Validation wait</p>
-            <p className="mt-1 text-base font-semibold">{formatWaitTime(dashboardQuery.data?.summary.avg_validation_age_hours)}</p>
-          </div>
-          <button
-            type="button"
-            className={cn(
-              "rounded-xl bg-white/10 px-3 py-2 text-left transition",
-              maxWaterSpend > 0 ? "hover:bg-white/20" : "cursor-not-allowed opacity-80",
-              spendWaterMutation.isPending ? "animate-water-pulse" : undefined,
-            )}
-            onClick={() => {
-              if (maxWaterSpend <= 0) return;
-              setWaterSpendAmount(Math.min(1, maxWaterSpend) || 1);
-              setWaterSpendOpen(true);
-            }}
-            disabled={maxWaterSpend <= 0 || spendWaterMutation.isPending}
-            title={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
-          >
-            <p className="text-sand/70">Water</p>
-            <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
-              <Waves className="h-3.5 w-3.5 text-sky-300" />
-              {dashboardQuery.data ? `${dashboardQuery.data.correctness.water_units}/${dashboardQuery.data.correctness.water_capacity}` : "0/0"}
-            </p>
-          </button>
-          <div className="rounded-xl bg-white/10 px-3 py-2">
-            <p className="text-sand/70">Fire</p>
-            <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
-              <Flame className="h-3.5 w-3.5 text-rose-300" />
-              {fireUnits}
-            </p>
-            <p className="mt-1 text-[11px] text-sand/70">
-              {fireToBurn > 0 ? `${fireToBurn} to burn` : "Burn threshold reached"}
-            </p>
-          </div>
-        </div>
-
-        <div>
-          <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-sand/70">
-            <p>Past 9 weeks</p>
-            <p>Weekly score = lowest non-shredded receipt</p>
-          </div>
-          <div className="grid grid-cols-9 gap-1.5 rounded-2xl bg-black/20 p-2">
-            {(dashboardQuery.data?.forest.weekly_slots ?? []).map((slot) => (
-              <div
-                key={`week-slot-${slot.index}`}
-                className="flex h-11 flex-col items-center justify-center rounded-lg bg-white/5"
-                title={`${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} | scored receipts: ${slot.receipt_count}`}
-              >
-                {slot.display_state ? (
-                  <ReceiptStateIcon tone={slot.display_state} shredded={false} className="h-[18px] w-[18px]" />
-                ) : (
-                  <span className="h-[18px] w-[18px] rounded-full border border-sand/25" />
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      </Card>
-
-      <section className="animate-reveal rounded-3xl bg-white/85 p-3 shadow-float" style={{ animationDelay: "90ms" }}>
-        <div className="flex flex-wrap gap-2">
-          {FILTERS.map((filter) => (
-            <button
-              key={filter.label}
-              type="button"
-              onClick={() => setStatusFilter(filter.value)}
-              className={cn(
-                "rounded-full px-3 py-1 text-xs font-semibold transition",
-                statusFilter === filter.value ? "bg-ink text-white" : "bg-ink/10 text-ink",
-              )}
-            >
-              {filter.label}
-              {filter.value ? ` (${statusCounts[filter.value] ?? 0})` : ""}
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => setSortOrder((current) => (current === "newest" ? "oldest" : "newest"))}
-            className="ml-auto rounded-full bg-ink/10 px-3 py-1 text-xs font-semibold text-ink transition hover:bg-ink/15"
-          >
-            Sort: {sortOrder}
-          </button>
-        </div>
-      </section>
+      <FilterBar
+        statusFilter={statusFilter}
+        setStatusFilter={setStatusFilter}
+        statusCounts={statusCounts}
+        sortOrder={sortOrder}
+        setSortOrder={setSortOrder}
+      />
 
       <section className="space-y-3">
         {receiptsQuery.isLoading ? <p className="text-sm text-ink/70">Loading transactions...</p> : null}
@@ -558,363 +923,54 @@ export function ReceiptList() {
             <p className="text-sm text-ink/70">No receipts found yet. Drop files into your ingest folder.</p>
           </Card>
         ) : null}
-
-        {receiptsQuery.data?.map((receipt, index) => {
-          const tile = tileByReceiptId.get(receipt.id);
-          const { tone, shredded } = deriveIconState(tile);
-          const correctionOpacity = receipt.correction_shade_opacity ?? 0;
-          const correctionVisible = correctionOpacity > 0.01;
-          const correctionColor = `rgba(15, 23, 42, ${Math.max(0.16, Math.min(0.2 + correctionOpacity * 0.75, 1))})`;
-
-          const canShred =
-            tile?.shredded_at == null &&
-            (tile?.display_state === "yellow" || tile?.display_state === "brown") &&
-            Boolean(dashboardQuery.data?.momentum.spendable_now) &&
-            Boolean(
-              tile &&
-                currentWeekSlot &&
-                isWithinSlot(tile.validated_at, currentWeekSlot.start_at, currentWeekSlot.end_at),
-            );
-
-          return (
-            <Card
-              key={receipt.id}
-              className={cn(
-                "animate-reveal transition",
-                receipt.status === "needs_review" ? "border-amber-300 bg-amber-50/70" : undefined,
-              )}
-              style={{
-                animationDelay: `${120 + index * 28}ms`,
-              }}
-            >
-              <div className="flex items-start gap-3">
-                <div className="mt-1 flex shrink-0 items-center gap-1.5">
-                  {correctionVisible ? (
-                    <span title="YNAB correction tracked">
-                      <Flame
-                        className="h-4 w-4 animate-fire-fade"
-                        style={{ color: correctionColor, opacity: Math.max(correctionOpacity, 0.12) }}
-                      />
-                    </span>
-                  ) : null}
-                  <div className="flex w-7 justify-center">{tone ? <ReceiptStateIcon tone={tone} shredded={shredded} className="h-5 w-5" /> : null}</div>
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-3">
-                    <Link href={`/receipts/${receipt.id}`} className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold">
-                        {receipt.display_payee_name ?? receipt.original_filename}
-                      </p>
-                      <p className="mt-1 text-xs text-ink/65">
-                        {formatDistanceToNow(new Date(receipt.ingested_at), { addSuffix: true })}
-                      </p>
-                    </Link>
-                    <div className="text-right text-xs">
-                      <p className="uppercase tracking-wide text-ink/55">Validation wait</p>
-                      <p className="mt-1 font-semibold">{formatWaitTime(tile?.age_hours_at_validation)}</p>
-                    </div>
-                  </div>
-
-                  {receipt.correction_message ? (
-                    <p className="mt-1 text-[11px] font-semibold text-ink/70">{receipt.correction_message}</p>
-                  ) : null}
-
-                  <div className="mt-3 flex items-center justify-between gap-2">
-                    <p className="text-sm font-semibold">{formatAmount(receipt.display_total_milliunits)}</p>
-                    <div className="flex items-center gap-2">
-                      {tile?.display_state === "shredded" ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700">
-                          <Sparkles className="h-3 w-3" />
-                          Shredded
-                        </span>
-                      ) : null}
-                      {canShred ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-8 gap-1 border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
-                          onClick={() => shredMutation.mutate(receipt.id)}
-                          disabled={shredMutation.isPending}
-                        >
-                          <Scissors className="h-3.5 w-3.5" />
-                          {shredMutation.isPending ? "Shredding..." : "Shred"}
-                        </Button>
-                      ) : null}
-                      <StatusBadge status={receipt.status} />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </Card>
-          );
-        })}
+        {receiptsQuery.data?.map((receipt, index) => (
+          <ReceiptListItem
+            key={receipt.id}
+            receipt={receipt}
+            tile={tileByReceiptId.get(receipt.id)}
+            currentWeekSlot={currentWeekSlot}
+            spendableNow={Boolean(dashboardQuery.data?.momentum.spendable_now)}
+            onShred={(receiptId) => shredMutation.mutate(receiptId)}
+            isShredPending={shredMutation.isPending}
+            index={index}
+          />
+        ))}
       </section>
 
       {waterSpendOpen ? (
-        <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/45 px-4">
-          <Card className="w-full max-w-sm space-y-3 animate-incident-enter">
-            <h2 className="text-base font-semibold">Spend Water</h2>
-            <p className="text-sm text-ink/70">Choose how much water to spend to extinguish fire.</p>
-            <div>
-              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/60">Amount</label>
-              <Input
-                type="number"
-                min={1}
-                max={Math.max(maxWaterSpend, 1)}
-                value={waterSpendAmount}
-                onChange={(event) => {
-                  const next = Number(event.target.value) || 1;
-                  setWaterSpendAmount(Math.max(1, Math.min(next, Math.max(maxWaterSpend, 1))));
-                }}
-              />
-              <p className="mt-1 text-xs text-ink/60">Max now: {maxWaterSpend}</p>
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setWaterSpendOpen(false)} disabled={spendWaterMutation.isPending}>
-                Cancel
-              </Button>
-              <Button
-                onClick={() => spendWaterMutation.mutate(waterSpendAmount)}
-                disabled={spendWaterMutation.isPending || maxWaterSpend <= 0}
-              >
-                {spendWaterMutation.isPending ? "Spending..." : "Extinguish"}
-              </Button>
-            </div>
-          </Card>
-        </div>
+        <WaterSpendModal
+          waterSpendAmount={waterSpendAmount}
+          setWaterSpendAmount={setWaterSpendAmount}
+          maxWaterSpend={maxWaterSpend}
+          onSpend={(units) => spendWaterMutation.mutate(units)}
+          isSpendPending={spendWaterMutation.isPending}
+          onClose={() => setWaterSpendOpen(false)}
+        />
       ) : null}
 
       {debugToolsEnabled && debugPanelOpen ? (
-        <div className="fixed inset-0 z-[66] flex items-center justify-center bg-black/55 px-4">
-          <Card className="w-full max-w-lg space-y-3 animate-incident-enter">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold">Debug Seed Panel</h2>
-              <span className="text-xs text-ink/60">Enabled via terminal toggle</span>
-            </div>
-            {debugSeedQuery.isLoading ? <p className="text-sm text-ink/70">Loading seed...</p> : null}
-            {debugSeedQuery.isError ? (
-              <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">Debug tools are disabled or unavailable.</p>
-            ) : null}
-
-            <label className="inline-flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={debugForm.enabled}
-                onChange={(event) => setDebugForm({ ...debugForm, enabled: event.target.checked })}
-              />
-              Seed enabled
-            </label>
-
-            <div className="grid grid-cols-2 gap-2">
-              <label className="text-xs font-semibold text-ink/70">
-                Water
-                <Input
-                  type="number"
-                  value={debugForm.water_units}
-                  onChange={(event) => setDebugForm({ ...debugForm, water_units: Math.max(Number(event.target.value) || 0, 0) })}
-                />
-              </label>
-              <label className="text-xs font-semibold text-ink/70">
-                Fire
-                <Input
-                  type="number"
-                  value={debugForm.fire_units}
-                  onChange={(event) => setDebugForm({ ...debugForm, fire_units: Math.max(Number(event.target.value) || 0, 0) })}
-                />
-              </label>
-              <label className="text-xs font-semibold text-ink/70">
-                Burn Count
-                <Input
-                  type="number"
-                  value={debugForm.burn_count}
-                  onChange={(event) => setDebugForm({ ...debugForm, burn_count: Math.max(Number(event.target.value) || 0, 0) })}
-                />
-              </label>
-              <label className="text-xs font-semibold text-ink/70">
-                Token Balance
-                <Input
-                  type="number"
-                  value={debugForm.token_balance}
-                  onChange={(event) => setDebugForm({ ...debugForm, token_balance: Math.max(Number(event.target.value) || 0, 0) })}
-                />
-              </label>
-              <label className="text-xs font-semibold text-ink/70">
-                Token Earned
-                <Input
-                  type="number"
-                  value={debugForm.token_earned_count}
-                  onChange={(event) => setDebugForm({ ...debugForm, token_earned_count: Math.max(Number(event.target.value) || 0, 0) })}
-                />
-              </label>
-              <label className="text-xs font-semibold text-ink/70">
-                Token Spent
-                <Input
-                  type="number"
-                  value={debugForm.token_spent_count}
-                  onChange={(event) => setDebugForm({ ...debugForm, token_spent_count: Math.max(Number(event.target.value) || 0, 0) })}
-                />
-              </label>
-              <label className="text-xs font-semibold text-ink/70">
-                Current Streak
-                <Input
-                  type="number"
-                  value={debugForm.current_streak}
-                  onChange={(event) => setDebugForm({ ...debugForm, current_streak: Math.max(Number(event.target.value) || 0, 0) })}
-                />
-              </label>
-              <label className="text-xs font-semibold text-ink/70">
-                Max Streak
-                <Input
-                  type="number"
-                  value={debugForm.max_streak}
-                  onChange={(event) => setDebugForm({ ...debugForm, max_streak: Math.max(Number(event.target.value) || 0, 0) })}
-                />
-              </label>
-              <label className="text-xs font-semibold text-ink/70">
-                Streak Group
-                <Input
-                  type="number"
-                  value={debugForm.active_streak_group_id}
-                  onChange={(event) =>
-                    setDebugForm({
-                      ...debugForm,
-                      active_streak_group_id: Math.max(Number(event.target.value) || 1, 1),
-                    })
-                  }
-                />
-              </label>
-            </div>
-
-            <label className="inline-flex items-center gap-2 text-xs text-ink/70">
-              <input
-                type="checkbox"
-                checked={debugResetFloors}
-                onChange={(event) => setDebugResetFloors(event.target.checked)}
-              />
-              Reset replay floors to now on save
-            </label>
-
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button
-                variant="outline"
-                onClick={() => setDebugPanelOpen(false)}
-                disabled={saveDebugSeedMutation.isPending}
-              >
-                Close
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setDebugForm({
-                    enabled: false,
-                    water_units: 0,
-                    fire_units: 0,
-                    burn_count: 0,
-                    token_balance: 0,
-                    token_earned_count: 0,
-                    token_spent_count: 0,
-                    current_streak: 0,
-                    max_streak: 0,
-                    active_streak_group_id: 1,
-                  });
-                  setDebugResetFloors(true);
-                }}
-                disabled={saveDebugSeedMutation.isPending}
-              >
-                Zero Form
-              </Button>
-              <Button
-                onClick={() => saveDebugSeedMutation.mutate()}
-                disabled={saveDebugSeedMutation.isPending || debugSeedQuery.isError}
-              >
-                {saveDebugSeedMutation.isPending ? "Saving..." : "Save Seed"}
-              </Button>
-            </div>
-          </Card>
-        </div>
+        <DebugPanel
+          debugForm={debugForm}
+          setDebugForm={setDebugForm}
+          debugResetFloors={debugResetFloors}
+          setDebugResetFloors={setDebugResetFloors}
+          isSeedLoading={debugSeedQuery.isLoading}
+          isSeedError={debugSeedQuery.isError}
+          isSaving={saveDebugSeedMutation.isPending}
+          onSave={() => saveDebugSeedMutation.mutate()}
+          onClose={() => setDebugPanelOpen(false)}
+        />
       ) : null}
 
       {activeIncident ? (
-        <div
-          className={cn(
-            "fixed inset-0 z-[70] flex items-center justify-center px-4",
-            activeIncident.severity === "critical" ? "bg-red-950/70 animate-burn-flash" : "bg-black/45",
-          )}
-        >
-          <Card className={cn("relative w-full max-w-lg overflow-hidden border-2 animate-incident-enter", severityClass(activeIncident))}>
-            {incidentWatersSpent > 0 || incidentWaterEarned > 0 ? (
-              <div className="pointer-events-none absolute inset-0">
-                {Array.from({ length: Math.min(Math.max(incidentWatersSpent, incidentWaterEarned), 8) }).map((_, index) => (
-                  <span
-                    key={`water-burst-${index}`}
-                    className={cn(
-                      "absolute block h-2.5 w-2.5 rounded-full animate-water-burst",
-                      incidentWaterEarned > 0 ? "bg-cyan-400/75" : "bg-sky-400/70",
-                    )}
-                    style={{
-                      left: `${12 + index * 10}%`,
-                      top: `${75 - (index % 2) * 20}%`,
-                      animationDelay: `${index * 60}ms`,
-                    }}
-                  />
-                ))}
-              </div>
-            ) : null}
-
-            <div className="relative space-y-3">
-              <div className="flex items-start gap-2">
-                {activeIncident.severity === "critical" ? (
-                  <AlertTriangle className="mt-0.5 h-5 w-5 text-red-700 animate-fire-fade" />
-                ) : (
-                  <Flame className="mt-0.5 h-5 w-5 text-amber-700 animate-fire-fade" />
-                )}
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Game Event</p>
-                  <h2 className="text-lg font-bold text-ink">{activeIncident.title}</h2>
-                </div>
-              </div>
-
-              <p className="text-sm text-ink/80">{activeIncident.message}</p>
-
-              {incidentBurnsTriggered > 0 ? (
-                <p className="rounded-xl bg-red-100 px-3 py-2 text-xs font-semibold text-red-800">
-                  Board burn triggered. Acknowledge to continue.
-                </p>
-              ) : null}
-              {incidentWaterEarned > 0 ? (
-                <p className="rounded-xl bg-sky-100 px-3 py-2 text-xs font-semibold text-sky-800">
-                  Water earned! Keep correcting categories for more.
-                </p>
-              ) : null}
-
-              <div className="flex items-center justify-between text-xs text-ink/60">
-                <span>{formatDistanceToNow(new Date(activeIncident.created_at), { addSuffix: true })}</span>
-                {incidentWaterEarned > 0 ? (
-                  <span className="inline-flex items-center gap-1 text-sky-700">
-                    <Droplets className="h-3.5 w-3.5" />
-                    Water earned: {incidentWaterEarned}
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1">
-                    <Droplets className="h-3.5 w-3.5" />
-                    Waters spent: {incidentWatersSpent}
-                  </span>
-                )}
-              </div>
-
-              <div className="flex justify-end">
-                <Button
-                  className={cn(activeIncident.severity === "critical" ? "bg-red-700 hover:bg-red-800" : undefined)}
-                  onClick={() => acknowledgeIncidentMutation.mutate(activeIncident.id)}
-                  disabled={acknowledgeIncidentMutation.isPending}
-                >
-                  {acknowledgeIncidentMutation.isPending ? "Acknowledging..." : "Acknowledge"}
-                </Button>
-              </div>
-            </div>
-          </Card>
-        </div>
+        <GameIncidentModal
+          incident={activeIncident}
+          incidentWatersSpent={incidentWatersSpent}
+          incidentBurnsTriggered={incidentBurnsTriggered}
+          incidentWaterEarned={incidentWaterEarned}
+          onAcknowledge={(id) => acknowledgeIncidentMutation.mutate(id)}
+          isAcknowledging={acknowledgeIncidentMutation.isPending}
+        />
       ) : null}
     </main>
   );
