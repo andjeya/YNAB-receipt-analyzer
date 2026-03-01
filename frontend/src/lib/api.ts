@@ -48,8 +48,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function receiptFileUrl(receiptId: string): string {
-  return `${API_BASE}/receipts/${receiptId}/file`;
+export function receiptFileUrl(receiptId: string, preview = true): string {
+  const query = preview ? "?preview=true" : "";
+  return `${API_BASE}/receipts/${receiptId}/file${query}`;
 }
 
 export function listReceipts(status?: string, sort: "newest" | "oldest" = "newest") {
