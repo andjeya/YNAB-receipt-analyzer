@@ -286,7 +286,11 @@ function ReceiptListHeader({
               title={`${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} | scored receipts: ${slot.receipt_count}`}
             >
               {slot.display_state ? (
-                <ReceiptStateIcon tone={slot.display_state} shredded={false} className="h-[18px] w-[18px]" />
+                <ReceiptStateIcon
+                  tone={slot.display_state === "shredded" ? "brown" : slot.display_state}
+                  shredded={slot.display_state === "shredded"}
+                  className="h-[18px] w-[18px]"
+                />
               ) : (
                 <span className="h-[18px] w-[18px] rounded-full border border-sand/25" />
               )}
@@ -644,8 +648,6 @@ export function ReceiptList() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<"" | ReceiptStatus>("");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
-  const [receiptLookupInput, setReceiptLookupInput] = useState("");
-  const [receiptLookupError, setReceiptLookupError] = useState<string | null>(null);
   const [waterSpendOpen, setWaterSpendOpen] = useState(false);
   const [waterSpendAmount, setWaterSpendAmount] = useState(1);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
@@ -867,17 +869,6 @@ export function ReceiptList() {
   const fireUnits = dashboardQuery.data?.correctness.fire_units ?? 0;
   const fireToBurn = dashboardQuery.data?.correctness.fires_to_burn ?? Math.max((dashboardQuery.data?.rules.fire_burn_threshold ?? 0) - fireUnits, 0);
   const maxWaterSpend = Math.min(waterUnits, fireUnits);
-
-  const openReceiptById = () => {
-    const parsedId = extractReceiptIdFromText(receiptLookupInput.trim());
-    if (!parsedId) {
-      setReceiptLookupError("Enter a valid receipt ID (UUID) or memo token containing one.");
-      return;
-    }
-    setReceiptLookupError(null);
-    setMenuOpen(false);
-    router.push(`/receipts/${parsedId}`);
-  };
 
   return (
     <main className="relative mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 pb-24 pt-14">
