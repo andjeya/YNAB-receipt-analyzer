@@ -35,6 +35,17 @@ class Receipt(Base):
     display_payee_name: Mapped[str | None] = mapped_column(String(255))
     display_total_milliunits: Mapped[int | None] = mapped_column(Integer)
     display_receipt_date: Mapped[date | None] = mapped_column(Date)
+    semantic_payee_key: Mapped[str | None] = mapped_column(String(255), index=True)
+    semantic_total_cents: Mapped[int | None] = mapped_column(Integer, index=True)
+    semantic_transaction_date: Mapped[date | None] = mapped_column(Date, index=True)
+    semantic_transaction_time: Mapped[str | None] = mapped_column(String(5), index=True)
+    semantic_signature: Mapped[str | None] = mapped_column(String(64), index=True)
+    duplicate_of_receipt_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("receipts.id", ondelete="SET NULL"),
+        index=True,
+    )
+    duplicate_override_signature: Mapped[str | None] = mapped_column(String(64))
 
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     extraction_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

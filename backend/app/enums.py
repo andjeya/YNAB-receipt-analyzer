@@ -7,6 +7,7 @@ class ReceiptStatus(str, Enum):
     INGESTED = "ingested"
     EXTRACTING = "extracting"
     NEEDS_REVIEW = "needs_review"
+    DUPLICATE_REVIEW = "duplicate_review"
     SYNCING = "syncing"
     SYNCED = "synced"
     ERROR_EXTRACT = "error_extract"
