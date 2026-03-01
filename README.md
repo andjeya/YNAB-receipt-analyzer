@@ -1,362 +1,62 @@
-# Receipt -> YNAB Local Web App (MVP)
+# YNAB Receipt Analyzer
 
-This project re-architects the original receipt CLI prototype into a local, single-user web app with a long-running backend service, background workers, persistent storage, and mobile-first UI.
+Receipt ingestion and analysis system with a NAS-hosted server runtime and a Raspberry Pi edge shipper. The Pi gathers scanned/Dropbox receipt files, stages them through a durable outbox, and delivers them to the NAS for backend ingestion and processing.
 
-The original CLI (`main.py`) is preserved for reference; reusable logic was extracted into `shared/receipt_shared`.
+## Major Components
 
-## Project Structure
+- `apps/server`: core server runtime (FastAPI API, worker/scanner, shared libs, frontend)
+- `edge/pi-outbox-shipper`: Raspberry Pi edge ingestion outbox shipper
+- `infra/nas`: placeholder production docker-compose artifacts for Synology NAS
+- `docs`: architecture, setup, deployment, and troubleshooting guides
 
-```text
-backend/
-  app/
-    api/                # FastAPI routes
-    jobs/               # RQ queue helpers + background tasks
-    services/           # ingestion, validation, ynab sync logic
-    config.py           # env-based settings
-    db.py               # SQLAlchemy engine/session
-    models.py           # DB models
-    schemas.py          # API schemas
-    main.py             # FastAPI app entrypoint
-  alembic/
-    versions/0001_mvp_init.py
-frontend/
-  src/app/              # Next.js app routes
-  src/components/       # mobile-first UI components
-  src/lib/              # API client + shared types
-worker/
-  scanner.py            # ingest folder polling loop
-  worker.py             # RQ worker
-shared/
-  receipt_shared/
-    gemini.py           # prompt + strict JSON extraction
-    ynab_client.py      # YNAB API client
-    money.py            # milliunit conversion
-    contracts.py        # pydantic contracts
+## Data Flow
+
+```mermaid
+flowchart LR
+  S[Scanner files] --> I[Pi inbox folders]
+  D[Dropbox synced files] --> I
+  I --> O[Pi outbox shipper]
+  O --> T[NAS staging path]
+  T --> A[Atomic rename to NAS incoming]
+  A --> P[Server ingest pipeline]
 ```
 
-## MVP Lifecycle
+## Documentation Map
 
-`ingested -> extracting -> needs_review -> syncing -> synced`
+- Architecture: `docs/architecture.md`
+- Pi setup: `docs/pi-edge-setup.md`
+- NAS deployment notes: `docs/nas-deploy.md`
+- Troubleshooting playbook: `docs/troubleshooting.md`
+- Server runtime details: `apps/server/README.md`
+- NAS compose placeholder details: `infra/nas/README.md`
 
-Error states:
+## Quickstart (Devcontainer / Local)
 
-- `error_extract`
-- `error_sync`
-
-State transitions are persisted on `receipts.status` and visible in the API/UI.
-
-## Core Design
-
-- Backend is a long-running FastAPI service.
-- Gemini calls happen only in RQ background jobs.
-- SQLite is source of truth.
-- Receipt files are immutable blobs after ingest.
-- DB stores `storage_key`; original filename is display-only.
-- Ingestion deduplicates by SHA-256 hash and waits for stable file size.
-- YNAB sync is idempotent via `ynab_sync.idempotency_key`.
-
-## Database
-
-Tables:
-
-- `receipts`
-- `extraction_runs`
-- `validations`
-- `ynab_cache`
-- `ynab_sync`
-- `timing_metrics`
-
-Create schema with Alembic:
-
-```bash
-alembic -c backend/alembic.ini upgrade head
-```
-
-## Local Run
-
-1. Install Python dependencies:
+1. Install backend/python deps and frontend deps:
 
 ```bash
 pip install -r requirements.txt
+cd apps/server/frontend && npm install
 ```
 
-2. Configure environment:
+2. Run migrations:
 
 ```bash
-cp .env.example .env
+alembic -c apps/server/backend/alembic.ini upgrade head
 ```
 
-Optional local override (gitignored), useful for machine-specific ingest paths:
+3. Run API + worker + scanner:
 
 ```bash
-cat > .env.local <<'EOF'
-INGEST_DIR=/absolute/path/to/folder/to/watch
-EOF
+PYTHONPATH=apps/server/backend:apps/server/shared uvicorn app.main:app --reload --port 8000
+PYTHONPATH=apps/server/backend:apps/server/shared python apps/server/worker/worker.py
+PYTHONPATH=apps/server/backend:apps/server/shared python apps/server/worker/scanner.py
 ```
 
-If `INGEST_DIR` is empty, the app falls back to `./data/ingest`.
-
-3. Run backend API:
+4. Run frontend:
 
 ```bash
-PYTHONPATH=backend:shared uvicorn app.main:app --reload --port 8000
+cd apps/server/frontend && npm run dev
 ```
 
-4. Run RQ worker:
-
-```bash
-PYTHONPATH=backend:shared python worker/worker.py
-```
-
-5. Run scanner:
-
-```bash
-PYTHONPATH=backend:shared python worker/scanner.py
-```
-
-6. Run frontend:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-## Dev Container (Recommended For Consistent Dev Environments)
-
-This repo includes a VS Code devcontainer in `.devcontainer/`.
-
-Quick start:
-
-```bash
-mkdir -p ~/.codex ~/.claude ~/.config/claude
-```
-
-Then in VS Code run `Dev Containers: Reopen in Container`.
-
-The first container start installs:
-
-- Python dependencies from `requirements.txt`
-- Frontend dependencies from `frontend/package.json`
-
-Detailed instructions: `.devcontainer/README.md`.
-
-If `INGEST_DIR` is set in `.env.local`, devcontainer init will automatically prepare a local mount shim and expose it inside the container at `/mnt/ingest-host`.
-
-## Optional Devtools
-
-This repository supports optional integration for custom tooling (eg. tools that are shared across multiple repositories in a developer's workflow but not unique to a project)
-
-1. Set a machine-local path in `.env.local`:
-
-```bash
-cat >> .env.local <<'EOF'
-DEVTOOLS_DIR=/absolute/path/to/dev-tools
-EOF
-```
-
-2. Reopen the project in the devcontainer.
-
-`initializeCommand` will create `.devcontainer/.devtools-host` as a symlink to `DEVTOOLS_DIR` on the host.
-
-If you want to refresh the shim without reopening, run this on the host (not inside the container):
-
-```bash
-./scripts/link_devtools.sh
-```
-
-3. Install repo-local git hooks:
-
-```bash
-./scripts/install_git_hooks.sh
-```
-
-When optional devtools are available, the pre-commit hook runs `sanitize-git` automatically before commits.
-
-## Production Runtime (Docker Compose)
-
-This repo now includes a production-oriented compose stack:
-
-- `docker-compose.yml`
-- `docker/backend.Dockerfile`
-- `docker/frontend.Dockerfile`
-
-Services:
-
-- `frontend` (Next.js on port `3000`)
-- `api` (FastAPI, bound to `127.0.0.1:8000`)
-- `worker` (RQ worker)
-- `scanner` (ingest scanner loop)
-- `redis` (queue backend)
-
-### First-time setup
-
-1. Create runtime environment file:
-
-```bash
-cp .env.example .env
-```
-
-2. Edit `.env` with your real `GEMINI_*` and `YNAB_*` values.
-
-3. Build images:
-
-```bash
-docker compose build
-```
-
-4. Run migrations (recommended before every deploy):
-
-```bash
-docker compose --profile ops run --rm migrate
-```
-
-5. Start the stack:
-
-```bash
-docker compose up -d
-```
-
-6. Verify:
-
-```bash
-docker compose ps
-docker compose logs -f api worker scanner frontend
-```
-
-### Updating on server
-
-Use this sequence for safe updates:
-
-1. Pull latest code:
-
-```bash
-git pull
-```
-
-2. Rebuild images with newest bases:
-
-```bash
-docker compose build --pull
-```
-
-3. Run migrations:
-
-```bash
-docker compose --profile ops run --rm migrate
-```
-
-4. Roll forward services:
-
-```bash
-docker compose up -d --remove-orphans
-```
-
-5. Confirm health/logs:
-
-```bash
-docker compose ps
-docker compose logs --tail=200 api worker scanner frontend
-```
-
-Data persists in named volumes (`app_data`, `redis_data`) across container restarts/rebuilds.
-
-## API (MVP)
-
-- `GET /healthz`
-- `POST /api/ingest/scan`
-- `GET /api/receipts`
-- `GET /api/receipts/{id}`
-- `GET /api/receipts/{id}/file`
-- `POST /api/receipts/{id}/draft`
-- `POST /api/receipts/{id}/reject`
-- `POST /api/receipts/{id}/sync`
-- `GET /api/ynab/cache`
-- `POST /api/ynab/cache/refresh`
-- `POST /api/ynab/updates/fetch`
-- `GET /api/stats/summary`
-- `GET /api/game/dashboard`
-- `POST /api/game/receipts/{id}/shred`
-- `POST /api/game/rebuild`
-- `POST /api/game/reconcile`
-- `POST /api/game/correctness/recompute`
-- `GET /api/game/incidents`
-- `POST /api/game/incidents/{id}/ack`
-- `POST /api/game/water/spend`
-- `GET /api/game/debug-seed`
-- `POST /api/game/debug-seed`
-
-## Included V1 Features
-
-- Folder ingestion (polling scanner)
-- Gemini vision extraction on receipt file
-- Strict JSON parsing + schema validation tracking
-- Versioned validation drafts
-- YNAB cache for categories/accounts/payees
-- YNAB match-or-create sync with idempotency
-- Timing metrics: extraction, validation, age at validation
-- Gamification core loop (green/yellow/brown classification, streak tracking, shred token earn/spend, forest dashboard + weekly/monthly summaries + challenges)
-- Correctness economy (water/fire counters, mismatch penalties, board burn threshold)
-- YNAB reconciliation run tracking with 3-month lookback (default) and 12-hour cadence (default)
-- Receipt correction metadata + fade shading for queue/detail visibility
-- Persistent game incident queue + acknowledge workflow
-- Debug seed controls for game-state testing (`scripts/game-debug.sh`)
-- Debug tool toggle for in-app panel + debug APIs (`scripts/debug-tools.sh`)
-
-## Gamification Strategy
-
-Current strategy (implemented):
-
-- First successful sync classifies each receipt as `green`, `yellow`, or `brown` based on hours from transaction date to sync time.
-- Consecutive green receipts build streaks.
-- Every configured green threshold mints one shred token.
-- Tokens can shred yellow/brown receipts in the forest view.
-- Resync does not add duplicate forest entries for the same receipt.
-- Manual category/split corrections can award water (up to capacity).
-- Reconciliation mismatches add fire units.
-- Water is force-spent only when needed to prevent an immediate board burn.
-- Fire debt can burn the board when threshold is reached and no water remains.
-- User can manually spend water to extinguish fire units from the dashboard.
-
-Planned correctness strategy (next phase):
-
-- Add a second loop that rewards correction quality, not just speed.
-- Track user-corrected category/split improvements as "water".
-- Reconcile YNAB changes twice daily across the last 3 months and convert missed corrections into "fire" debt.
-- Tie mistakes back to specific transactions and surface correction history in UI.
-- Burn/reset behavior triggers when fire debt reaches threshold and no water remains.
-
-## Category Guidance Template
-
-- Keep your local/private guidance in: `shared/receipt_shared/resources/category_guidance.json`
-- This file is intentionally gitignored.
-- Start from the committed template: `shared/receipt_shared/resources/example_category_guidance.json`
-
-## Game Debug Seed Tool
-
-Use `scripts/game-debug.sh` to inspect and seed game counters for testing.
-
-- `bash scripts/debug-tools.sh on`
-- `bash scripts/debug-tools.sh off`
-- `bash scripts/debug-tools.sh status`
-- `bash scripts/game-debug.sh show`
-- `bash scripts/game-debug.sh seed set --enable --water 3 --fire 11 --token-balance 2 --current-streak 4 --reset-floors`
-- `bash scripts/game-debug.sh seed clear`
-
-When debug tools are OFF, the in-app debug panel is hidden and debug APIs/scripts are disabled.
-
-## Explicitly Not Implemented (V1)
-
-- User accounts/auth flows
-- Dropbox API ingestion
-- Timezone normalization
-- Advanced receipt highlight overlays
-
-## V2 TODOs
-
-- Dropbox API ingestion pipeline
-- Account identifier to YNAB account mapping strategy
-- Expanded gamification economy and rewards
-- Multi-user tenancy and auth
-- Object storage backend abstraction for S3/MinIO
-- Postgres migration hardening and production deployment profile
+For the Pi shipper flow, use `edge/pi-outbox-shipper/README.md` and `docs/pi-edge-setup.md`.

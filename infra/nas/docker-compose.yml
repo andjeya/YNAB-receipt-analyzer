@@ -1,0 +1,58 @@
+# Placeholder production compose for Synology NAS deployment.
+# This file is intentionally minimal and does not replace root devcontainer/local compose workflows.
+
+name: receipt-ingestion-prod
+
+services:
+  api:
+    image: ghcr.io/your-org/ynab-receipt-analyzer-api:latest
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-sqlite:///./data/app.db}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      INGEST_DIR: ${INGEST_DIR:-/app/incoming}
+      OBJECT_STORE_ROOT: ${OBJECT_STORE_ROOT:-/app/data}
+      OBJECT_STORE_RECEIPTS_PREFIX: ${OBJECT_STORE_RECEIPTS_PREFIX:-receipts}
+    volumes:
+      # Host path on Synology NAS where Pi shipper drops finalized files.
+      - /volume1/receipts/incoming:/app/incoming
+      # Persistent app data path (db/object store/logs).
+      - /volume1/receipts/data:/app/data
+    networks:
+      - receipt_net
+    restart: unless-stopped
+
+  worker:
+    image: ghcr.io/your-org/ynab-receipt-analyzer-api:latest
+    command: ["python", "apps/server/worker/worker.py"]
+    env_file:
+      - .env
+    volumes:
+      - /volume1/receipts/incoming:/app/incoming
+      - /volume1/receipts/data:/app/data
+    networks:
+      - receipt_net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - /volume1/receipts/redis:/data
+    networks:
+      - receipt_net
+    restart: unless-stopped
+
+  # Optional frontend service can be added later once production routing is finalized.
+  # frontend:
+  #   image: ghcr.io/your-org/ynab-receipt-analyzer-frontend:latest
+  #   env_file:
+  #     - .env
+  #   networks:
+  #     - receipt_net
+  #   restart: unless-stopped
+
+networks:
+  receipt_net:
+    driver: bridge
