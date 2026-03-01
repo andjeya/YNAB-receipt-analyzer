@@ -275,7 +275,7 @@ export function ReceiptTwinViewer({
                   onClick={() => {
                     void handleConfirm("date_time");
                   }}
-                  disabled={confirmMutation.isPending || saveMutation.isPending}
+                  disabled={!draft.transaction_date || confirmMutation.isPending || saveMutation.isPending}
                 >
                   <Check className="h-3.5 w-3.5" />
                 </Button>
@@ -308,7 +308,7 @@ export function ReceiptTwinViewer({
                   onClick={() => {
                     void handleConfirm("date_time");
                   }}
-                  disabled={saveMutation.isPending || confirmMutation.isPending}
+                  disabled={!draft.transaction_date || saveMutation.isPending || confirmMutation.isPending}
                 >
                   Save
                 </Button>
@@ -352,7 +352,7 @@ export function ReceiptTwinViewer({
                   onClick={() => {
                     void handleConfirm("total");
                   }}
-                  disabled={confirmMutation.isPending || saveMutation.isPending}
+                  disabled={!(draft.total_amount > 0) || confirmMutation.isPending || saveMutation.isPending}
                 >
                   <Check className="h-3.5 w-3.5" />
                 </Button>
@@ -385,7 +385,7 @@ export function ReceiptTwinViewer({
                   onClick={() => {
                     void handleConfirm("total");
                   }}
-                  disabled={saveMutation.isPending || confirmMutation.isPending}
+                  disabled={!(draft.total_amount > 0) || saveMutation.isPending || confirmMutation.isPending}
                 >
                   Save
                 </Button>

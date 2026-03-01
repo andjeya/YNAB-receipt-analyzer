@@ -238,9 +238,6 @@ function validateDraft(
   } else if (!accountIds.has(draft.account_id)) {
     errors.push("Selected account is not a valid YNAB account");
   }
-  if (!draft.transaction_date.trim()) errors.push("Date is required");
-  if (!Number.isFinite(draft.total_amount) || draft.total_amount <= 0) errors.push("Total must be > 0");
-
   if (!categoryIds.size) {
     errors.push("YNAB categories are not loaded yet");
   } else if (usesSplits) {
@@ -270,25 +267,66 @@ function formatAmount(value: number | null): string {
   return `$${Math.abs(value / 1000).toFixed(2)}`;
 }
 
+const INLINE_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+]);
+
+function isInlineImageMimeType(mimeType: string): boolean {
+  return INLINE_IMAGE_MIME_TYPES.has(mimeType.toLowerCase());
+}
+
+function isPdfMimeType(mimeType: string): boolean {
+  const normalized = mimeType.toLowerCase();
+  return normalized === "application/pdf" || normalized.endsWith("+pdf");
+}
+
 function ScanPanel({ receiptId, mimeType, originalFilename }: {
   receiptId: string;
   mimeType: string;
   originalFilename: string;
 }) {
+  const previewUrl = receiptFileUrl(receiptId);
+  const downloadUrl = receiptFileUrl(receiptId, false);
+
   return (
     <Card className="h-full overflow-hidden p-0">
       <div className="border-b border-ink/10 px-3 py-2">
         <h2 className="text-sm font-semibold">Original Scan</h2>
       </div>
       <div className="h-[28rem] overflow-auto bg-black/5 p-2">
-        {mimeType.startsWith("image/") ? (
+        {isInlineImageMimeType(mimeType) ? (
           <div className="relative h-full min-h-[22rem] w-full">
-            <Image src={receiptFileUrl(receiptId)} alt={originalFilename} fill unoptimized className="object-contain" />
+            <Image src={previewUrl} alt={originalFilename} fill unoptimized className="object-contain" />
           </div>
+        ) : isPdfMimeType(mimeType) ? (
+          <iframe src={`${previewUrl}#toolbar=1&view=FitH`} title="Receipt scan PDF" className="h-full min-h-[22rem] w-full border-0" />
         ) : (
-          <object data={`${receiptFileUrl(receiptId)}#toolbar=1&view=FitH`} type="application/pdf" className="h-full min-h-[22rem] w-full">
-            <iframe src={receiptFileUrl(receiptId)} title="Receipt scan" className="h-full w-full border-0" />
-          </object>
+          <div className="flex h-full min-h-[22rem] flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-ink/20 bg-white/70 px-4 text-center">
+            <p className="text-sm text-ink/75">
+              Preview not available for this file type ({mimeType || "unknown"}).
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <a
+                href={previewUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-md border border-ink/20 bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:bg-sand/70"
+              >
+                Open file
+              </a>
+              <a
+                href={downloadUrl}
+                className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-white hover:bg-ink/90"
+                download
+              >
+                Download file
+              </a>
+            </div>
+          </div>
         )}
       </div>
     </Card>
@@ -410,69 +448,16 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
   );
 }
 
-function DateTimeCard({ draft, setDraft, setDirty, dateLocked, timeLocked, totalLocked }: {
+function MemoCard({ draft, setDraft, setDirty }: {
   draft: ValidationPayloadInput;
   setDraft: (d: ValidationPayloadInput) => void;
   setDirty: (v: boolean) => void;
-  dateLocked: boolean;
-  timeLocked: boolean;
-  totalLocked: boolean;
 }) {
   return (
     <Card className="animate-reveal space-y-3" style={{ animationDelay: "120ms" }}>
-      <h2 className="font-semibold">Date + Total</h2>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Date</label>
-          <Input
-            type="date"
-            value={draft.transaction_date}
-            readOnly={dateLocked}
-            className={dateLocked ? "bg-sand/60" : undefined}
-            onChange={(event) => {
-              if (dateLocked) return;
-              setDraft({ ...draft, transaction_date: event.target.value });
-              setDirty(true);
-            }}
-          />
-          {dateLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Receipt time (optional)</label>
-          <Input
-            type="time"
-            value={draft.transaction_time ?? ""}
-            readOnly={timeLocked}
-            className={timeLocked ? "bg-sand/60" : undefined}
-            onChange={(event) => {
-              if (timeLocked) return;
-              setDraft({ ...draft, transaction_time: event.target.value || "" });
-              setDirty(true);
-            }}
-          />
-          {timeLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
-        </div>
-      </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-1">
-        <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Total</label>
-          <Input
-            type="number"
-            step="0.01"
-            value={draft.total_amount}
-            readOnly={totalLocked}
-            className={totalLocked ? "bg-sand/60" : undefined}
-            onChange={(event) => {
-              if (totalLocked) return;
-              setDraft({ ...draft, total_amount: Number(event.target.value) || 0 });
-              setDirty(true);
-            }}
-          />
-          {totalLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
-        </div>
-      </div>
+      <h2 className="font-semibold">Memo</h2>
       <div>
-        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Memo</label>
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Transaction memo</label>
         <Textarea
           rows={2}
           value={draft.memo}
@@ -1022,13 +1007,10 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             </section>
           ) : null}
 
-          <DateTimeCard
+          <MemoCard
             draft={draft}
             setDraft={setDraft}
             setDirty={setDirty}
-            dateLocked={receipt.locked_fields?.transaction_date ?? false}
-            timeLocked={receipt.locked_fields?.transaction_time ?? false}
-            totalLocked={receipt.locked_fields?.total_amount ?? false}
           />
 
           <CategorySplitCard

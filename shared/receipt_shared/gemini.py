@@ -209,7 +209,13 @@ Rules:
 5. For payee_name:
    - Use an existing YNAB payee only when receipt evidence is clear.
    - If uncertain, set payee_name to an empty string.
-6. Keep memo text concise.
+6. Write memo as a high-signal purchase summary:
+   - Describe what was purchased, not where.
+   - Do NOT repeat payee/store names or phrases like "at <store>".
+   - Use 1-3 thematic buckets with concrete items.
+   - Preferred format: "Bucket: item, item; Bucket: item".
+   - Avoid vague-only output like "Groceries" without item detail.
+   - Keep it concise (ideally <= 180 characters) while preserving useful detail.
 7. If date is unclear, set transaction_date to null.
 8. If time is unclear or unavailable, set transaction_time to null.
 9. If any line item could map to multiple categories with confidence >= 0.70, include it in category_ambiguity_flags.
@@ -291,7 +297,14 @@ Rules:
    - Split mode: category_id = null and 2+ splits summing to total_amount
 9. If date is unclear, set transaction_date to null.
 10. If time is unclear or unavailable, set transaction_time to null.
-11. If category confidence is ambiguous (>= 0.70 across candidates), include category_ambiguity_flags.
+11. Write memo as a high-signal purchase summary:
+   - Describe what was purchased, not where.
+   - Do NOT repeat payee/store names or phrases like "at <store>".
+   - Use 1-3 thematic buckets with concrete items.
+   - Preferred format: "Bucket: item, item; Bucket: item".
+   - Avoid vague-only output like "Groceries" without item detail.
+   - Keep it concise (ideally <= 180 characters) while preserving useful detail.
+12. If category confidence is ambiguous (>= 0.70 across candidates), include category_ambiguity_flags.
 
 {reference_context}
 

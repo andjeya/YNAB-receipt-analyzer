@@ -32,9 +32,18 @@ def upgrade() -> None:
     op.create_index("ix_receipts_semantic_transaction_time", "receipts", ["semantic_transaction_time"], unique=False)
     op.create_index("ix_receipts_semantic_signature", "receipts", ["semantic_signature"], unique=False)
     op.create_index("ix_receipts_duplicate_of_receipt_id", "receipts", ["duplicate_of_receipt_id"], unique=False)
+    op.create_foreign_key(
+        "fk_receipts_duplicate_of_receipt_id_receipts",
+        "receipts",
+        "receipts",
+        ["duplicate_of_receipt_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
 
 
 def downgrade() -> None:
+    op.drop_constraint("fk_receipts_duplicate_of_receipt_id_receipts", "receipts", type_="foreignkey")
     op.drop_index("ix_receipts_duplicate_of_receipt_id", table_name="receipts")
     op.drop_index("ix_receipts_semantic_signature", table_name="receipts")
     op.drop_index("ix_receipts_semantic_transaction_time", table_name="receipts")
