@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from receipt_shared.ai import AIClient, AIRequest, AILimitExceededError, TokenUsage
+from receipt_shared.ai import AIClient, AIRequest, AILimitExceededError, TokenUsage, UsageLedgerStore
 from receipt_shared.ai.types import ProviderResult
 
 
@@ -317,6 +317,23 @@ def test_concurrent_requests_do_not_exceed_cap(tmp_path: Path):
     assert outcomes.count("success") == 1
     assert any(isinstance(exc, AILimitExceededError) for exc in errors)
     assert setup.provider.call_count == 1
+
+
+def test_non_sqlite_reservations_use_serialization_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    store = UsageLedgerStore(f"sqlite:///{tmp_path / 'ai_usage_non_sqlite_path.db'}")
+    store._is_sqlite = False
+
+    calls: list[object] = []
+
+    def _capture_lock(conn) -> None:
+        calls.append(conn)
+
+    monkeypatch.setattr(store, "_acquire_reservation_lock", _capture_lock)
+
+    result = store._run_locked(lambda _conn: "ok", serialize_reservation=True)
+
+    assert result == "ok"
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize(
