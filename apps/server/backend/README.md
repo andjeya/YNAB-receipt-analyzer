@@ -12,8 +12,8 @@
 
 ```bash
 pip install -r requirements.txt
-alembic -c backend/alembic.ini upgrade head
-PYTHONPATH=backend:shared uvicorn app.main:app --reload --port 8000
+alembic -c apps/server/backend/alembic.ini upgrade head
+PYTHONPATH=apps/server/backend:apps/server/shared uvicorn app.main:app --reload --port 8000
 ```
 
 ## API Surface (MVP)

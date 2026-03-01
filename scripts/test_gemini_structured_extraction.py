@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "backend"))
-sys.path.insert(0, str(REPO_ROOT / "shared"))
+sys.path.insert(0, str(REPO_ROOT / "apps" / "server" / "backend"))
+sys.path.insert(0, str(REPO_ROOT / "apps" / "server" / "shared"))
 
 from app.config import get_settings
 from app.db import SessionLocal

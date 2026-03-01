@@ -40,7 +40,7 @@ if [[ "${typed}" != "${CONFIRM_PHRASE}" ]]; then
 fi
 
 echo "[1/5] Stopping local app processes..."
-pkill -f "uvicorn app.main:app|worker/worker.py|worker/scanner.py|next start" || true
+pkill -f "uvicorn app.main:app|apps/server/worker/worker.py|apps/server/worker/scanner.py|next start" || true
 
 if [[ -f "data/app.db" ]]; then
   echo "[2/5] Clearing SQLite receipt data..."

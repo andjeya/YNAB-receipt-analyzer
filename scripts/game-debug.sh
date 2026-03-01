@@ -64,7 +64,7 @@ ensure_db() {
   has_table=$(sqlite3 "${DB_PATH}" "select count(*) from sqlite_master where type='table' and name='game_debug_seed';")
   if [[ "${has_table}" == "0" ]]; then
     echo "game_debug_seed table is missing; applying latest migrations..."
-    PYTHONPATH=backend:shared python -c "from app.migrations import ensure_schema_current; ensure_schema_current()"
+    PYTHONPATH=apps/server/backend:apps/server/shared python -c "from app.migrations import ensure_schema_current; ensure_schema_current()"
   fi
 }
 

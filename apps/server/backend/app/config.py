@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3-flash-preview"
     gemini_prompt: str = "Categorize receipt line items into the most appropriate YNAB categories."
     gemini_max_retries: int = 3
-    ai_model_registry_path: Path = Path("./shared/receipt_shared/resources/ai_model_registry.v1.json")
+    ai_model_registry_path: Path = Path("./apps/server/shared/receipt_shared/resources/ai_model_registry.v1.json")
     ai_limits_config_path: Path = Path("./config/ai_limits.v1.json")
     ai_usage_db_url: str = "sqlite:///./data/ai_usage.db"
     ai_limit_behavior: str = "hard_fail"

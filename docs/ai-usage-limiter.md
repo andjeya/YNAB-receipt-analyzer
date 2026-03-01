@@ -22,7 +22,7 @@ This minimizes invasive changes while still guaranteeing requests pass through t
 
 ## Components
 
-### 1) Gateway client (`shared/receipt_shared/ai/client.py`)
+### 1) Gateway client (`apps/server/shared/receipt_shared/ai/client.py`)
 
 - Public interface:
   - `AIClient.generate_text(request: AIRequest)`
@@ -34,14 +34,14 @@ This minimizes invasive changes while still guaranteeing requests pass through t
   - invokes provider adapter
   - finalizes ledger record with actual usage/cost
 
-### 2) Provider adapters (`shared/receipt_shared/ai/providers/`)
+### 2) Provider adapters (`apps/server/shared/receipt_shared/ai/providers/`)
 
 - Current provider: Google Gemini.
 - Extracts provider usage metadata when available.
 - Falls back to best-effort estimation when usage is missing.
 - Provider adapters are pluggable by provider key from registry.
 
-### 3) Model registry (`shared/receipt_shared/resources/ai_model_registry.v1.json`)
+### 3) Model registry (`apps/server/shared/receipt_shared/resources/ai_model_registry.v1.json`)
 
 - Versioned schema.
 - Defines model IDs, provider, provider model mapping, and pricing dimensions.
@@ -85,7 +85,7 @@ Stored per request:
 
 Environment variables:
 
-- `AI_MODEL_REGISTRY_PATH` (default `./shared/receipt_shared/resources/ai_model_registry.v1.json`)
+- `AI_MODEL_REGISTRY_PATH` (default `./apps/server/shared/receipt_shared/resources/ai_model_registry.v1.json`)
 - `AI_LIMITS_CONFIG_PATH` (default `./config/ai_limits.v1.json`)
 - `AI_USAGE_DB_URL` (default `sqlite:///./data/ai_usage.db`)
 - `AI_LIMIT_BEHAVIOR` (`hard_fail` or `soft_fail`, default `hard_fail`)

@@ -1,6 +1,6 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
-COPY frontend/package*.json ./
+COPY apps/server/frontend/package*.json ./
 RUN npm ci
 
 FROM node:22-alpine AS builder
@@ -15,7 +15,7 @@ ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 ENV INTERNAL_API_ORIGIN=${INTERNAL_API_ORIGIN}
 
 COPY --from=deps /app/node_modules ./node_modules
-COPY frontend ./
+COPY apps/server/frontend ./
 RUN npm run build
 
 FROM node:22-alpine AS runner

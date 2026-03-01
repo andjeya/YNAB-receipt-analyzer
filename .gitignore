@@ -23,6 +23,8 @@ __pycache__/
 # Frontend dependencies/build output
 frontend/node_modules/
 frontend/.next/
+apps/server/frontend/node_modules/
+apps/server/frontend/.next/
 
 # Local runtime data/artifacts
 data/
@@ -44,3 +46,4 @@ plans/
 
 # Local/private Gemini guidance (do not commit)
 shared/receipt_shared/resources/category_guidance.json
+apps/server/shared/receipt_shared/resources/category_guidance.json

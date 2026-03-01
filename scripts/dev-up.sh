@@ -76,27 +76,27 @@ start_redis_if_needed
 start_service \
   "api" \
   "uvicorn app.main:app --host 0.0.0.0 --port 8000" \
-  "PYTHONPATH=backend:shared uvicorn app.main:app --host 0.0.0.0 --port 8000"
+  "PYTHONPATH=apps/server/backend:apps/server/shared uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
 start_service \
   "worker" \
-  "python worker/worker.py" \
-  "PYTHONPATH=backend:shared python worker/worker.py"
+  "python apps/server/worker/worker.py" \
+  "PYTHONPATH=apps/server/backend:apps/server/shared python apps/server/worker/worker.py"
 
 start_service \
   "scanner" \
-  "python worker/scanner.py" \
-  "PYTHONPATH=backend:shared python worker/scanner.py"
+  "python apps/server/worker/scanner.py" \
+  "PYTHONPATH=apps/server/backend:apps/server/shared python apps/server/worker/scanner.py"
 
 if ! is_running_pattern "next-server"; then
   echo "[build] frontend (production mode, no hot reload)"
-  (cd frontend && npm run build)
+  (cd apps/server/frontend && npm run build)
 fi
 
 start_service \
   "frontend" \
   "next-server" \
-  "cd frontend && npm run start -- --hostname 0.0.0.0 --port 3000"
+  "cd apps/server/frontend && npm run start -- --hostname 0.0.0.0 --port 3000"
 
 echo
 echo "Services:"

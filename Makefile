@@ -1,16 +1,16 @@
 .PHONY: migrate api worker scanner frontend
 
 migrate:
-	alembic -c backend/alembic.ini upgrade head
+	alembic -c apps/server/backend/alembic.ini upgrade head
 
 api:
-	PYTHONPATH=backend:shared uvicorn app.main:app --reload --port 8000
+	PYTHONPATH=apps/server/backend:apps/server/shared uvicorn app.main:app --reload --port 8000
 
 worker:
-	PYTHONPATH=backend:shared python worker/worker.py
+	PYTHONPATH=apps/server/backend:apps/server/shared python apps/server/worker/worker.py
 
 scanner:
-	PYTHONPATH=backend:shared python worker/scanner.py
+	PYTHONPATH=apps/server/backend:apps/server/shared python apps/server/worker/scanner.py
 
 frontend:
-	cd frontend && npm run dev
+	cd apps/server/frontend && npm run dev

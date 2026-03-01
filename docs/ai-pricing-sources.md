@@ -10,7 +10,7 @@ Retrieved: **2026-02-28 (UTC)**
   - https://ai.google.dev/gemini-api/docs/models/gemini-3-flash-preview
   - https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash
 
-## Pricing values recorded in `shared/receipt_shared/resources/ai_model_registry.v1.json`
+## Pricing values recorded in `apps/server/shared/receipt_shared/resources/ai_model_registry.v1.json`
 
 - `gemini-3-flash-preview` (paid tier, per 1M tokens):
   - Input (text/image/video): `$0.50`

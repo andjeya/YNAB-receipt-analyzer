@@ -34,7 +34,7 @@
     "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
   },
   "containerEnv": {
-    "PYTHONPATH": "${containerWorkspaceFolder}/backend:${containerWorkspaceFolder}/shared",
+    "PYTHONPATH": "${containerWorkspaceFolder}/apps/server/backend:${containerWorkspaceFolder}/apps/server/shared",
     "REDIS_URL": "redis://host.docker.internal:6379/0",
     "NEXT_PUBLIC_API_BASE_URL": "/api"
   },
@@ -55,8 +55,8 @@
       "settings": {
         "python.defaultInterpreterPath": "/usr/local/python/current/bin/python",
         "python.analysis.extraPaths": [
-          "${workspaceFolder}/backend",
-          "${workspaceFolder}/shared"
+          "${workspaceFolder}/apps/server/backend",
+          "${workspaceFolder}/apps/server/shared"
         ],
         "terminal.integrated.defaultProfile.linux": "bash",
         "files.trimTrailingWhitespace": true,

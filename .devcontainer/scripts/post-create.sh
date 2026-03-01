@@ -13,11 +13,9 @@ if [[ -f requirements.txt ]]; then
   pip install -r requirements.txt
 fi
 
-if [[ -f frontend/package.json ]]; then
+if [[ -f apps/server/frontend/package.json ]]; then
   echo "[post-create] Installing frontend dependencies"
-  cd frontend
-  npm install
-  cd ..
+  (cd apps/server/frontend && npm install)
 fi
 
 # Optional: CLI tools for agent workflows. Failures are non-fatal to avoid blocking setup.

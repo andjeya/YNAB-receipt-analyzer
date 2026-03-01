@@ -1,6 +1,6 @@
 {
   "_instructions": [
-    "Copy this file to shared/receipt_shared/resources/category_guidance.json and customize values for your budget.",
+    "Copy this file to apps/server/shared/receipt_shared/resources/category_guidance.json and customize values for your budget.",
     "Do not commit category_guidance.json (it may contain personal categories/payees/intent rules).",
     "Keep the same top-level keys and value types."
   ],

@@ -95,12 +95,12 @@ case "${1:-}" in
     sleep 0.5
 
     start_service "api" \
-      "PYTHONPATH=backend:shared uvicorn app.main:app \
+      "PYTHONPATH=apps/server/backend:apps/server/shared uvicorn app.main:app \
          --host 0.0.0.0 --port 8000 \
-         --reload --reload-dir backend --reload-dir shared"
+         --reload --reload-dir apps/server/backend --reload-dir apps/server/shared"
 
     start_service "frontend" \
-      "cd frontend && npm run dev -- --hostname 0.0.0.0 --port 3000"
+      "cd apps/server/frontend && npm run dev -- --hostname 0.0.0.0 --port 3000"
 
     touch "${flag_file}"
     echo
@@ -120,13 +120,13 @@ case "${1:-}" in
     sleep 0.5
 
     start_service "api" \
-      "PYTHONPATH=backend:shared uvicorn app.main:app --host 0.0.0.0 --port 8000"
+      "PYTHONPATH=apps/server/backend:apps/server/shared uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
     echo "[build] frontend"
-    (cd frontend && npm run build)
+    (cd apps/server/frontend && npm run build)
 
     start_service "frontend" \
-      "cd frontend && npm run start -- --hostname 0.0.0.0 --port 3000"
+      "cd apps/server/frontend && npm run start -- --hostname 0.0.0.0 --port 3000"
 
     rm -f "${flag_file}"
     echo

@@ -5,13 +5,13 @@ Start Redis first, then run two long-lived processes.
 ## RQ Worker
 
 ```bash
-PYTHONPATH=backend:shared python worker/worker.py
+PYTHONPATH=apps/server/backend:apps/server/shared python apps/server/worker/worker.py
 ```
 
 ## Ingestion Scanner Loop
 
 ```bash
-PYTHONPATH=backend:shared python worker/scanner.py
+PYTHONPATH=apps/server/backend:apps/server/shared python apps/server/worker/scanner.py
 ```
 
 The scanner watches `INGEST_DIR`, waits for file size stability, deduplicates by SHA-256 hash,

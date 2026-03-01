@@ -39,7 +39,7 @@ services:
 
   migrate:
     <<: *backend-common
-    command: ["alembic", "-c", "backend/alembic.ini", "upgrade", "head"]
+    command: ["alembic", "-c", "apps/server/backend/alembic.ini", "upgrade", "head"]
     depends_on:
       redis:
         condition: service_started
@@ -64,7 +64,7 @@ services:
 
   worker:
     <<: *backend-common
-    command: ["python", "worker/worker.py"]
+    command: ["python", "apps/server/worker/worker.py"]
     depends_on:
       redis:
         condition: service_healthy
@@ -73,7 +73,7 @@ services:
 
   scanner:
     <<: *backend-common
-    command: ["python", "worker/scanner.py"]
+    command: ["python", "apps/server/worker/scanner.py"]
     depends_on:
       redis:
         condition: service_healthy
