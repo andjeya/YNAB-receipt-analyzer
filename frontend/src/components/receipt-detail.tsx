@@ -397,7 +397,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const syncReadinessErrors = useMemo(() => [...twinConfirmationErrors, ...validationErrors], [twinConfirmationErrors, validationErrors]);
   const canSync = !!draft && syncReadinessErrors.length === 0 && !saveMutation.isPending && !dirty;
   const isSplitMode = !!draft && draft.splits.length > 0;
-  const splitTotal = draft ? draft.splits.reduce((sum, split) => sum + Number(split.amount || 0), 0) : 0;
+  const splitTotal = draft ? draft.splits.reduce((sum, split) => sum + Math.round(Number(split.amount || 0) * 100), 0) / 100 : 0;
   const accountNeedsAttention = draft?.account_id === UNKNOWN_ACCOUNT_ID;
   const ambiguityFlags = useMemo(
     () => parseCategoryAmbiguityFlags((receiptQuery.data?.latest_extraction?.parsed_json ?? null) as Record<string, unknown> | null),
