@@ -22,6 +22,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import IntegrityError
 
 from .limits import LimitsConfig, WindowLimit
 from .types import LedgerEvent, LimitViolation, ReservationResult, TokenUsage, UsageWindowTotals
@@ -63,7 +64,15 @@ class UsageLedgerStore:
             Column("error_text", Text, nullable=True),
             Column("created_at", DateTime(timezone=True), nullable=False, index=True),
         )
+        self._reservation_lock = Table(
+            "ai_usage_reservation_lock",
+            metadata,
+            Column("id", Integer, primary_key=True, autoincrement=False),
+        )
         metadata.create_all(self._engine, checkfirst=True)
+
+        self._reservation_lock_id = 1
+        self._ensure_reservation_lock_row()
 
     @staticmethod
     def _as_utc(ts: datetime) -> datetime:
@@ -87,7 +96,35 @@ class UsageLedgerStore:
         except Exception:
             return {}
 
-    def _run_locked(self, operation: Callable[[Connection], Any]) -> Any:
+    def _ensure_reservation_lock_row(self) -> None:
+        with self._engine.begin() as conn:
+            existing = conn.execute(
+                select(self._reservation_lock.c.id).where(
+                    self._reservation_lock.c.id == self._reservation_lock_id
+                )
+            ).first()
+            if existing is not None:
+                return
+
+            try:
+                conn.execute(self._reservation_lock.insert().values(id=self._reservation_lock_id))
+            except IntegrityError:
+                # Another concurrent initializer inserted the lock row first.
+                pass
+
+    def _acquire_reservation_lock(self, conn: Connection) -> None:
+        conn.execute(
+            select(self._reservation_lock.c.id)
+            .where(self._reservation_lock.c.id == self._reservation_lock_id)
+            .with_for_update()
+        ).one()
+
+    def _run_locked(
+        self,
+        operation: Callable[[Connection], Any],
+        *,
+        serialize_reservation: bool = False,
+    ) -> Any:
         if self._is_sqlite:
             with self._engine.connect() as conn:
                 conn.exec_driver_sql("BEGIN IMMEDIATE")
@@ -100,6 +137,8 @@ class UsageLedgerStore:
                     raise
 
         with self._engine.begin() as conn:
+            if serialize_reservation:
+                self._acquire_reservation_lock(conn)
             return operation(conn)
 
     def _insert_event(
@@ -325,7 +364,7 @@ class UsageLedgerStore:
             )
             return ReservationResult(allowed=True, event_id=event_id, violations=[])
 
-        return self._run_locked(_op)
+        return self._run_locked(_op, serialize_reservation=True)
 
     def finalize(
         self,
