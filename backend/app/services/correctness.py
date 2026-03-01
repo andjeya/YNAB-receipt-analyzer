@@ -10,10 +10,7 @@ from app.config import Settings
 from app.enums import GameEventType
 from app.models import GameCorrectnessState, GameEvent
 from app.services.debug_seed import get_or_create_debug_seed
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+from app.utils import utcnow
 
 
 def _as_utc(value: datetime) -> datetime:
