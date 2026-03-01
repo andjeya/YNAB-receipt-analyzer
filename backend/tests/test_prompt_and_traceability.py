@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from app.services.validation import build_initial_validation_payload
 from app.services.ynab import _append_receipt_id_marker
 from receipt_shared.contracts import GeminiReceiptExtraction
-from receipt_shared.gemini import build_analysis_prompt
+from receipt_shared.gemini import build_analysis_prompt, build_unified_prompt
 
 
 class TestGeminiPromptAndContracts:
@@ -24,6 +24,23 @@ class TestGeminiPromptAndContracts:
         assert "If date is unclear, use today's date." not in prompt
         assert "Never suggest these categories:" in prompt
         assert "category_ambiguity_flags" in prompt
+        assert "Describe what was purchased, not where." in prompt
+        assert 'Preferred format: "Bucket: item, item; Bucket: item".' in prompt
+        assert 'Do NOT repeat payee/store names or phrases like "at <store>".' in prompt
+
+    def test_unified_prompt_has_high_signal_memo_rules(self):
+        prompt = build_unified_prompt(
+            "Map categories correctly.",
+            [SimpleNamespace(id="cat-1", group_name="Essentials", name="Groceries")],
+            [{"id": "acct-1", "name": "Checking"}],
+            ["Trader Joe's"],
+        )
+
+        assert "If date is unclear, set transaction_date to null." in prompt
+        assert "If time is unclear or unavailable, set transaction_time to null." in prompt
+        assert "Describe what was purchased, not where." in prompt
+        assert 'Preferred format: "Bucket: item, item; Bucket: item".' in prompt
+        assert 'Do NOT repeat payee/store names or phrases like "at <store>".' in prompt
 
     def test_contract_allows_uncertain_payee_and_date(self):
         parsed = GeminiReceiptExtraction.model_validate(
