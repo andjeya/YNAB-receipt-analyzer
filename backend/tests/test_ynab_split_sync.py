@@ -12,12 +12,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from datetime import date
+
 from app.services.ynab import (
     _build_subtransactions,
     _build_update_transaction_payload,
+    _match_transaction,
     _normalized_subtransaction_signature,
+    _strip_receipt_id_marker,
     _transaction_structure_matches_payload,
     _update_or_replace_transaction,
+    _ynab_has_user_data,
 )
 from receipt_shared.ynab_client import YNABClient
 
@@ -477,3 +482,140 @@ class TestNormalizedSubtransactionSignature:
         ]
         sig = _normalized_subtransaction_signature(subs)
         assert len(sig) == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: _strip_receipt_id_marker
+# ---------------------------------------------------------------------------
+
+
+class TestStripReceiptIdMarker:
+    def test_strips_marker_at_end(self):
+        memo = "coffee shop [receipt_id:abc123]"
+        assert _strip_receipt_id_marker(memo) == "coffee shop"
+
+    def test_strips_marker_only(self):
+        assert _strip_receipt_id_marker("[receipt_id:abc123]") == ""
+
+    def test_no_marker_unchanged(self):
+        assert _strip_receipt_id_marker("just a memo") == "just a memo"
+
+    def test_none_returns_empty(self):
+        assert _strip_receipt_id_marker(None) == ""
+
+    def test_empty_returns_empty(self):
+        assert _strip_receipt_id_marker("") == ""
+
+    def test_strips_marker_with_leading_space(self):
+        memo = "my memo [receipt_id:xyz-999]"
+        assert _strip_receipt_id_marker(memo) == "my memo"
+
+
+# ---------------------------------------------------------------------------
+# Tests: _ynab_has_user_data
+# ---------------------------------------------------------------------------
+
+
+class TestYnabHasUserData:
+    def test_empty_transaction_no_user_data(self):
+        txn: dict = {"memo": None, "subtransactions": []}
+        assert _ynab_has_user_data(txn) is False
+
+    def test_memo_only_marker_no_user_data(self):
+        txn = {"memo": "[receipt_id:abc123]", "subtransactions": []}
+        assert _ynab_has_user_data(txn) is False
+
+    def test_real_memo_has_user_data(self):
+        txn = {"memo": "anniversary dinner", "subtransactions": []}
+        assert _ynab_has_user_data(txn) is True
+
+    def test_memo_plus_marker_has_user_data(self):
+        txn = {"memo": "groceries [receipt_id:abc123]", "subtransactions": []}
+        assert _ynab_has_user_data(txn) is True
+
+    def test_active_subtransactions_has_user_data(self):
+        txn = {
+            "memo": None,
+            "subtransactions": [
+                {"amount": -30000, "category_id": CATEGORY_A, "deleted": False},
+            ],
+        }
+        assert _ynab_has_user_data(txn) is True
+
+    def test_only_deleted_subtransactions_no_user_data(self):
+        txn = {
+            "memo": "",
+            "subtransactions": [
+                {"amount": -30000, "category_id": CATEGORY_A, "deleted": True},
+            ],
+        }
+        assert _ynab_has_user_data(txn) is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: _match_transaction (payee matching added)
+# ---------------------------------------------------------------------------
+
+
+class TestMatchTransaction:
+    RECEIPT_DATE = date(2025, 6, 1)
+    END_DATE = date(2025, 6, 4)
+    AMOUNT = -50000
+
+    def _base_txn(self, payee: str = "Store", date_str: str = "2025-06-01") -> dict:
+        return {
+            "id": "txn-1",
+            "amount": self.AMOUNT,
+            "date": date_str,
+            "payee_name": payee,
+            "deleted": False,
+        }
+
+    def test_matches_amount_date_payee(self):
+        txns = [self._base_txn()]
+        result = _match_transaction(txns, self.AMOUNT, self.RECEIPT_DATE, self.END_DATE, payee_name="Store")
+        assert result is not None
+        assert result["id"] == "txn-1"
+
+    def test_payee_mismatch_no_match(self):
+        txns = [self._base_txn(payee="Other Store")]
+        result = _match_transaction(txns, self.AMOUNT, self.RECEIPT_DATE, self.END_DATE, payee_name="Store")
+        assert result is None
+
+    def test_payee_case_insensitive(self):
+        txns = [self._base_txn(payee="STORE")]
+        result = _match_transaction(txns, self.AMOUNT, self.RECEIPT_DATE, self.END_DATE, payee_name="store")
+        assert result is not None
+
+    def test_no_payee_filter_matches_any(self):
+        """When payee_name is empty, any payee matches (backward compat)."""
+        txns = [self._base_txn(payee="Anywhere")]
+        result = _match_transaction(txns, self.AMOUNT, self.RECEIPT_DATE, self.END_DATE, payee_name="")
+        assert result is not None
+
+    def test_date_before_window_no_match(self):
+        txns = [self._base_txn(date_str="2025-05-31")]
+        result = _match_transaction(txns, self.AMOUNT, self.RECEIPT_DATE, self.END_DATE, payee_name="Store")
+        assert result is None
+
+    def test_date_after_window_no_match(self):
+        txns = [self._base_txn(date_str="2025-06-05")]
+        result = _match_transaction(txns, self.AMOUNT, self.RECEIPT_DATE, self.END_DATE, payee_name="Store")
+        assert result is None
+
+    def test_date_at_boundary_matches(self):
+        txns = [self._base_txn(date_str="2025-06-04")]
+        result = _match_transaction(txns, self.AMOUNT, self.RECEIPT_DATE, self.END_DATE, payee_name="Store")
+        assert result is not None
+
+    def test_skips_deleted(self):
+        txn = self._base_txn()
+        txn["deleted"] = True
+        result = _match_transaction([txn], self.AMOUNT, self.RECEIPT_DATE, self.END_DATE, payee_name="Store")
+        assert result is None
+
+    def test_amount_mismatch_no_match(self):
+        result = _match_transaction(
+            [self._base_txn()], -99999, self.RECEIPT_DATE, self.END_DATE, payee_name="Store"
+        )
+        assert result is None

@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     ynab_cache_refresh_interval_minutes: int = 30
     ynab_reconciliation_interval_hours: int = 12
     ynab_reconciliation_lookback_days: int = 90
+    ynab_new_transaction_flag_color: str = "blue"
+    ynab_updated_transaction_flag_color: str = "purple"
 
     debug_tools_enabled: bool = False
     debug_tools_flag_file: Path = Path("./data/debug_tools_enabled.flag")
