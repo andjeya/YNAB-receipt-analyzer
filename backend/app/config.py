@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3-flash-preview"
     gemini_prompt: str = "Categorize receipt line items into the most appropriate YNAB categories."
     gemini_max_retries: int = 3
+    ai_model_registry_path: Path = Path("./shared/receipt_shared/resources/ai_model_registry.v1.json")
+    ai_limits_config_path: Path = Path("./config/ai_limits.v1.json")
+    ai_usage_db_url: str = "sqlite:///./data/ai_usage.db"
+    ai_limit_behavior: str = "hard_fail"
     twin_extraction_enabled: bool = True
     twin_strict_mode: bool = False
     twin_recon_hard_fail_delta_abs: float = 2.00
@@ -164,6 +168,14 @@ class Settings(BaseSettings):
             raise ValueError(f"GAME_TIMEZONE is invalid: {value}") from exc
         return value
 
+    @field_validator("ai_limit_behavior")
+    @classmethod
+    def validate_ai_limit_behavior(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"hard_fail", "soft_fail"}:
+            raise ValueError("AI_LIMIT_BEHAVIOR must be either 'hard_fail' or 'soft_fail'")
+        return normalized
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -172,6 +184,7 @@ def get_settings() -> Settings:
     (settings.object_store_root / settings.object_store_receipts_prefix).mkdir(parents=True, exist_ok=True)
     settings.log_file_path.parent.mkdir(parents=True, exist_ok=True)
     settings.debug_tools_flag_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.ai_limits_config_path.parent.mkdir(parents=True, exist_ok=True)
     if settings.debug_tools_enabled:
         settings.debug_tools_flag_file.touch(exist_ok=True)
     return settings

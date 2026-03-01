@@ -1,11 +1,13 @@
 """Shared domain logic reused by API server and workers."""
 
+from .ai import AIClient
 from .contracts import GeminiReceiptExtraction, ValidationPayload
 from .gemini import GeminiAnalyzer, build_analysis_prompt, parse_json_response
 from .money import dollars_to_milliunits, milliunits_to_dollars
 from .ynab_client import Category, YNABClient
 
 __all__ = [
+    "AIClient",
     "Category",
     "GeminiAnalyzer",
     "GeminiReceiptExtraction",
