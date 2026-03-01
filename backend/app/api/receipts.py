@@ -493,6 +493,7 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
 @router.get("/{receipt_id}/file")
 def get_receipt_file(
     receipt_id: str,
+    preview: bool = Query(default=False),
     db: Session = Depends(db_session),
     settings: Settings = Depends(app_settings),
 ) -> FileResponse:
@@ -511,7 +512,7 @@ def get_receipt_file(
         path=absolute_path,
         media_type=receipt.mime_type,
         filename=receipt.original_filename,
-        content_disposition_type="attachment",
+        content_disposition_type="inline" if preview else "attachment",
         headers={"X-Content-Type-Options": "nosniff"},
     )
 
