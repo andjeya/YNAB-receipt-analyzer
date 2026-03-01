@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.db import SessionLocal
+from app.utils import utcnow
 from app.enums import ReceiptStatus
 from app.models import ExtractionRun, Receipt, ReceiptTwin, TimingMetric, Validation
 from app.services.reconciliation import run_ynab_reconciliation
@@ -46,9 +48,6 @@ TWIN_PAYLOAD_FIELDS = (
     "receipt_language",
 )
 
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _safe_decimal(value: Any) -> Decimal | None:
@@ -199,25 +198,35 @@ def _create_validation(
     payload: dict[str, Any],
     source: str,
 ) -> Validation:
-    next_version = receipt.latest_validation_version + 1
-    validation = Validation(
-        receipt_id=receipt.id,
-        version=next_version,
-        source=source,
-        payload=payload,
-        is_valid=True,
-        errors=[],
-    )
-    db.add(validation)
-    receipt.latest_validation_version = next_version
+    def _attempt() -> Validation:
+        next_version = receipt.latest_validation_version + 1
+        validation = Validation(
+            receipt_id=receipt.id,
+            version=next_version,
+            source=source,
+            payload=payload,
+            is_valid=True,
+            errors=[],
+        )
+        db.add(validation)
+        receipt.latest_validation_version = next_version
 
-    normalized_payee = str(payload.get("payee_name") or "").strip()
-    receipt.display_payee_name = normalized_payee or None
-    receipt.display_total_milliunits = dollars_to_milliunits(payload.get("total_amount", 0), outflow=False)
-    if payload.get("transaction_date"):
-        receipt.display_receipt_date = datetime.fromisoformat(str(payload["transaction_date"])).date()
+        normalized_payee = str(payload.get("payee_name") or "").strip()
+        receipt.display_payee_name = normalized_payee or None
+        receipt.display_total_milliunits = dollars_to_milliunits(payload.get("total_amount", 0), outflow=False)
+        if payload.get("transaction_date"):
+            receipt.display_receipt_date = datetime.fromisoformat(str(payload["transaction_date"])).date()
 
-    return validation
+        return validation
+
+    try:
+        # Use a savepoint so a version collision doesn't invalidate the outer transaction.
+        # The unique constraint on (receipt_id, version) is the safety net against races.
+        with db.begin_nested():
+            return _attempt()
+    except IntegrityError:
+        db.refresh(receipt)
+        return _attempt()
 
 
 def _create_model_twin(
@@ -226,17 +235,27 @@ def _create_model_twin(
     receipt: Receipt,
     payload: dict[str, Any],
 ) -> ReceiptTwin:
-    next_version = receipt.latest_twin_version + 1
-    twin = ReceiptTwin(
-        receipt_id=receipt.id,
-        version=next_version,
-        source="model",
-        payload=payload,
-        confirmed_sections={"date_time": False, "total": False},
-    )
-    db.add(twin)
-    receipt.latest_twin_version = next_version
-    return twin
+    def _attempt() -> ReceiptTwin:
+        next_version = receipt.latest_twin_version + 1
+        twin = ReceiptTwin(
+            receipt_id=receipt.id,
+            version=next_version,
+            source="model",
+            payload=payload,
+            confirmed_sections={"date_time": False, "total": False},
+        )
+        db.add(twin)
+        receipt.latest_twin_version = next_version
+        return twin
+
+    try:
+        # Use a savepoint so a version collision doesn't invalidate the outer transaction.
+        # The unique constraint on (receipt_id, version) is the safety net against races.
+        with db.begin_nested():
+            return _attempt()
+    except IntegrityError:
+        db.refresh(receipt)
+        return _attempt()
 
 
 def _validate_ynab_payload(

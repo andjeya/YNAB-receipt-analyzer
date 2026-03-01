@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     stable_checks_required: int = 2
     stable_min_age_seconds: int = 3
     max_ingest_file_size_bytes: int = 50 * 1024 * 1024  # 50 MB
+    stuck_job_timeout_minutes: int = 30
 
     game_green_hours_threshold: float = 24.0
     game_brown_hours_threshold: float = 72.0

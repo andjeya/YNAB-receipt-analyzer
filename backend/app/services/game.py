@@ -14,13 +14,10 @@ from app.models import GameEvent, GameReceiptStateModel, GameStreak, GameToken, 
 from app.services.correctness import fire_breakdown, get_or_create_correctness_state
 from app.services.debug_seed import get_or_create_debug_seed, unix_ms_to_datetime
 from app.services.debug_tools import is_debug_tools_enabled
+from app.utils import utcnow
 
 ALLOWED_WINDOWS = {"week", "month"}
 WEEK_SLOT_COUNT = 9
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _as_utc(value: datetime) -> datetime:

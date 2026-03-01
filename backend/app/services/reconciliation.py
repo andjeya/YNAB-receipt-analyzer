@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -23,12 +24,9 @@ from app.services.correctness import add_fire, get_or_create_correctness_state
 from app.services.incidents import record_incident
 from app.services.validation import validate_payload
 from app.services.ynab import get_cached_reference_data, get_ynab_client
+from app.utils import utcnow
 
 logger = logging.getLogger(__name__)
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -193,19 +191,29 @@ def _apply_corrected_validation(
         )
         return
 
-    next_version = receipt.latest_validation_version + 1
-    db.add(
-        Validation(
-            receipt_id=receipt.id,
-            version=next_version,
-            source="reconciliation",
-            payload=normalized_payload,
-            is_valid=True,
-            errors=[],
+    def _insert_validation() -> None:
+        next_version = receipt.latest_validation_version + 1
+        db.add(
+            Validation(
+                receipt_id=receipt.id,
+                version=next_version,
+                source="reconciliation",
+                payload=normalized_payload,
+                is_valid=True,
+                errors=[],
+            )
         )
-    )
+        receipt.latest_validation_version = next_version
 
-    receipt.latest_validation_version = next_version
+    try:
+        # Use a savepoint so a version collision doesn't invalidate the outer transaction.
+        # The unique constraint on (receipt_id, version) is the safety net against races.
+        with db.begin_nested():
+            _insert_validation()
+    except IntegrityError:
+        db.refresh(receipt)
+        _insert_validation()
+
     payee_name = str(normalized_payload.get("payee_name") or "").strip()
     receipt.display_payee_name = payee_name or None
     receipt.display_total_milliunits = int(float(normalized_payload.get("total_amount", 0)) * 1000)

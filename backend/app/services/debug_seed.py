@@ -7,10 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.enums import YNABSyncStatus
 from app.models import GameCorrectnessState, GameDebugSeed, GameStreak, GameToken, YNABSync
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+from app.utils import utcnow
 
 
 def _as_utc(value: datetime) -> datetime:

@@ -347,21 +347,46 @@ Input receipt is provided as an attached file in this request.
 
 
 def _is_retryable_error(exc: Exception) -> bool:
-    """Check if an exception is retryable (transient error)."""
-    error_str = str(exc).lower()
-    retryable_patterns = [
-        "503",
+    """Check if an exception is retryable (transient error).
+
+    Checks exception type first, then falls back to HTTP status code extraction.
+    Avoids substring matching on the full error string to prevent false positives
+    (e.g. a non-retryable error whose message happens to contain "500").
+    """
+    try:
+        import google.api_core.exceptions as _gax
+
+        _RETRYABLE_TYPES = (
+            _gax.ServiceUnavailable,
+            _gax.DeadlineExceeded,
+            _gax.ResourceExhausted,
+            _gax.InternalServerError,
+            _gax.BadGateway,
+            _gax.GatewayTimeout,
+        )
+        if isinstance(exc, _RETRYABLE_TYPES):
+            return True
+        # Non-retryable google API exception — don't fall through to string matching.
+        if isinstance(exc, _gax.GoogleAPICallError):
+            return False
+    except ImportError:
+        pass
+
+    # Fallback: extract HTTP status code from the exception, not substring match.
+    retryable_status_codes = {429, 500, 502, 503, 504}
+    status_code: int | None = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code in retryable_status_codes
+
+    retryable_messages = [
         "service unavailable",
         "temporarily unavailable",
         "timeout",
         "deadline exceeded",
         "resource exhausted",
-        "429",
-        "500",
-        "502",
-        "504",
     ]
-    return any(pattern in error_str for pattern in retryable_patterns)
+    error_str = str(exc).lower()
+    return any(pattern in error_str for pattern in retryable_messages)
 
 
 def _default_thinking_config_for_model(model_name: str) -> dict[str, Any]:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -15,18 +15,16 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.config import Settings
 from app.enums import ReceiptStatus, YNABCacheEntityType, YNABSyncStatus
+from app.utils import utcnow
 from app.models import Receipt, ReceiptCorrection, TimingMetric, Validation, YNABCache, YNABSync
 from app.services.game import apply_sync_gamification
+from app.services.incidents import record_incident
 from app.services.validation import UNKNOWN_ACCOUNT_ID
 from receipt_shared.money import dollars_to_milliunits, milliunits_to_dollars
 from receipt_shared.ynab_client import YNABClient
 
 logger = logging.getLogger(__name__)
 RECEIPT_ID_MARKER_PREFIX = "[receipt_id:"
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def make_idempotency_key(
@@ -777,6 +775,16 @@ def sync_receipt_to_ynab(
             )
         except Exception:
             logger.exception("Gamification sync classification failed for receipt %s", receipt.id)
+            record_incident(
+                db,
+                incident_type="gamification_sync_failure",
+                severity="warning",
+                title="Gamification sync classification failed",
+                message=f"Failed to apply gamification for receipt {receipt.id} after sync",
+                details={"receipt_id": receipt.id},
+                idempotency_key=f"gamification_sync_failure:{receipt.id}:{idempotency_key}",
+            )
+            raise
 
         unresolved_corrections = list(
             db.scalars(
