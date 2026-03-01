@@ -207,6 +207,52 @@ def test_override_duplicate_signature_allows_editing_without_retrigger() -> None
         assert second.duplicate_of_receipt_id is None
 
 
+def test_duplicate_review_rows_are_not_selected_as_canonical_targets() -> None:
+    settings = Settings(_env_file=None, ynab_budget_id="budget-1")
+
+    with _memory_session() as db:
+        _add_cache_entities(db, settings.ynab_budget_id or "")
+        original = _seed_receipt(
+            db,
+            receipt_id="abababab-1111-4222-8333-cccccccccccc",
+            file_hash="hash-canonical-1",
+        )
+        incoming = _seed_receipt(
+            db,
+            receipt_id="dededede-4444-4555-8666-ffffffffffff",
+            file_hash="hash-canonical-2",
+        )
+
+        save_draft(
+            receipt_id=original.id,
+            request=SaveDraftRequest(payload=_payload(payee="Trader Joe's", total=12.30), source="user"),
+            db=db,
+            settings=settings,
+        )
+        save_draft(
+            receipt_id=incoming.id,
+            request=SaveDraftRequest(payload=_payload(payee="trader joes", total=12.3), source="user"),
+            db=db,
+            settings=settings,
+        )
+
+        original_response = save_draft(
+            receipt_id=original.id,
+            request=SaveDraftRequest(payload=_payload(payee="Trader Joes", total=12.30), source="user"),
+            db=db,
+            settings=settings,
+        )
+
+        db.refresh(original)
+        db.refresh(incoming)
+
+        assert incoming.status == ReceiptStatus.DUPLICATE_REVIEW.value
+        assert incoming.duplicate_of_receipt_id == original.id
+        assert original_response.can_sync is True
+        assert original.status == ReceiptStatus.NEEDS_REVIEW.value
+        assert original.duplicate_of_receipt_id is None
+
+
 def test_confirm_duplicate_hard_deletes_incoming_receipt_and_scan(tmp_path: Path) -> None:
     settings = Settings(_env_file=None, object_store_root=str(tmp_path))
 
