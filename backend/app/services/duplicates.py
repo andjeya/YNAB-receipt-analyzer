@@ -159,7 +159,14 @@ def apply_semantic_duplicate_state(
         return DuplicateCheckResult(signature=signature, duplicate_of_receipt_id=None, match_count=0)
 
     non_duplicate_review_matches = [row for row in matches if row.status != ReceiptStatus.DUPLICATE_REVIEW.value]
-    chosen_pool = non_duplicate_review_matches or matches
+    if not non_duplicate_review_matches:
+        receipt.duplicate_of_receipt_id = None
+        if receipt.status == ReceiptStatus.DUPLICATE_REVIEW.value:
+            receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+        receipt.status_reason = "Duplicate check ignored: only duplicate-review matches found."
+        return DuplicateCheckResult(signature=signature, duplicate_of_receipt_id=None, match_count=0)
+
+    chosen_pool = non_duplicate_review_matches
     duplicate_of = chosen_pool[0]
 
     receipt.duplicate_of_receipt_id = duplicate_of.id
