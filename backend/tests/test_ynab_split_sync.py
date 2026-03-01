@@ -17,6 +17,7 @@ from datetime import date
 from app.services.ynab import (
     _build_subtransactions,
     _build_update_transaction_payload,
+    _full_transaction_payload_from_ynab_transaction,
     _match_transaction,
     _normalized_subtransaction_signature,
     _strip_receipt_id_marker,
@@ -550,6 +551,74 @@ class TestYnabHasUserData:
             ],
         }
         assert _ynab_has_user_data(txn) is False
+
+    def test_category_only_edit_detected_as_user_data(self):
+        txn = {
+            "memo": "",
+            "category_id": CATEGORY_B,
+            "subtransactions": [],
+        }
+        desired_payload = {
+            "category_id": CATEGORY_A,
+            "subtransactions": [],
+        }
+        assert _ynab_has_user_data(txn, desired_payload=desired_payload) is True
+
+    def test_matching_category_not_user_data_when_no_other_signals(self):
+        txn = {
+            "memo": "",
+            "category_id": CATEGORY_A,
+            "subtransactions": [],
+        }
+        desired_payload = {
+            "category_id": CATEGORY_A,
+            "subtransactions": [],
+        }
+        assert _ynab_has_user_data(txn, desired_payload=desired_payload) is False
+
+
+class TestFullTransactionPayloadFromYnabTransaction:
+    def test_single_category_payload_shape(self):
+        txn = {
+            "account_id": ACCOUNT,
+            "date": "2025-06-01",
+            "amount": -50000,
+            "payee_name": "Store",
+            "memo": "ynab memo",
+            "category_id": CATEGORY_A,
+            "subtransactions": [],
+        }
+        payload = _full_transaction_payload_from_ynab_transaction(
+            txn,
+            memo_override="ynab memo [receipt_id:abc123]",
+            include_flags=True,
+            flag_color="blue",
+        )
+        assert payload["account_id"] == ACCOUNT
+        assert payload["category_id"] == CATEGORY_A
+        assert "subtransactions" not in payload
+        assert payload["approved"] is False
+        assert payload["flag_color"] == "blue"
+        assert payload["memo"] == "ynab memo [receipt_id:abc123]"
+
+    def test_split_payload_shape_omits_top_level_category(self):
+        txn = {
+            "account_id": ACCOUNT,
+            "date": "2025-06-01",
+            "amount": -50000,
+            "payee_name": "Store",
+            "memo": "",
+            "category_id": CATEGORY_A,
+            "subtransactions": [
+                {"amount": -30000, "category_id": CATEGORY_A, "memo": "food", "deleted": False},
+                {"amount": -20000, "category_id": CATEGORY_B, "memo": "home", "deleted": False},
+            ],
+        }
+        payload = _full_transaction_payload_from_ynab_transaction(txn)
+        assert "category_id" not in payload
+        assert len(payload["subtransactions"]) == 2
+        assert payload["subtransactions"][0]["amount"] == -30000
+        assert payload["subtransactions"][1]["category_id"] == CATEGORY_B
 
 
 # ---------------------------------------------------------------------------
