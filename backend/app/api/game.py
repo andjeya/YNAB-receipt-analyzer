@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -28,6 +29,7 @@ from app.services.incidents import acknowledge_incident, list_incidents
 from app.services.reconciliation import run_ynab_reconciliation
 
 router = APIRouter(prefix="/game", tags=["game"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/dashboard", response_model=GameDashboardOut)
@@ -53,7 +55,8 @@ def shred_receipt(
     try:
         state_row, was_shredded = spend_shred_token(db, settings, receipt_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.warning("Shred token spend rejected for receipt %s: %s", receipt_id, exc)
+        raise HTTPException(status_code=400, detail="Shred not allowed") from exc
 
     token_row = db.get(GameToken, 1)
     db.commit()
@@ -85,7 +88,8 @@ def reconcile_game(
     try:
         result = run_ynab_reconciliation(db, settings)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.exception("Game reconciliation failed")
+        raise HTTPException(status_code=400, detail="Reconciliation failed") from exc
     db.commit()
     return GameReconcileResponse.model_validate(result)
 

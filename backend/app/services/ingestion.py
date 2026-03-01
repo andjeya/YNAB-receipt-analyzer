@@ -106,6 +106,13 @@ def compute_file_hash(file_path: Path) -> str:
 
 
 def ingest_file(source_path: Path, db: Session, settings: Settings) -> tuple[Receipt, bool]:
+    file_size_check = source_path.stat().st_size
+    if file_size_check > settings.max_ingest_file_size_bytes:
+        raise ValueError(
+            f"File {source_path.name!r} exceeds maximum ingest size of {settings.max_ingest_file_size_bytes} bytes "
+            f"(got {file_size_check} bytes)"
+        )
+
     file_hash = compute_file_hash(source_path)
 
     existing = db.scalar(select(Receipt).where(Receipt.file_hash == file_hash))
