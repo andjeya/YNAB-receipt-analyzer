@@ -7,15 +7,18 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
+import re
+
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.config import Settings
 from app.enums import ReceiptStatus, YNABCacheEntityType, YNABSyncStatus
 from app.models import Receipt, ReceiptCorrection, TimingMetric, Validation, YNABCache, YNABSync
 from app.services.game import apply_sync_gamification
 from app.services.validation import UNKNOWN_ACCOUNT_ID
-from receipt_shared.money import dollars_to_milliunits
+from receipt_shared.money import dollars_to_milliunits, milliunits_to_dollars
 from receipt_shared.ynab_client import YNABClient
 
 logger = logging.getLogger(__name__)
@@ -219,6 +222,26 @@ def _append_receipt_id_marker(memo: str | None, receipt_id: str) -> str:
     return marker
 
 
+def _strip_receipt_id_marker(memo: str | None) -> str:
+    """Remove any [receipt_id:...] marker from a memo string."""
+    memo_text = str(memo or "").strip()
+    return re.sub(r"\s*\[receipt_id:[^\]]*\]", "", memo_text).strip()
+
+
+def _ynab_has_user_data(transaction: dict[str, Any]) -> bool:
+    """Return True if the YNAB transaction has user-entered data (memo or splits).
+
+    A non-empty memo (ignoring any receipt_id marker we previously appended)
+    or the presence of active subtransactions indicates the user edited the
+    transaction manually, making YNAB the source of truth.
+    """
+    memo_without_marker = _strip_receipt_id_marker(transaction.get("memo"))
+    if memo_without_marker:
+        return True
+    active_subtransactions = [sub for sub in transaction.get("subtransactions", []) if not sub.get("deleted")]
+    return len(active_subtransactions) > 0
+
+
 def _build_subtransactions(validation_payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
@@ -235,6 +258,7 @@ def _match_transaction(
     amount_milliunits: int,
     receipt_date: date,
     end_date: date,
+    payee_name: str = "",
 ) -> dict[str, Any] | None:
     for transaction in transactions:
         if transaction.get("deleted"):
@@ -242,8 +266,11 @@ def _match_transaction(
         if int(transaction.get("amount", 0)) != amount_milliunits:
             continue
         txn_date = date.fromisoformat(transaction["date"])
-        if receipt_date <= txn_date <= end_date:
-            return transaction
+        if not (receipt_date <= txn_date <= end_date):
+            continue
+        if payee_name and str(transaction.get("payee_name") or "").lower() != payee_name.lower():
+            continue
+        return transaction
     return None
 
 
@@ -549,13 +576,19 @@ def sync_receipt_to_ynab(
                     target_transaction_id = matched_exact["id"]
                     existing_target_transaction = matched_exact
 
+            updated_flag_color = settings.ynab_updated_transaction_flag_color
+            new_flag_color = settings.ynab_new_transaction_flag_color
             if existing_target_transaction is not None:
-                sync_row.raw_request = {"transaction": transaction_payload}
+                update_payload_with_flags = dict(transaction_payload)
+                update_payload_with_flags["approved"] = False
+                if updated_flag_color:
+                    update_payload_with_flags["flag_color"] = updated_flag_color
+                sync_row.raw_request = {"transaction": update_payload_with_flags}
                 ynab_response, final_id, sync_status = _update_or_replace_transaction(
                     client,
                     settings.ynab_budget_id,
                     target_transaction_id,
-                    transaction_payload,
+                    update_payload_with_flags,
                     existing_target_transaction,
                 )
                 sync_row.status = sync_status
@@ -572,8 +605,12 @@ def sync_receipt_to_ynab(
                     "Cannot find previous YNAB transaction for receipt_id=%s; creating new",
                     receipt.id,
                 )
-                sync_row.raw_request = {"transaction": transaction_payload}
-                ynab_response = client.create_transaction(settings.ynab_budget_id, transaction_payload)
+                new_transaction_payload = dict(transaction_payload)
+                new_transaction_payload["approved"] = False
+                if new_flag_color:
+                    new_transaction_payload["flag_color"] = new_flag_color
+                sync_row.raw_request = {"transaction": new_transaction_payload}
+                ynab_response = client.create_transaction(settings.ynab_budget_id, new_transaction_payload)
                 sync_row.status = YNABSyncStatus.CREATED.value
                 sync_row.created_transaction_id = ynab_response.get("id")
                 sync_row.raw_response = ynab_response
@@ -586,26 +623,77 @@ def sync_receipt_to_ynab(
                     total_milliunits,
                     receipt_date,
                     receipt_date + timedelta(days=3),
+                    payee_name=payload.get("payee_name", ""),
                 )
 
             if matched and allow_update_match:
-                sync_row.raw_request = {"transaction": transaction_payload}
-                ynab_response, final_id, sync_status = _update_or_replace_transaction(
-                    client,
-                    settings.ynab_budget_id,
-                    matched["id"],
-                    transaction_payload,
-                    matched,
-                )
-                sync_row.status = sync_status
-                if sync_status == YNABSyncStatus.CREATED.value:
-                    sync_row.created_transaction_id = final_id
+                updated_flag_color = settings.ynab_updated_transaction_flag_color
+                if _ynab_has_user_data(matched):
+                    # YNAB is source of truth: the user has manually entered data
+                    # (memo or splits). Preserve all YNAB fields; only append the
+                    # receipt_id marker to the existing memo.
+                    ynab_memo_with_marker = _append_receipt_id_marker(matched.get("memo"), receipt.id)
+                    minimal_update = {
+                        "memo": ynab_memo_with_marker,
+                        "approved": False,
+                        "flag_color": updated_flag_color or None,
+                    }
+                    sync_row.raw_request = {"transaction": minimal_update}
+                    ynab_response = client.update_transaction(settings.ynab_budget_id, matched["id"], minimal_update)
+                    sync_row.status = YNABSyncStatus.MATCHED_UPDATED.value
+                    sync_row.matched_transaction_id = matched["id"]
+                    sync_row.raw_response = ynab_response
+
+                    # Update the validation payload to reflect YNAB's data so the
+                    # frontend form shows what YNAB actually has.
+                    ynab_category_id = matched.get("category_id")
+                    active_subtransactions = [sub for sub in matched.get("subtransactions", []) if not sub.get("deleted")]
+                    updated_payload = dict(validation.payload)
+                    updated_payload["memo"] = _strip_receipt_id_marker(matched.get("memo"))
+                    updated_payload["payee_name"] = matched.get("payee_name") or validation.payload.get("payee_name", "")
+                    if active_subtransactions:
+                        updated_payload["category_id"] = None
+                        updated_payload["splits"] = [
+                            {
+                                "category_id": sub.get("category_id", ""),
+                                "amount": abs(milliunits_to_dollars(int(sub.get("amount", 0)))),
+                                "memo": str(sub.get("memo") or ""),
+                            }
+                            for sub in active_subtransactions
+                        ]
+                    elif ynab_category_id:
+                        updated_payload["category_id"] = ynab_category_id
+                        updated_payload["splits"] = []
+                    validation.payload = updated_payload
+                    flag_modified(validation, "payload")
                 else:
-                    sync_row.matched_transaction_id = final_id
-                sync_row.raw_response = ynab_response
+                    # No user data in YNAB — receipt is source of truth (existing behavior).
+                    update_payload_with_flags = dict(transaction_payload)
+                    update_payload_with_flags["approved"] = False
+                    if updated_flag_color:
+                        update_payload_with_flags["flag_color"] = updated_flag_color
+                    sync_row.raw_request = {"transaction": update_payload_with_flags}
+                    ynab_response, final_id, sync_status = _update_or_replace_transaction(
+                        client,
+                        settings.ynab_budget_id,
+                        matched["id"],
+                        update_payload_with_flags,
+                        matched,
+                    )
+                    sync_row.status = sync_status
+                    if sync_status == YNABSyncStatus.CREATED.value:
+                        sync_row.created_transaction_id = final_id
+                    else:
+                        sync_row.matched_transaction_id = final_id
+                    sync_row.raw_response = ynab_response
             else:
-                sync_row.raw_request = {"transaction": transaction_payload}
-                ynab_response = client.create_transaction(settings.ynab_budget_id, transaction_payload)
+                new_flag_color = settings.ynab_new_transaction_flag_color
+                new_transaction_payload = dict(transaction_payload)
+                new_transaction_payload["approved"] = False
+                if new_flag_color:
+                    new_transaction_payload["flag_color"] = new_flag_color
+                sync_row.raw_request = {"transaction": new_transaction_payload}
+                ynab_response = client.create_transaction(settings.ynab_budget_id, new_transaction_payload)
                 sync_row.status = YNABSyncStatus.CREATED.value
                 sync_row.created_transaction_id = ynab_response.get("id")
                 sync_row.raw_response = ynab_response
