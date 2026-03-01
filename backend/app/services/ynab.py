@@ -228,18 +228,69 @@ def _strip_receipt_id_marker(memo: str | None) -> str:
     return re.sub(r"\s*\[receipt_id:[^\]]*\]", "", memo_text).strip()
 
 
-def _ynab_has_user_data(transaction: dict[str, Any]) -> bool:
-    """Return True if the YNAB transaction has user-entered data (memo or splits).
+def _ynab_has_user_data(
+    transaction: dict[str, Any],
+    desired_payload: dict[str, Any] | None = None,
+) -> bool:
+    """Return True if the YNAB transaction has user-entered data.
 
-    A non-empty memo (ignoring any receipt_id marker we previously appended)
-    or the presence of active subtransactions indicates the user edited the
-    transaction manually, making YNAB the source of truth.
+    Heuristics:
+    - non-empty memo (ignoring receipt_id marker)
+    - active subtransactions
+    - category mismatch vs desired payload for single-category transactions
     """
     memo_without_marker = _strip_receipt_id_marker(transaction.get("memo"))
     if memo_without_marker:
         return True
     active_subtransactions = [sub for sub in transaction.get("subtransactions", []) if not sub.get("deleted")]
-    return len(active_subtransactions) > 0
+    if len(active_subtransactions) > 0:
+        return True
+
+    if desired_payload is not None:
+        desired_subtransactions = desired_payload.get("subtransactions", [])
+        if not desired_subtransactions:
+            desired_category_id = str(desired_payload.get("category_id") or "")
+            ynab_category_id = str(transaction.get("category_id") or "")
+            if desired_category_id != ynab_category_id:
+                return True
+
+    return False
+
+
+def _full_transaction_payload_from_ynab_transaction(
+    transaction: dict[str, Any],
+    *,
+    memo_override: str | None = None,
+    include_flags: bool = False,
+    flag_color: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "account_id": transaction.get("account_id"),
+        "date": transaction.get("date"),
+        "amount": int(transaction.get("amount", 0)),
+        "payee_name": transaction.get("payee_name") or "",
+        "memo": str(transaction.get("memo") if memo_override is None else memo_override) or "",
+    }
+
+    active_subtransactions = [sub for sub in transaction.get("subtransactions", []) if not sub.get("deleted")]
+    if active_subtransactions:
+        payload["subtransactions"] = [
+            {
+                "amount": int(sub.get("amount", 0)),
+                "category_id": sub.get("category_id"),
+                "memo": str(sub.get("memo") or ""),
+            }
+            for sub in active_subtransactions
+        ]
+    else:
+        payload["category_id"] = transaction.get("category_id")
+
+    if include_flags:
+        payload["approved"] = False
+        if flag_color:
+            payload["flag_color"] = flag_color
+
+    return payload
 
 
 def _build_subtransactions(validation_payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -628,9 +679,9 @@ def sync_receipt_to_ynab(
 
             if matched and allow_update_match:
                 updated_flag_color = settings.ynab_updated_transaction_flag_color
-                if _ynab_has_user_data(matched):
+                if _ynab_has_user_data(matched, desired_payload=transaction_payload):
                     # YNAB is source of truth: the user has manually entered data
-                    # (memo or splits). Preserve all YNAB fields; only append the
+                    # (memo/splits/category). Preserve all YNAB fields; only append the
                     # receipt_id marker to the existing memo.
                     ynab_memo_with_marker = _append_receipt_id_marker(matched.get("memo"), receipt.id)
                     minimal_update = {
@@ -638,7 +689,16 @@ def sync_receipt_to_ynab(
                         "approved": False,
                         "flag_color": updated_flag_color or None,
                     }
-                    sync_row.raw_request = {"transaction": minimal_update}
+                    full_preserved_payload = _full_transaction_payload_from_ynab_transaction(
+                        matched,
+                        memo_override=ynab_memo_with_marker,
+                        include_flags=True,
+                        flag_color=updated_flag_color,
+                    )
+                    sync_row.raw_request = {
+                        "transaction": full_preserved_payload,
+                        "applied_update": minimal_update,
+                    }
                     ynab_response = client.update_transaction(settings.ynab_budget_id, matched["id"], minimal_update)
                     sync_row.status = YNABSyncStatus.MATCHED_UPDATED.value
                     sync_row.matched_transaction_id = matched["id"]
