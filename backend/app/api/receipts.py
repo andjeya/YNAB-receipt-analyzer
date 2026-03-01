@@ -5,6 +5,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
@@ -41,6 +43,7 @@ from app.services.ynab import get_cached_reference_data
 from receipt_shared.contracts import ReceiptTwinExtraction
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
+logger = logging.getLogger(__name__)
 
 
 def utcnow() -> datetime:
@@ -497,7 +500,10 @@ def get_receipt_file(
     if receipt is None:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
-    absolute_path = Path(settings.object_store_root) / receipt.storage_key
+    store_root = Path(settings.object_store_root).resolve()
+    absolute_path = (store_root / receipt.storage_key).resolve()
+    if not str(absolute_path).startswith(str(store_root) + "/"):
+        raise HTTPException(status_code=404, detail="Stored file missing")
     if not absolute_path.exists():
         raise HTTPException(status_code=404, detail="Stored file missing")
 
@@ -505,7 +511,8 @@ def get_receipt_file(
         path=absolute_path,
         media_type=receipt.mime_type,
         filename=receipt.original_filename,
-        content_disposition_type="inline",
+        content_disposition_type="attachment",
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 
@@ -656,7 +663,8 @@ def retry_twin_extraction(
     try:
         job_id = enqueue_extraction_job(receipt_id=receipt.id)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Failed to enqueue extraction job: {exc}") from exc
+        logger.exception("Failed to enqueue extraction job for receipt %s", receipt.id)
+        raise HTTPException(status_code=503, detail="Failed to enqueue extraction job") from exc
 
     receipt.status = ReceiptStatus.EXTRACTING.value
     receipt.status_reason = None
@@ -832,7 +840,8 @@ def sync_receipt(
             allow_update_match=request.allow_update_match,
         )
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Failed to enqueue sync job: {exc}") from exc
+        logger.exception("Failed to enqueue sync job for receipt %s", receipt.id)
+        raise HTTPException(status_code=503, detail="Failed to enqueue sync job") from exc
 
     receipt.status = ReceiptStatus.SYNCING.value
     receipt.status_reason = None

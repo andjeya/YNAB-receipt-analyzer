@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,6 +13,7 @@ from app.services.reconciliation import run_ynab_reconciliation
 from app.services.ynab import list_cached_entities, refresh_ynab_cache
 
 router = APIRouter(prefix="/ynab", tags=["ynab"])
+logger = logging.getLogger(__name__)
 
 
 def utcnow() -> datetime:
@@ -50,7 +52,8 @@ def refresh_cache(
     try:
         counts = refresh_ynab_cache(db, settings)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.exception("YNAB cache refresh failed")
+        raise HTTPException(status_code=400, detail="Failed to refresh YNAB cache") from exc
 
     return CacheRefreshResponse(
         refreshed_at=utcnow(),
@@ -70,7 +73,8 @@ def fetch_ynab_updates(
         reconciliation = run_ynab_reconciliation(db, settings)
         db.commit()
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.exception("YNAB updates fetch failed")
+        raise HTTPException(status_code=400, detail="Failed to fetch YNAB updates") from exc
 
     return FetchYnabUpdatesResponse(
         refreshed_at=utcnow(),

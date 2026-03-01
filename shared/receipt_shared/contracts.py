@@ -10,7 +10,7 @@ class GeminiSplit(BaseModel):
 
     category_id: str = Field(min_length=1)
     category_name: str | None = None
-    amount: float
+    amount: float = Field(ge=0)
     memo: str = ""
 
 
