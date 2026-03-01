@@ -12,6 +12,7 @@
     "8000:8000"
   ],
   "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
     "ghcr.io/devcontainers/features/python:1": {
       "version": "3.12"
     },
@@ -23,11 +24,14 @@
   "mounts": [
     "source=${localEnv:HOME}/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind,consistency=cached",
     "source=${localWorkspaceFolder}/.devcontainer/.ingest-host,target=/mnt/ingest-host,type=bind,consistency=cached",
     "source=${localWorkspaceFolder}/.devcontainer/.devtools-host,target=/opt/devtools,type=bind,consistency=cached"
   ],
   "remoteEnv": {
-    "PATH": "/opt/devtools/bin:${containerEnv:PATH}"
+    "PATH": "/opt/devtools/bin:${containerEnv:PATH}",
+    "GH_TOKEN": "${localEnv:GH_TOKEN}",
+    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
   },
   "containerEnv": {
     "PYTHONPATH": "${containerWorkspaceFolder}/backend:${containerWorkspaceFolder}/shared",
