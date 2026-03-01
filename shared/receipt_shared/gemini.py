@@ -4,7 +4,6 @@ import copy
 import json
 import logging
 import mimetypes
-import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -12,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from .ai import AIClient, AIProviderError, AIRequest
 from .contracts import GeminiReceiptExtraction
 
 logger = logging.getLogger(__name__)
@@ -19,13 +19,6 @@ logger = logging.getLogger(__name__)
 UNKNOWN_ACCOUNT_ID = "__unknown__"
 CATEGORY_GUIDANCE_PATH = Path(__file__).resolve().parent / "resources" / "category_guidance.json"
 UNSUPPORTED_GEMINI_SCHEMA_KEYS = frozenset({"additionalProperties", "additional_properties"})
-
-try:
-    from google import genai
-    from google.genai import types
-except Exception:  # pragma: no cover - imported lazily for environments without dependency
-    genai = None
-    types = None
 
 
 @dataclass
@@ -427,12 +420,37 @@ def build_gemini_response_json_schema(response_schema: type[BaseModel]) -> dict[
 
 
 class GeminiAnalyzer:
-    def __init__(self, api_key: str, model: str, max_retries: int = 3):
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        max_retries: int = 3,
+        *,
+        model_registry_path: Path | None = None,
+        limits_config_path: Path | None = None,
+        usage_db_url: str | None = None,
+        ai_client: AIClient | None = None,
+    ):
         if not api_key:
             raise ValueError("GEMINI_API_KEY is required")
         self.api_key = api_key
         self.model = model
         self.max_retries = max_retries
+        self.model_registry_path = model_registry_path
+        self.limits_config_path = limits_config_path
+        self.usage_db_url = usage_db_url
+        self._ai_client = ai_client
+
+    def _client(self) -> AIClient:
+        if self._ai_client is None:
+            self._ai_client = AIClient(
+                api_key=self.api_key,
+                max_retries=self.max_retries,
+                registry_path=self.model_registry_path,
+                limits_path=self.limits_config_path,
+                usage_db_url=self.usage_db_url,
+            )
+        return self._ai_client
 
     def analyze_file(
         self,
@@ -440,78 +458,52 @@ class GeminiAnalyzer:
         prompt_text: str,
         mime_type: str | None = None,
         response_schema: type[BaseModel] | None = None,
+        *,
+        route: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+        limit_behavior: str = "hard_fail",
     ) -> GeminiAnalysisResult:
-        if genai is None or types is None:
-            raise RuntimeError("google-genai dependency is not installed")
         if not file_path.exists():
             raise FileNotFoundError(f"Receipt file not found: {file_path}")
 
         inferred_mime = mime_type or mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
-        started = time.perf_counter()
 
-        attempt = 0
-        thinking_enabled = True
-        thinking_kwargs = _default_thinking_config_for_model(self.model)
-        while attempt < self.max_retries:
-            try:
-                client = genai.Client(api_key=self.api_key)
-                uploaded_file = client.files.upload(file=str(file_path))
+        request = AIRequest(
+            model_id=self.model,
+            prompt_text=prompt_text,
+            file_path=file_path,
+            mime_type=inferred_mime,
+            response_schema=response_schema,
+            route=route,
+            metadata=metadata or {},
+            request_id=request_id,
+            correlation_id=correlation_id,
+            limit_behavior="soft_fail" if limit_behavior == "soft_fail" else "hard_fail",
+        )
 
-                config_kwargs: dict[str, Any] = {
-                    "response_mime_type": "application/json",
-                }
-                if thinking_enabled and thinking_kwargs:
-                    config_kwargs["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
-                if response_schema is not None:
-                    response_json_schema = build_gemini_response_json_schema(response_schema)
-                    supports_response_json_schema = "response_json_schema" in types.GenerateContentConfig.model_fields
-                    if supports_response_json_schema:
-                        config_kwargs["response_json_schema"] = response_json_schema
-                    else:
-                        config_kwargs["response_schema"] = response_json_schema
+        try:
+            response = self._client().generate_structured(request, schema=response_schema)
+        except AIProviderError as exc:
+            raise RuntimeError(str(exc)) from exc
 
-                response = client.models.generate_content(
-                    model=self.model,
-                    contents=[
-                        prompt_text,
-                        types.Part.from_uri(
-                            file_uri=uploaded_file.uri,
-                            mime_type=uploaded_file.mime_type or inferred_mime,
-                        ),
-                    ],
-                    config=types.GenerateContentConfig(**config_kwargs),
-                )
-                break
-            except Exception as exc:
-                if thinking_enabled and _is_unsupported_thinking_config_error(exc):
-                    logger.warning("Gemini model does not support thinking config; retrying without thinking config")
-                    thinking_enabled = False
-                    continue
-
-                attempt += 1
-                is_retryable = _is_retryable_error(exc)
-
-                if not is_retryable or attempt >= self.max_retries:
-                    if is_retryable:
-                        error_msg = f"Gemini API failed after {attempt} attempts: {exc}"
-                        logger.error(error_msg)
-                        raise RuntimeError(error_msg) from exc
-                    raise
-
-                wait_seconds = 2 ** (attempt - 1)
-                logger.warning(
-                    "Gemini API call failed (attempt %d/%d), retrying in %ds: %s",
-                    attempt,
-                    self.max_retries,
-                    wait_seconds,
-                    exc,
-                )
-                time.sleep(wait_seconds)
+        if response.status == "limit_rejected":
+            message = response.error.message if response.error else "AI request rejected by configured limits"
+            return GeminiAnalysisResult(
+                raw_output="",
+                parsed_json=None,
+                schema_valid=False,
+                schema_errors=[message],
+                duration_ms=response.duration_ms,
+                parse_source=None,
+                structured_output_available=False,
+            )
 
         raw_output = response.text or ""
-        duration_ms = int((time.perf_counter() - started) * 1000)
+        duration_ms = response.duration_ms
 
-        parsed_json = _to_dict_from_structured(getattr(response, "parsed", None))
+        parsed_json = _to_dict_from_structured(response.parsed)
         parse_source = "response_schema" if parsed_json is not None else None
         structured_output_available = parsed_json is not None
 

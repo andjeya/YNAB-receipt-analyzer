@@ -337,7 +337,14 @@ def run_extraction_job(receipt_id: str) -> None:
             prompt_payees = [payee.name for payee in payees]
 
             file_path = Path(settings.object_store_root) / receipt.storage_key
-            analyzer = GeminiAnalyzer(settings.gemini_api_key, settings.gemini_model, settings.gemini_max_retries)
+            analyzer = GeminiAnalyzer(
+                settings.gemini_api_key,
+                settings.gemini_model,
+                settings.gemini_max_retries,
+                model_registry_path=settings.ai_model_registry_path,
+                limits_config_path=settings.ai_limits_config_path,
+                usage_db_url=settings.ai_usage_db_url,
+            )
 
             if not settings.twin_extraction_enabled:
                 prompt_text = build_analysis_prompt(
@@ -352,6 +359,10 @@ def run_extraction_job(receipt_id: str) -> None:
                     prompt_text,
                     receipt.mime_type,
                     response_schema=GeminiReceiptExtraction,
+                    route="ynab_extract.unified",
+                    metadata={"receipt_id": receipt.id, "attempt_kind": ATTEMPT_UNIFIED},
+                    correlation_id=receipt.id,
+                    limit_behavior=settings.ai_limit_behavior,
                 )
                 completed_at = utcnow()
                 run = _record_extraction_run(
@@ -413,6 +424,10 @@ def run_extraction_job(receipt_id: str) -> None:
                 unified_prompt,
                 receipt.mime_type,
                 response_schema=UnifiedReceiptExtraction,
+                route="ynab_extract.unified",
+                metadata={"receipt_id": receipt.id, "attempt_kind": ATTEMPT_UNIFIED},
+                correlation_id=receipt.id,
+                limit_behavior=settings.ai_limit_behavior,
             )
             unified_completed_at = utcnow()
 
@@ -496,6 +511,10 @@ def run_extraction_job(receipt_id: str) -> None:
                 fallback_ynab_prompt,
                 receipt.mime_type,
                 response_schema=GeminiReceiptExtraction,
+                route="ynab_extract.fallback_ynab",
+                metadata={"receipt_id": receipt.id, "attempt_kind": ATTEMPT_FALLBACK_YNAB},
+                correlation_id=receipt.id,
+                limit_behavior=settings.ai_limit_behavior,
             )
             fallback_ynab_completed_at = utcnow()
 
@@ -543,6 +562,10 @@ def run_extraction_job(receipt_id: str) -> None:
                 fallback_twin_prompt,
                 receipt.mime_type,
                 response_schema=ReceiptTwinExtraction,
+                route="ynab_extract.fallback_twin",
+                metadata={"receipt_id": receipt.id, "attempt_kind": ATTEMPT_FALLBACK_TWIN},
+                correlation_id=receipt.id,
+                limit_behavior=settings.ai_limit_behavior,
             )
             fallback_twin_completed_at = utcnow()
 

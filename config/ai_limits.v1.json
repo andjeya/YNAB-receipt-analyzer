@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "global": {
+    "hourly": {
+      "unlimited": true,
+      "tokens": null,
+      "usd": null
+    },
+    "daily": {
+      "unlimited": true,
+      "tokens": null,
+      "usd": null
+    },
+    "weekly": {
+      "unlimited": true,
+      "tokens": null,
+      "usd": null
+    },
+    "monthly": {
+      "unlimited": true,
+      "tokens": null,
+      "usd": null
+    }
+  },
+  "models": {
+    "gemini-3-flash-preview": {
+      "hourly": {
+        "unlimited": true,
+        "tokens": null,
+        "usd": null
+      },
+      "daily": {
+        "unlimited": true,
+        "tokens": null,
+        "usd": null
+      },
+      "weekly": {
+        "unlimited": true,
+        "tokens": null,
+        "usd": null
+      },
+      "monthly": {
+        "unlimited": true,
+        "tokens": null,
+        "usd": null
+      }
+    },
+    "gemini-2.5-flash": {
+      "hourly": {
+        "unlimited": true,
+        "tokens": null,
+        "usd": null
+      },
+      "daily": {
+        "unlimited": true,
+        "tokens": null,
+        "usd": null
+      },
+      "weekly": {
+        "unlimited": true,
+        "tokens": null,
+        "usd": null
+      },
+      "monthly": {
+        "unlimited": true,
+        "tokens": null,
+        "usd": null
+      }
+    }
+  }
+}
