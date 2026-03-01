@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pi-outbox-shipper"
+version = "0.1.0"
+description = "Reliable edge outbox shipper for receipt ingestion"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML~=6.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest~=8.3",
+]
+
+[project.scripts]
+shipper = "shipper.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["shipper*"]

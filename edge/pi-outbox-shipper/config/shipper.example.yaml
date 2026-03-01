@@ -1,0 +1,43 @@
+paths:
+  inboxes:
+    - name: scanner
+      path: ~/receipts/inbox_scanner
+    - name: dropbox
+      path: ~/receipts/inbox_dropbox
+  outbox: ~/receipts/outbox
+  sent_archive: ~/receipts/sent
+  state_db: ~/receipts/state/shipper.db
+
+stability:
+  stable_seconds: 10
+  min_age_seconds: 5
+  ignore_hidden: true
+  ignore_suffixes:
+    - .tmp
+    - .part
+    - .partial
+    - .crdownload
+    - .download
+
+retry:
+  initial_backoff_seconds: 5
+  max_backoff_seconds: 300
+
+sender:
+  host: nas.local
+  user: receipt_ingest
+  port: 22
+  incoming_dir: /volume1/receipts/incoming
+  staging_dir: /volume1/receipts/staging
+  ssh_key: ~/.ssh/id_ed25519
+  connect_timeout_seconds: 10
+  dry_run: false
+  rsync_dry_run: false
+  rsync_binary: rsync
+  ssh_binary: ssh
+
+runtime:
+  poll_interval_seconds: 5
+  user_tag: pi3b
+  post_send_action: archive
+  log_level: INFO
