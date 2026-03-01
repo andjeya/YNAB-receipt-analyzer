@@ -15,6 +15,7 @@ from app.db import SessionLocal
 from app.utils import utcnow
 from app.enums import ReceiptStatus
 from app.models import ExtractionRun, Receipt, ReceiptTwin, TimingMetric, Validation
+from app.services.duplicates import apply_semantic_duplicate_state
 from app.services.reconciliation import run_ynab_reconciliation
 from app.services.validation import build_initial_validation_payload, validate_payload
 from app.services.ynab import get_cached_reference_data, refresh_ynab_cache, sync_receipt_to_ynab
@@ -422,6 +423,11 @@ def _run_simple_extraction(ctx: _ExtractionCtx) -> None:
             _set_primary_extraction_run(ctx.db, ctx.receipt.id, run.id)
             ctx.receipt.status = ReceiptStatus.NEEDS_REVIEW.value
             ctx.receipt.status_reason = None
+            apply_semantic_duplicate_state(
+                ctx.db,
+                receipt=ctx.receipt,
+                payload=normalized_payload,
+            )
         else:
             run_errors.extend([f"ynab_critical: {error}" for error in errors])
             ctx.receipt.status = ReceiptStatus.ERROR_EXTRACT.value
@@ -533,6 +539,11 @@ def _finalize_unified_success(ctx: _ExtractionCtx, unified: _UnifiedAttemptResul
 
     ctx.receipt.status = ReceiptStatus.NEEDS_REVIEW.value
     ctx.receipt.status_reason = None
+    apply_semantic_duplicate_state(
+        ctx.db,
+        receipt=ctx.receipt,
+        payload=unified.validation_payload,
+    )
     ctx.receipt.extraction_completed_at = unified.completed_at
     ctx.db.add(
         TimingMetric(
@@ -675,6 +686,11 @@ def _run_fallback_and_finalize(ctx: _ExtractionCtx, unified: _UnifiedAttemptResu
             _set_primary_extraction_run(ctx.db, ctx.receipt.id, fallback_ynab_run.id)
             ctx.receipt.status = ReceiptStatus.NEEDS_REVIEW.value
             ctx.receipt.status_reason = None
+            apply_semantic_duplicate_state(
+                ctx.db,
+                receipt=ctx.receipt,
+                payload=normalized_payload,
+            )
             ctx.receipt.extraction_completed_at = max(fallback_ynab_completed_at, fallback_twin_completed_at)
             ctx.db.add(
                 TimingMetric(

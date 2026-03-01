@@ -2,6 +2,7 @@ export type ReceiptStatus =
   | "ingested"
   | "extracting"
   | "needs_review"
+  | "duplicate_review"
   | "syncing"
   | "synced"
   | "error_extract"
@@ -20,6 +21,7 @@ export interface ReceiptSummary {
   correction_expires_at: string | null;
   correction_shade_opacity: number | null;
   correction_message: string | null;
+  duplicate_of_receipt_id: string | null;
 }
 
 export interface ExtractionRun {
@@ -118,6 +120,7 @@ export interface ReceiptDetail {
   correction_expires_at: string | null;
   correction_shade_opacity: number | null;
   correction_message: string | null;
+  duplicate_of_receipt_id: string | null;
   correction_history: ReceiptCorrection[];
   created_at: string;
   updated_at: string;
@@ -187,6 +190,17 @@ export interface SyncEnqueueResponse {
   queue_name: string;
   job_id: string;
   status: ReceiptStatus;
+}
+
+export interface DuplicateConfirmResponse {
+  deleted_receipt_id: string;
+  kept_receipt_id: string;
+}
+
+export interface DuplicateOverrideResponse {
+  receipt_id: string;
+  status: ReceiptStatus;
+  duplicate_of_receipt_id: string | null;
 }
 
 export interface CacheEntity {

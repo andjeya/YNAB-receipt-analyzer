@@ -15,11 +15,14 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import app_settings, db_session
 from app.config import Settings
-from app.enums import GameEventType, ReceiptStatus, YNABSyncStatus
+from app.enums import ReceiptStatus, YNABSyncStatus
 from app.jobs.queue import EXTRACTION_QUEUE_NAME, SYNC_QUEUE_NAME, enqueue_extraction_job, enqueue_sync_job
-from app.models import ExtractionRun, GameEvent, Receipt, ReceiptCorrection, ReceiptTwin, TimingMetric, Validation, YNABSync
+from app.models import ExtractionRun, Receipt, ReceiptCorrection, ReceiptTwin, TimingMetric, Validation, YNABSync
 from app.schemas import (
     ConfirmedSectionsOut,
+    DuplicateConfirmResponse,
+    DuplicateOverrideRequest,
+    DuplicateOverrideResponse,
     ExtractionRunOut,
     LockedFieldsOut,
     ReceiptCorrectionOut,
@@ -37,7 +40,9 @@ from app.schemas import (
     ValidationOut,
 )
 from app.services.correctness import award_water
+from app.services.duplicates import apply_semantic_duplicate_state, build_semantic_signature
 from app.services.incidents import record_incident
+from app.services.storage import storage_path
 from app.services.validation import validate_payload
 from app.services.ynab import get_cached_reference_data
 from receipt_shared.contracts import ReceiptTwinExtraction
@@ -430,6 +435,7 @@ def list_receipts(
                 correction_expires_at=correction.expires_at if correction else None,
                 correction_shade_opacity=shade,
                 correction_message=_correction_note_for_display(correction),
+                duplicate_of_receipt_id=receipt.duplicate_of_receipt_id,
             )
         )
     return summaries
@@ -484,6 +490,7 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
         correction_expires_at=correction.expires_at if correction else None,
         correction_shade_opacity=shade,
         correction_message=_correction_note_for_display(correction),
+        duplicate_of_receipt_id=receipt.duplicate_of_receipt_id,
         correction_history=[_to_correction_schema(item) for item in correction_history],
         created_at=receipt.created_at,
         updated_at=receipt.updated_at,
@@ -729,6 +736,24 @@ def save_draft(
         receipt.status = ReceiptStatus.NEEDS_REVIEW.value
         receipt.status_reason = None
 
+    if is_valid:
+        apply_semantic_duplicate_state(
+            db,
+            receipt=receipt,
+            payload=normalized_payload,
+        )
+    else:
+        receipt.duplicate_of_receipt_id = None
+        receipt.semantic_signature = None
+        receipt.semantic_payee_key = None
+        receipt.semantic_total_cents = None
+        receipt.semantic_transaction_date = None
+        receipt.semantic_transaction_time = None
+        receipt.duplicate_override_signature = None
+        if receipt.status == ReceiptStatus.DUPLICATE_REVIEW.value:
+            receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+            receipt.status_reason = "Duplicate check deferred until draft is valid."
+
     if request.source == "user" and is_valid:
         now = utcnow()
         if prior_user_valid is None and receipt.extraction_completed_at:
@@ -777,47 +802,67 @@ def save_draft(
 
     return SaveDraftResponse(
         validation=_to_validation_schema(validation),
-        can_sync=is_valid,
+        can_sync=is_valid and receipt.status != ReceiptStatus.DUPLICATE_REVIEW.value,
         lock_warnings=lock_warnings,
     )
 
 
-@router.post("/{receipt_id}/reject", response_model=SaveDraftResponse)
-def reject_receipt(
+@router.post("/{receipt_id}/duplicate/confirm", response_model=DuplicateConfirmResponse)
+def confirm_duplicate_receipt(
     receipt_id: str,
     db: Session = Depends(db_session),
-) -> SaveDraftResponse:
+    settings: Settings = Depends(app_settings),
+) -> DuplicateConfirmResponse:
+    receipt = db.get(Receipt, receipt_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    if receipt.status != ReceiptStatus.DUPLICATE_REVIEW.value or not receipt.duplicate_of_receipt_id:
+        raise HTTPException(status_code=409, detail="Receipt is not in duplicate review state")
+
+    kept_receipt_id = receipt.duplicate_of_receipt_id
+    store_root = Path(settings.object_store_root).resolve()
+    absolute_path = storage_path(store_root, receipt.storage_key).resolve()
+    if str(absolute_path).startswith(str(store_root) + "/"):
+        absolute_path.unlink(missing_ok=True)
+
+    db.delete(receipt)
+    db.commit()
+    return DuplicateConfirmResponse(
+        deleted_receipt_id=receipt_id,
+        kept_receipt_id=kept_receipt_id,
+    )
+
+
+@router.post("/{receipt_id}/duplicate/override", response_model=DuplicateOverrideResponse)
+def override_duplicate_receipt(
+    receipt_id: str,
+    request: DuplicateOverrideRequest,
+    db: Session = Depends(db_session),
+) -> DuplicateOverrideResponse:
+    if not request.confirmed:
+        raise HTTPException(status_code=400, detail="Override requires confirmed=true")
+
     receipt = db.get(Receipt, receipt_id)
     if receipt is None:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
-    latest = _latest_validation(db, receipt.id)
-    payload = latest.payload if latest else {}
-    next_version = receipt.latest_validation_version + 1
-    validation = Validation(
-        receipt_id=receipt.id,
-        version=next_version,
-        source="reject",
-        payload=payload,
-        is_valid=False,
-        errors=["Rejected by user. Update fields and resync required."],
-    )
-    db.add(validation)
-    db.add(
-        GameEvent(
-            event_type=GameEventType.RESYNC_REQUIRED.value,
-            receipt_id=receipt.id,
-            payload_json={"reason": "user_reject"},
-            idempotency_key=f"resync_required:reject:{receipt.id}:{next_version}",
-            created_at=utcnow(),
-        )
-    )
-    receipt.latest_validation_version = next_version
-    receipt.status = ReceiptStatus.NEEDS_REVIEW.value
-    receipt.status_reason = "Rejected by user. Resync required after corrections."
+    latest_validation = _latest_validation(db, receipt.id)
+    if latest_validation is None or not latest_validation.is_valid:
+        raise HTTPException(status_code=409, detail="Receipt must have a valid draft before override")
+
+    signature = receipt.semantic_signature or build_semantic_signature(latest_validation.payload)
+    receipt.duplicate_override_signature = signature
+    receipt.duplicate_of_receipt_id = None
+    if receipt.status == ReceiptStatus.DUPLICATE_REVIEW.value:
+        receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+    receipt.status_reason = "Duplicate detection overridden by user."
     db.commit()
-    db.refresh(validation)
-    return SaveDraftResponse(validation=_to_validation_schema(validation), can_sync=False)
+
+    return DuplicateOverrideResponse(
+        receipt_id=receipt.id,
+        status=receipt.status,
+        duplicate_of_receipt_id=receipt.duplicate_of_receipt_id,
+    )
 
 
 @router.post("/{receipt_id}/sync", response_model=SyncEnqueueResponse)
@@ -833,6 +878,25 @@ def sync_receipt(
     validation = _latest_validation(db, receipt.id)
     if validation is None or not validation.is_valid:
         raise HTTPException(status_code=400, detail="Receipt must have a valid draft before sync")
+
+    duplicate_state = apply_semantic_duplicate_state(
+        db,
+        receipt=receipt,
+        payload=validation.payload,
+    )
+    if duplicate_state.duplicate_of_receipt_id:
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "duplicate_receipt",
+                "message": (
+                    f"Duplicate detected against receipt {duplicate_state.duplicate_of_receipt_id}. "
+                    "Resolve duplicate review before syncing."
+                ),
+                "duplicate_of_receipt_id": duplicate_state.duplicate_of_receipt_id,
+            },
+        )
 
     try:
         job_id = enqueue_sync_job(
