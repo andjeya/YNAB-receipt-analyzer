@@ -261,6 +261,415 @@ function formatAmount(value: number | null): string {
   return `$${Math.abs(value / 1000).toFixed(2)}`;
 }
 
+function ScanPanel({ receiptId, mimeType, originalFilename }: {
+  receiptId: string;
+  mimeType: string;
+  originalFilename: string;
+}) {
+  return (
+    <Card className="h-full overflow-hidden p-0">
+      <div className="border-b border-ink/10 px-3 py-2">
+        <h2 className="text-sm font-semibold">Original Scan</h2>
+      </div>
+      <div className="h-[28rem] overflow-auto bg-black/5 p-2">
+        {mimeType.startsWith("image/") ? (
+          <div className="relative h-full min-h-[22rem] w-full">
+            <Image src={receiptFileUrl(receiptId)} alt={originalFilename} fill unoptimized className="object-contain" />
+          </div>
+        ) : (
+          <object data={`${receiptFileUrl(receiptId)}#toolbar=1&view=FitH`} type="application/pdf" className="h-full min-h-[22rem] w-full">
+            <iframe src={receiptFileUrl(receiptId)} title="Receipt scan" className="h-full w-full border-0" />
+          </object>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function TwinAndScanSection({ receiptId, receipt, mobileView, setMobileView, mobilePanelRef, onTwinUpdated }: {
+  receiptId: string;
+  receipt: ReceiptDetail;
+  mobileView: "twin" | "scan";
+  setMobileView: (v: "twin" | "scan") => void;
+  mobilePanelRef: { current: HTMLDivElement | null };
+  onTwinUpdated: () => void;
+}) {
+  const scanPanel = <ScanPanel receiptId={receiptId} mimeType={receipt.mime_type} originalFilename={receipt.original_filename} />;
+  return (
+    <section className="animate-reveal space-y-3" style={{ animationDelay: "55ms" }}>
+      <div className="hidden gap-3 md:grid md:grid-cols-2">
+        <ReceiptTwinViewer receiptId={receiptId} twin={receipt.latest_twin} onUpdated={onTwinUpdated} />
+        {scanPanel}
+      </div>
+      <div className="space-y-2 md:hidden">
+        <div className="inline-flex rounded-xl border border-ink/15 bg-white p-1 text-xs">
+          <button
+            type="button"
+            className={`rounded-lg px-3 py-1 ${mobileView === "twin" ? "bg-ink text-white" : "text-ink/70"}`}
+            onClick={() => setMobileView("twin")}
+          >
+            Receipt Details
+          </button>
+          <button
+            type="button"
+            className={`rounded-lg px-3 py-1 ${mobileView === "scan" ? "bg-ink text-white" : "text-ink/70"}`}
+            onClick={() => setMobileView("scan")}
+          >
+            Original Scan
+          </button>
+        </div>
+        <div ref={mobilePanelRef} className="max-h-[32rem] overflow-auto">
+          {mobileView === "twin" ? (
+            <ReceiptTwinViewer receiptId={receiptId} twin={receipt.latest_twin} onUpdated={onTwinUpdated} />
+          ) : (
+            scanPanel
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestions, payeeMenuOpen, setPayeeMenuOpen, accountNeedsAttention }: {
+  draft: ValidationPayloadInput;
+  setDraft: (d: ValidationPayloadInput) => void;
+  setDirty: (v: boolean) => void;
+  accounts: { entity_id: string; name: string }[];
+  payeeSuggestions: { entity_id: string; name: string }[];
+  payeeMenuOpen: boolean;
+  setPayeeMenuOpen: (v: boolean) => void;
+  accountNeedsAttention: boolean;
+}) {
+  return (
+    <Card className="animate-reveal space-y-3" style={{ animationDelay: "70ms" }}>
+      <h2 className="font-semibold">Payee + Account</h2>
+      <div className="grid gap-3">
+        <div className="relative">
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Payee</label>
+          <Input
+            value={draft.payee_name}
+            onFocus={() => setPayeeMenuOpen(true)}
+            onBlur={() => { setTimeout(() => setPayeeMenuOpen(false), 120); }}
+            onChange={(event) => {
+              setDraft({ ...draft, payee_name: event.target.value });
+              setDirty(true);
+              setPayeeMenuOpen(true);
+            }}
+          />
+          {payeeMenuOpen && payeeSuggestions.length > 0 ? (
+            <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
+              {payeeSuggestions.map((payee) => (
+                <button
+                  key={payee.entity_id}
+                  type="button"
+                  className="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-sand/70"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    setDraft({ ...draft, payee_name: payee.name });
+                    setDirty(true);
+                    setPayeeMenuOpen(false);
+                  }}
+                >
+                  {payee.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Account</label>
+          <Select
+            value={draft.account_id}
+            className={accountNeedsAttention ? "border-amber-500 bg-amber-50 text-amber-900 focus:ring-amber-300" : undefined}
+            onChange={(event) => {
+              setDraft({ ...draft, account_id: event.target.value });
+              setDirty(true);
+            }}
+          >
+            <option value="">Select account</option>
+            <option value={UNKNOWN_ACCOUNT_ID}>Unknown (needs review)</option>
+            {accounts.map((account) => (
+              <option key={account.entity_id} value={account.entity_id}>{account.name}</option>
+            ))}
+          </Select>
+          {accountNeedsAttention ? (
+            <p className="mt-1 text-xs font-semibold text-amber-700">Unknown account selected. Sync is disabled until this is fixed.</p>
+          ) : null}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function DateTimeCard({ draft, setDraft, setDirty, dateLocked, timeLocked, totalLocked }: {
+  draft: ValidationPayloadInput;
+  setDraft: (d: ValidationPayloadInput) => void;
+  setDirty: (v: boolean) => void;
+  dateLocked: boolean;
+  timeLocked: boolean;
+  totalLocked: boolean;
+}) {
+  return (
+    <Card className="animate-reveal space-y-3" style={{ animationDelay: "120ms" }}>
+      <h2 className="font-semibold">Date + Total</h2>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Date</label>
+          <Input
+            type="date"
+            value={draft.transaction_date}
+            readOnly={dateLocked}
+            className={dateLocked ? "bg-sand/60" : undefined}
+            onChange={(event) => {
+              if (dateLocked) return;
+              setDraft({ ...draft, transaction_date: event.target.value });
+              setDirty(true);
+            }}
+          />
+          {dateLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Receipt time (optional)</label>
+          <Input
+            type="time"
+            value={draft.transaction_time ?? ""}
+            readOnly={timeLocked}
+            className={timeLocked ? "bg-sand/60" : undefined}
+            onChange={(event) => {
+              if (timeLocked) return;
+              setDraft({ ...draft, transaction_time: event.target.value || "" });
+              setDirty(true);
+            }}
+          />
+          {timeLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-1">
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Total</label>
+          <Input
+            type="number"
+            step="0.01"
+            value={draft.total_amount}
+            readOnly={totalLocked}
+            className={totalLocked ? "bg-sand/60" : undefined}
+            onChange={(event) => {
+              if (totalLocked) return;
+              setDraft({ ...draft, total_amount: Number(event.target.value) || 0 });
+              setDirty(true);
+            }}
+          />
+          {totalLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
+        </div>
+      </div>
+      <div>
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Memo</label>
+        <Textarea
+          rows={2}
+          value={draft.memo}
+          onChange={(event) => {
+            setDraft({ ...draft, memo: event.target.value });
+            setDirty(true);
+          }}
+        />
+      </div>
+    </Card>
+  );
+}
+
+function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode, splitTotal }: {
+  draft: ValidationPayloadInput;
+  setDraft: (d: ValidationPayloadInput) => void;
+  setDirty: (v: boolean) => void;
+  categories: CategoryOption[];
+  isSplitMode: boolean;
+  splitTotal: number;
+}) {
+  return (
+    <Card className="animate-reveal space-y-3" style={{ animationDelay: "170ms" }}>
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold">{isSplitMode ? "Split Categories" : "Category"}</h2>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1"
+          onClick={() => {
+            if (isSplitMode) {
+              const fallbackCategory = draft.splits.find((split) => split.category_id)?.category_id ?? draft.category_id;
+              setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
+              setDirty(true);
+              return;
+            }
+            setDraft({ ...draft, category_id: "", splits: [{ category_id: draft.category_id, amount: draft.total_amount, memo: "" }] });
+            setDirty(true);
+          }}
+        >
+          {isSplitMode ? "Use Single Category" : "Split Transaction"}
+        </Button>
+      </div>
+
+      {!isSplitMode ? (
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Category</label>
+          <CategorySearchSelect
+            value={draft.category_id}
+            categories={categories}
+            placeholder="Select or search category"
+            onChange={(nextCategoryId) => {
+              setDraft({ ...draft, category_id: nextCategoryId });
+              setDirty(true);
+            }}
+          />
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center justify-between rounded-xl bg-sand/50 px-3 py-2 text-xs text-ink/75">
+            <span>Split total: ${splitTotal.toFixed(2)}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1"
+              onClick={() => {
+                setDraft({ ...draft, splits: [...draft.splits, { category_id: "", amount: 0, memo: "" }] });
+                setDirty(true);
+              }}
+            >
+              <Plus className="h-4 w-4" /> Add split
+            </Button>
+          </div>
+
+          {draft.splits.map((split, index) => (
+            <div key={`${index}-${split.category_id}`} className="rounded-2xl border border-ink/10 bg-sand/70 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Split {index + 1}</p>
+                <button
+                  type="button"
+                  className="inline-flex items-center text-red-600"
+                  onClick={() => {
+                    const nextSplits = draft.splits.filter((_, splitIndex) => splitIndex !== index);
+                    if (nextSplits.length === 0) {
+                      const fallbackCategory = split.category_id || draft.category_id;
+                      setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
+                      setDirty(true);
+                      return;
+                    }
+                    setDraft({ ...draft, category_id: "", splits: nextSplits });
+                    setDirty(true);
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="grid gap-2">
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={split.amount}
+                  onChange={(event) => {
+                    const nextSplits = [...draft.splits];
+                    nextSplits[index] = { ...split, amount: Number(event.target.value) || 0 };
+                    setDraft({ ...draft, splits: nextSplits });
+                    setDirty(true);
+                  }}
+                />
+                <CategorySearchSelect
+                  value={split.category_id}
+                  categories={categories}
+                  placeholder="Move item to category"
+                  onChange={(nextCategoryId) => {
+                    const nextSplits = [...draft.splits];
+                    nextSplits[index] = { ...split, category_id: nextCategoryId };
+                    setDraft({ ...draft, splits: nextSplits });
+                    setDirty(true);
+                  }}
+                />
+                <Input
+                  placeholder="Split memo"
+                  value={split.memo}
+                  onChange={(event) => {
+                    const nextSplits = [...draft.splits];
+                    nextSplits[index] = { ...split, memo: event.target.value };
+                    setDraft({ ...draft, splits: nextSplits });
+                    setDirty(true);
+                  }}
+                />
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </Card>
+  );
+}
+
+function ValidationStatusSection({ isAutosaving, dirty, lockWarnings, syncReadinessErrors, correctionHistory }: {
+  isAutosaving: boolean;
+  dirty: boolean;
+  lockWarnings: string[];
+  syncReadinessErrors: string[];
+  correctionHistory: ReceiptDetail["correction_history"];
+}) {
+  return (
+    <>
+      <section className="animate-reveal rounded-2xl bg-white/80 p-3 text-xs text-ink/70" style={{ animationDelay: "210ms" }}>
+        <p className="mb-2 font-semibold text-ink/70">
+          {isAutosaving ? "Autosaving..." : dirty ? "Changes pending autosave" : "Draft saved"}
+        </p>
+        {lockWarnings.length > 0 ? (
+          <div className="mb-2 space-y-1 rounded-xl border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
+            {lockWarnings.map((warning) => <p key={warning}>- {warning}</p>)}
+          </div>
+        ) : null}
+        {syncReadinessErrors.length ? (
+          <ul className="space-y-1 text-red-700">
+            {syncReadinessErrors.map((error) => <li key={error}>- {error}</li>)}
+          </ul>
+        ) : (
+          <p>Validation passes. Sync can run.</p>
+        )}
+      </section>
+      {correctionHistory.length > 0 ? (
+        <section className="animate-reveal rounded-2xl border border-black/20 bg-black/90 p-3 text-xs text-white" style={{ animationDelay: "225ms" }}>
+          <p className="font-semibold">Correction history</p>
+          {correctionHistory.slice(0, 3).map((item) => (
+            <p key={item.id} className="mt-1 text-[11px] text-slate-200">
+              {new Date(item.detected_at).toLocaleDateString()}: {item.note?.split("| sig=", 1)[0] ?? "Category corrected in YNAB"}
+            </p>
+          ))}
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+function ActionButtonBar({ onReject, isRejecting, isSyncing, onReset, canReset, isAutosaving, onSync, canSync, syncButtonLabel }: {
+  onReject: () => void;
+  isRejecting: boolean;
+  isSyncing: boolean;
+  onReset: () => void;
+  canReset: boolean;
+  isAutosaving: boolean;
+  onSync: () => void;
+  canSync: boolean;
+  syncButtonLabel: string;
+}) {
+  return (
+    <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink/15 bg-white/95 px-4 py-3 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center gap-2">
+        <Button variant="outline" className="flex-1 border-red-300 text-red-700 hover:bg-red-50" onClick={onReject} disabled={isRejecting || isSyncing}>
+          {isRejecting ? "Rejecting..." : "Reject"}
+        </Button>
+        <Button variant="outline" className="flex-1" onClick={onReset} disabled={!canReset || isAutosaving || isRejecting}>
+          Cancel
+        </Button>
+        <Button className="flex-1" variant={isSyncing ? "outline" : "solid"} onClick={onSync} disabled={!canSync || isSyncing}>
+          {syncButtonLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<ValidationPayloadInput | null>(null);
@@ -285,9 +694,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   });
 
   useEffect(() => {
-    if (!receiptQuery.data) {
-      return;
-    }
+    if (!receiptQuery.data) return;
     if (baselineReceiptId !== receiptQuery.data.id) {
       setBaselineReceiptId(receiptQuery.data.id);
       setCancelBaseline(toModelBaselineDraft(receiptQuery.data));
@@ -297,9 +704,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
       setMobileView("twin");
       return;
     }
-    if (!dirty) {
-      setDraft(toDraft(receiptQuery.data));
-    }
+    if (!dirty) setDraft(toDraft(receiptQuery.data));
   }, [receiptQuery.data, baselineReceiptId, dirty]);
 
   const saveMutation = useMutation({
@@ -338,12 +743,8 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   });
 
   useEffect(() => {
-    if (!draft || !dirty) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      saveMutation.mutate(draft);
-    }, 900);
+    if (!draft || !dirty) return;
+    const timer = setTimeout(() => { saveMutation.mutate(draft); }, 900);
     return () => clearTimeout(timer);
   }, [draft, dirty, saveMutation]);
 
@@ -358,9 +759,8 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   );
   const accounts = useMemo(() => cacheQuery.data?.filter((item) => item.entity_type === "account") ?? [], [cacheQuery.data]);
   const payees = useMemo(() => cacheQuery.data?.filter((item) => item.entity_type === "payee") ?? [], [cacheQuery.data]);
-
-  const categoryIds = useMemo(() => new Set(categories.map((category) => category.entity_id)), [categories]);
-  const accountIds = useMemo(() => new Set(accounts.map((account) => account.entity_id)), [accounts]);
+  const categoryIds = useMemo(() => new Set(categories.map((c) => c.entity_id)), [categories]);
+  const accountIds = useMemo(() => new Set(accounts.map((a) => a.entity_id)), [accounts]);
 
   const validationErrors = useMemo(
     () => (draft ? validateDraft(draft, { categoryIds, accountIds }) : []),
@@ -370,14 +770,11 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const totalConfirmed = receiptQuery.data?.latest_twin?.confirmed_sections.total ?? false;
   const twinConfirmationErrors = useMemo(() => {
     const errors: string[] = [];
-    if (!dateTimeConfirmed) {
-      errors.push("Confirm Date + Time in Receipt Twin before syncing");
-    }
-    if (!totalConfirmed) {
-      errors.push("Confirm Total in Receipt Twin before syncing");
-    }
+    if (!dateTimeConfirmed) errors.push("Confirm Date + Time in Receipt Twin before syncing");
+    if (!totalConfirmed) errors.push("Confirm Total in Receipt Twin before syncing");
     return errors;
   }, [dateTimeConfirmed, totalConfirmed]);
+
   const payeeSuggestions = useMemo(() => {
     if (!draft) return [];
     const query = draft.payee_name.trim().toLowerCase();
@@ -386,14 +783,13 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     return payees
       .filter((payee) => {
         const normalizedName = payee.name.toLowerCase();
-        if (!normalizedName.includes(query) || seen.has(normalizedName)) {
-          return false;
-        }
+        if (!normalizedName.includes(query) || seen.has(normalizedName)) return false;
         seen.add(normalizedName);
         return true;
       })
       .slice(0, PAYEE_SUGGESTION_LIMIT);
   }, [draft, payees]);
+
   const syncReadinessErrors = useMemo(() => [...twinConfirmationErrors, ...validationErrors], [twinConfirmationErrors, validationErrors]);
   const canSync = !!draft && syncReadinessErrors.length === 0 && !saveMutation.isPending && !dirty;
   const isSplitMode = !!draft && draft.splits.length > 0;
@@ -403,19 +799,14 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     () => parseCategoryAmbiguityFlags((receiptQuery.data?.latest_extraction?.parsed_json ?? null) as Record<string, unknown> | null),
     [receiptQuery.data?.latest_extraction?.parsed_json],
   );
-  const canResetToBaseline =
-    !!draft &&
-    !!cancelBaseline &&
-    JSON.stringify(draft) !== JSON.stringify(cancelBaseline);
+  const canResetToBaseline = !!draft && !!cancelBaseline && JSON.stringify(draft) !== JSON.stringify(cancelBaseline);
 
   if (receiptQuery.isError) {
     return (
       <main className="mx-auto max-w-3xl px-4 py-6">
         <Card>
           <p className="text-sm text-red-700">Failed to load receipt details. Verify the receipt ID and try again.</p>
-          <Link href="/" className="mt-3 inline-flex text-sm font-semibold text-ink/70">
-            Back to queue
-          </Link>
+          <Link href="/" className="mt-3 inline-flex text-sm font-semibold text-ink/70">Back to queue</Link>
         </Card>
       </main>
     );
@@ -431,12 +822,9 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
 
   const receipt = receiptQuery.data;
   const isSyncing = syncMutation.isPending || receipt.status === "syncing";
-  const hadPriorSync = receipt.has_successful_sync;
-  const syncButtonLabel = isSyncing ? "Syncing" : hadPriorSync ? "Resync to YNAB" : "Sync to YNAB";
+  const syncButtonLabel = isSyncing ? "Syncing" : receipt.has_successful_sync ? "Resync to YNAB" : "Sync to YNAB";
   const resetDraft = () => {
-    if (!cancelBaseline) {
-      return;
-    }
+    if (!cancelBaseline) return;
     setDirty(false);
     setPayeeMenuOpen(false);
     setDraft(cancelBaseline);
@@ -447,38 +835,6 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     queryClient.invalidateQueries({ queryKey: ["receipts"] });
     queryClient.invalidateQueries({ queryKey: ["stats"] });
   };
-  const dateLocked = receipt.locked_fields?.transaction_date ?? false;
-  const timeLocked = receipt.locked_fields?.transaction_time ?? false;
-  const totalLocked = receipt.locked_fields?.total_amount ?? false;
-
-  const scanPanel = (
-    <Card className="h-full overflow-hidden p-0">
-      <div className="border-b border-ink/10 px-3 py-2">
-        <h2 className="text-sm font-semibold">Original Scan</h2>
-      </div>
-      <div className="h-[28rem] overflow-auto bg-black/5 p-2">
-        {receipt.mime_type.startsWith("image/") ? (
-          <div className="relative h-full min-h-[22rem] w-full">
-            <Image
-              src={receiptFileUrl(receiptId)}
-              alt={receipt.original_filename}
-              fill
-              unoptimized
-              className="object-contain"
-            />
-          </div>
-        ) : (
-          <object
-            data={`${receiptFileUrl(receiptId)}#toolbar=1&view=FitH`}
-            type="application/pdf"
-            className="h-full min-h-[22rem] w-full"
-          >
-            <iframe src={receiptFileUrl(receiptId)} title="Receipt scan" className="h-full w-full border-0" />
-          </object>
-        )}
-      </div>
-    </Card>
-  );
 
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 pb-28 pt-4">
@@ -502,115 +858,25 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
         ) : null}
       </header>
 
-      <section className="animate-reveal space-y-3" style={{ animationDelay: "55ms" }}>
-        <div className="hidden gap-3 md:grid md:grid-cols-2">
-          <ReceiptTwinViewer
-            receiptId={receiptId}
-            twin={receipt.latest_twin}
-            onUpdated={() => {
-              setDirty(false);
-              refreshReceiptContext();
-            }}
-          />
-          {scanPanel}
-        </div>
+      <TwinAndScanSection
+        receiptId={receiptId}
+        receipt={receipt}
+        mobileView={mobileView}
+        setMobileView={setMobileView}
+        mobilePanelRef={mobilePanelRef}
+        onTwinUpdated={() => { setDirty(false); refreshReceiptContext(); }}
+      />
 
-        <div className="space-y-2 md:hidden">
-          <div className="inline-flex rounded-xl border border-ink/15 bg-white p-1 text-xs">
-            <button
-              type="button"
-              className={`rounded-lg px-3 py-1 ${mobileView === "twin" ? "bg-ink text-white" : "text-ink/70"}`}
-              onClick={() => setMobileView("twin")}
-            >
-              Receipt Details
-            </button>
-            <button
-              type="button"
-              className={`rounded-lg px-3 py-1 ${mobileView === "scan" ? "bg-ink text-white" : "text-ink/70"}`}
-              onClick={() => setMobileView("scan")}
-            >
-              Original Scan
-            </button>
-          </div>
-          <div ref={mobilePanelRef} className="max-h-[32rem] overflow-auto">
-            {mobileView === "twin" ? (
-              <ReceiptTwinViewer
-                receiptId={receiptId}
-                twin={receipt.latest_twin}
-                onUpdated={() => {
-                  setDirty(false);
-                  refreshReceiptContext();
-                }}
-              />
-            ) : (
-              scanPanel
-            )}
-          </div>
-        </div>
-      </section>
-
-      <Card className="animate-reveal space-y-3" style={{ animationDelay: "70ms" }}>
-        <h2 className="font-semibold">Payee + Account</h2>
-        <div className="grid gap-3">
-          <div className="relative">
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Payee</label>
-            <Input
-              value={draft.payee_name}
-              onFocus={() => setPayeeMenuOpen(true)}
-              onBlur={() => {
-                setTimeout(() => setPayeeMenuOpen(false), 120);
-              }}
-              onChange={(event) => {
-                setDraft({ ...draft, payee_name: event.target.value });
-                setDirty(true);
-                setPayeeMenuOpen(true);
-              }}
-            />
-            {payeeMenuOpen && payeeSuggestions.length > 0 ? (
-              <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
-                {payeeSuggestions.map((payee) => (
-                  <button
-                    key={payee.entity_id}
-                    type="button"
-                    className="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-sand/70"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => {
-                      setDraft({ ...draft, payee_name: payee.name });
-                      setDirty(true);
-                      setPayeeMenuOpen(false);
-                    }}
-                  >
-                    {payee.name}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Account</label>
-            <Select
-              value={draft.account_id}
-              className={accountNeedsAttention ? "border-amber-500 bg-amber-50 text-amber-900 focus:ring-amber-300" : undefined}
-              onChange={(event) => {
-                setDraft({ ...draft, account_id: event.target.value });
-                setDirty(true);
-              }}
-            >
-              <option value="">Select account</option>
-              <option value={UNKNOWN_ACCOUNT_ID}>Unknown (needs review)</option>
-              {accounts.map((account) => (
-                <option key={account.entity_id} value={account.entity_id}>
-                  {account.name}
-                </option>
-              ))}
-            </Select>
-            {accountNeedsAttention ? (
-              <p className="mt-1 text-xs font-semibold text-amber-700">Unknown account selected. Sync is disabled until this is fixed.</p>
-            ) : null}
-          </div>
-        </div>
-      </Card>
+      <PayeeAccountCard
+        draft={draft}
+        setDraft={setDraft}
+        setDirty={setDirty}
+        accounts={accounts}
+        payeeSuggestions={payeeSuggestions}
+        payeeMenuOpen={payeeMenuOpen}
+        setPayeeMenuOpen={setPayeeMenuOpen}
+        accountNeedsAttention={accountNeedsAttention}
+      />
 
       {ambiguityFlags.length > 0 ? (
         <section className="animate-reveal rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900" style={{ animationDelay: "95ms" }}>
@@ -627,258 +893,43 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
         </section>
       ) : null}
 
-      <Card className="animate-reveal space-y-3" style={{ animationDelay: "120ms" }}>
-        <h2 className="font-semibold">Date + Total</h2>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Date</label>
-            <Input
-              type="date"
-              value={draft.transaction_date}
-              readOnly={dateLocked}
-              className={dateLocked ? "bg-sand/60" : undefined}
-              onChange={(event) => {
-                if (dateLocked) return;
-                setDraft({ ...draft, transaction_date: event.target.value });
-                setDirty(true);
-              }}
-            />
-            {dateLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Receipt time (optional)</label>
-            <Input
-              type="time"
-              value={draft.transaction_time ?? ""}
-              readOnly={timeLocked}
-              className={timeLocked ? "bg-sand/60" : undefined}
-              onChange={(event) => {
-                if (timeLocked) return;
-                setDraft({ ...draft, transaction_time: event.target.value || "" });
-                setDirty(true);
-              }}
-            />
-            {timeLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
-          </div>
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-1">
-          <div>
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Total</label>
-            <Input
-              type="number"
-              step="0.01"
-              value={draft.total_amount}
-              readOnly={totalLocked}
-              className={totalLocked ? "bg-sand/60" : undefined}
-              onChange={(event) => {
-                if (totalLocked) return;
-                setDraft({ ...draft, total_amount: Number(event.target.value) || 0 });
-                setDirty(true);
-              }}
-            />
-            {totalLocked ? <p className="mt-1 text-[11px] font-semibold text-amber-700">from receipt</p> : null}
-          </div>
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Memo</label>
-          <Textarea
-            rows={2}
-            value={draft.memo}
-            onChange={(event) => {
-              setDraft({ ...draft, memo: event.target.value });
-              setDirty(true);
-            }}
-          />
-        </div>
-      </Card>
+      <DateTimeCard
+        draft={draft}
+        setDraft={setDraft}
+        setDirty={setDirty}
+        dateLocked={receipt.locked_fields?.transaction_date ?? false}
+        timeLocked={receipt.locked_fields?.transaction_time ?? false}
+        totalLocked={receipt.locked_fields?.total_amount ?? false}
+      />
 
-      <Card className="animate-reveal space-y-3" style={{ animationDelay: "170ms" }}>
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold">{isSplitMode ? "Split Categories" : "Category"}</h2>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1"
-            onClick={() => {
-              if (isSplitMode) {
-                const fallbackCategory = draft.splits.find((split) => split.category_id)?.category_id ?? draft.category_id;
-                setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
-                setDirty(true);
-                return;
-              }
+      <CategorySplitCard
+        draft={draft}
+        setDraft={setDraft}
+        setDirty={setDirty}
+        categories={categories}
+        isSplitMode={isSplitMode}
+        splitTotal={splitTotal}
+      />
 
-              setDraft({
-                ...draft,
-                category_id: "",
-                splits: [{ category_id: draft.category_id, amount: draft.total_amount, memo: "" }],
-              });
-              setDirty(true);
-            }}
-          >
-            {isSplitMode ? "Use Single Category" : "Split Transaction"}
-          </Button>
-        </div>
+      <ValidationStatusSection
+        isAutosaving={saveMutation.isPending}
+        dirty={dirty}
+        lockWarnings={lockWarnings}
+        syncReadinessErrors={syncReadinessErrors}
+        correctionHistory={receipt.correction_history}
+      />
 
-        {!isSplitMode ? (
-          <div>
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Category</label>
-            <CategorySearchSelect
-              value={draft.category_id}
-              categories={categories}
-              placeholder="Select or search category"
-              onChange={(nextCategoryId) => {
-                setDraft({ ...draft, category_id: nextCategoryId });
-                setDirty(true);
-              }}
-            />
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center justify-between rounded-xl bg-sand/50 px-3 py-2 text-xs text-ink/75">
-              <span>Split total: ${splitTotal.toFixed(2)}</span>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1"
-                onClick={() => {
-                  setDraft({
-                    ...draft,
-                    splits: [...draft.splits, { category_id: "", amount: 0, memo: "" }],
-                  });
-                  setDirty(true);
-                }}
-              >
-                <Plus className="h-4 w-4" /> Add split
-              </Button>
-            </div>
-
-            {draft.splits.map((split, index) => (
-              <div key={`${index}-${split.category_id}`} className="rounded-2xl border border-ink/10 bg-sand/70 p-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Split {index + 1}</p>
-                  <button
-                    type="button"
-                    className="inline-flex items-center text-red-600"
-                    onClick={() => {
-                      const nextSplits = draft.splits.filter((_, splitIndex) => splitIndex !== index);
-                      if (nextSplits.length === 0) {
-                        const fallbackCategory = split.category_id || draft.category_id;
-                        setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
-                        setDirty(true);
-                        return;
-                      }
-                      setDraft({ ...draft, category_id: "", splits: nextSplits });
-                      setDirty(true);
-                    }}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-
-                <div className="grid gap-2">
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={split.amount}
-                    onChange={(event) => {
-                      const nextSplits = [...draft.splits];
-                      nextSplits[index] = { ...split, amount: Number(event.target.value) || 0 };
-                      setDraft({ ...draft, splits: nextSplits });
-                      setDirty(true);
-                    }}
-                  />
-
-                  <CategorySearchSelect
-                    value={split.category_id}
-                    categories={categories}
-                    placeholder="Move item to category"
-                    onChange={(nextCategoryId) => {
-                      const nextSplits = [...draft.splits];
-                      nextSplits[index] = { ...split, category_id: nextCategoryId };
-                      setDraft({ ...draft, splits: nextSplits });
-                      setDirty(true);
-                    }}
-                  />
-
-                  <Input
-                    placeholder="Split memo"
-                    value={split.memo}
-                    onChange={(event) => {
-                      const nextSplits = [...draft.splits];
-                      nextSplits[index] = { ...split, memo: event.target.value };
-                      setDraft({ ...draft, splits: nextSplits });
-                      setDirty(true);
-                    }}
-                  />
-                </div>
-              </div>
-            ))}
-          </>
-        )}
-      </Card>
-
-      <section className="animate-reveal rounded-2xl bg-white/80 p-3 text-xs text-ink/70" style={{ animationDelay: "210ms" }}>
-        <p className="mb-2 font-semibold text-ink/70">
-          {saveMutation.isPending ? "Autosaving..." : dirty ? "Changes pending autosave" : "Draft saved"}
-        </p>
-        {lockWarnings.length > 0 ? (
-          <div className="mb-2 space-y-1 rounded-xl border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
-            {lockWarnings.map((warning) => (
-              <p key={warning}>- {warning}</p>
-            ))}
-          </div>
-        ) : null}
-        {syncReadinessErrors.length ? (
-          <ul className="space-y-1 text-red-700">
-            {syncReadinessErrors.map((error) => (
-              <li key={error}>- {error}</li>
-            ))}
-          </ul>
-        ) : (
-          <p>Validation passes. Sync can run.</p>
-        )}
-      </section>
-
-      {receipt.correction_history.length > 0 ? (
-        <section className="animate-reveal rounded-2xl border border-black/20 bg-black/90 p-3 text-xs text-white" style={{ animationDelay: "225ms" }}>
-          <p className="font-semibold">Correction history</p>
-          {receipt.correction_history.slice(0, 3).map((item) => (
-            <p key={item.id} className="mt-1 text-[11px] text-slate-200">
-              {new Date(item.detected_at).toLocaleDateString()}: {item.note?.split("| sig=", 1)[0] ?? "Category corrected in YNAB"}
-            </p>
-          ))}
-        </section>
-      ) : null}
-
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink/15 bg-white/95 px-4 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center gap-2">
-          <Button
-            variant="outline"
-            className="flex-1 border-red-300 text-red-700 hover:bg-red-50"
-            onClick={() => rejectMutation.mutate()}
-            disabled={rejectMutation.isPending || isSyncing}
-          >
-            {rejectMutation.isPending ? "Rejecting..." : "Reject"}
-          </Button>
-          <Button
-            variant="outline"
-            className="flex-1"
-            onClick={resetDraft}
-            disabled={!canResetToBaseline || saveMutation.isPending || rejectMutation.isPending}
-          >
-            Cancel
-          </Button>
-          <Button
-            className="flex-1"
-            variant={isSyncing ? "outline" : "solid"}
-            onClick={() => syncMutation.mutate()}
-            disabled={!canSync || isSyncing}
-          >
-            {syncButtonLabel}
-          </Button>
-        </div>
-      </div>
-
+      <ActionButtonBar
+        onReject={() => rejectMutation.mutate()}
+        isRejecting={rejectMutation.isPending}
+        isSyncing={isSyncing}
+        onReset={resetDraft}
+        canReset={canResetToBaseline}
+        isAutosaving={saveMutation.isPending}
+        onSync={() => syncMutation.mutate()}
+        canSync={canSync}
+        syncButtonLabel={syncButtonLabel}
+      />
     </main>
   );
 }
