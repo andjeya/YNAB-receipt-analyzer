@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import re
 import uuid
@@ -48,7 +49,16 @@ def build_outbox_name(
     if user_slug:
         pieces.append(user_slug)
     pieces.extend([stem, suffix])
-    return "-".join(pieces) + ext
+    result = "-".join(pieces) + ext
+    # POSIX filesystem limit is 255 bytes; truncate stem if the assembled name exceeds it.
+    result_bytes = result.encode("utf-8")
+    if len(result_bytes) > 255:
+        fixed = "-".join(pieces[:-2]) + "-" + suffix + ext
+        available = 255 - len(fixed.encode("utf-8")) - 1  # -1 for hyphen before stem
+        stem = stem.encode("utf-8")[:max(1, available)].decode("utf-8", errors="ignore")
+        pieces[-2] = stem
+        result = "-".join(pieces) + ext
+    return result
 
 
 class InboxWatcher:
@@ -65,6 +75,7 @@ class InboxWatcher:
         self.runtime = runtime
         self.state = state
         self._seen: dict[Path, _SeenFile] = {}
+        self._logger = logging.getLogger(__name__)
 
     def _is_ignored(self, path: Path) -> bool:
         name = path.name
@@ -82,6 +93,7 @@ class InboxWatcher:
             stat = path.stat()
         except FileNotFoundError:
             self._seen.pop(path, None)
+            self._logger.debug("file disappeared between scans path=%s", path)
             return False
 
         age_seconds = (now - datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)).total_seconds()

@@ -28,6 +28,9 @@ services:
     command: ["python", "apps/server/worker/worker.py"]
     env_file:
       - .env
+    environment:
+      # Required so worker can import backend/shared modules. Bake into image ENV if preferred.
+      PYTHONPATH: /app/apps/server/backend:/app/apps/server/shared
     volumes:
       - /volume1/receipts/incoming:/app/incoming
       - /volume1/receipts/data:/app/data

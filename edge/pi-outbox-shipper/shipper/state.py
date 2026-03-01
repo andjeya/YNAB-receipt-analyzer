@@ -27,7 +27,9 @@ def parse_utc(value: str | None) -> datetime | None:
 
 def compute_backoff_seconds(attempt_number: int, initial_seconds: int, max_seconds: int) -> int:
     attempt = max(1, attempt_number)
-    return min(initial_seconds * (2 ** (attempt - 1)), max_seconds)
+    # Cap the exponent so the intermediate value stays manageable; max_seconds clamps the result anyway.
+    exponent = min(attempt - 1, 20)
+    return min(initial_seconds * (2**exponent), max_seconds)
 
 
 @dataclass(frozen=True)
@@ -83,7 +85,8 @@ class DeliveryStateStore:
             )
             conn.commit()
         record = self.get_record(filename)
-        assert record is not None
+        if record is None:
+            raise RuntimeError(f"BUG: record missing after insert for filename={filename!r}")
         return record
 
     def get_record(self, filename: str) -> DeliveryRecord | None:
@@ -144,7 +147,8 @@ class DeliveryStateStore:
             conn.commit()
 
         record = self.get_record(filename)
-        assert record is not None
+        if record is None:
+            raise RuntimeError(f"BUG: record missing after mark_retry for filename={filename!r}")
         return record
 
     def mark_sent(self, filename: str, *, now: datetime | None = None) -> DeliveryRecord:
@@ -166,7 +170,8 @@ class DeliveryStateStore:
             conn.commit()
 
         record = self.get_record(filename)
-        assert record is not None
+        if record is None:
+            raise RuntimeError(f"BUG: record missing after mark_sent for filename={filename!r}")
         return record
 
     def due_for_send(self, filename: str, *, now: datetime | None = None) -> bool:

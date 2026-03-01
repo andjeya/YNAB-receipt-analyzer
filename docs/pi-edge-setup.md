@@ -13,6 +13,10 @@ mkdir -p ~/receipts/inbox_scanner ~/receipts/inbox_dropbox ~/receipts/outbox ~/r
 
 ## 2) Install shipper
 
+Requires **Python 3.11+** (`python3 --version`). Raspberry Pi OS Bookworm (2023+) ships
+3.11. If you are on Bullseye, upgrade the OS or install Python 3.11 via `pyenv` before
+continuing.
+
 ```bash
 cd /path/to/repo
 python3 -m venv edge/pi-outbox-shipper/.venv
@@ -54,3 +58,9 @@ shipper status --config /etc/receipt-shipper/shipper.yaml
 shipper drain --config /etc/receipt-shipper/shipper.yaml
 journalctl -u receipt-shipper -f
 ```
+
+**Note on `shipper drain`:** drain exits once inbox and outbox are both empty for
+`--max-idle-cycles` consecutive cycles. If you have a slow `stability.stable_seconds`
+setting (e.g. 30 s), new files may not yet be enqueued when drain runs its idle check.
+For automation scripts, either use a larger `--max-idle-cycles` or add a brief pre-wait
+equal to your stability window before calling drain.

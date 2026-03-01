@@ -11,8 +11,18 @@ WorkingDirectory=/opt/receipt-shipper
 Environment=PYTHONUNBUFFERED=1
 Environment=SHIPPER_CONFIG=/etc/receipt-shipper/shipper.yaml
 ExecStart=/opt/receipt-shipper/.venv/bin/shipper run --config /etc/receipt-shipper/shipper.yaml
-Restart=always
-RestartSec=5
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=120
+StartLimitBurst=3
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
 
 # Journal-friendly stdout logging.
 StandardOutput=journal

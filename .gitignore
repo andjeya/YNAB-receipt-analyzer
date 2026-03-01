@@ -45,5 +45,4 @@ plans/
 .DS_Store
 
 # Local/private Gemini guidance (do not commit)
-shared/receipt_shared/resources/category_guidance.json
 apps/server/shared/receipt_shared/resources/category_guidance.json

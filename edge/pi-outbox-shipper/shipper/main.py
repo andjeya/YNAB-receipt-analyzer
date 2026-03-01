@@ -123,11 +123,14 @@ def _load_runtime(config_path: str | None, log_level: str | None) -> ShipperRunt
     return ShipperRuntime(config)
 
 
-def _run_forever(runtime: ShipperRuntime) -> int:
+def _run_forever(runtime: ShipperRuntime) -> None:
     interval = runtime.config.runtime.poll_interval_seconds
     while True:
-        enqueued, sent, failed = runtime.cycle()
-        runtime.logger.debug("cycle complete enqueued=%s sent=%s failed=%s", enqueued, sent, failed)
+        try:
+            enqueued, sent, failed = runtime.cycle()
+            runtime.logger.debug("cycle complete enqueued=%s sent=%s failed=%s", enqueued, sent, failed)
+        except Exception:
+            runtime.logger.exception("unexpected error in cycle; will retry after %ss", interval)
         time.sleep(interval)
 
 

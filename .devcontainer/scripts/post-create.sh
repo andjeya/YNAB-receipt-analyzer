@@ -26,7 +26,8 @@ if command -v npm >/dev/null 2>&1; then
   }
 fi
 
-bashrc_hook='source /workspaces/YNAB-receipt-analyzer/scripts/dev-env.sh >/dev/null 2>&1 || true'
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+bashrc_hook="source ${repo_root}/scripts/dev-env.sh >/dev/null 2>&1 || true"
 if ! grep -Fq "${bashrc_hook}" "${HOME}/.bashrc"; then
   echo "[post-create] Configuring ~/.bashrc to auto-load scripts/dev-env.sh"
   {

@@ -237,6 +237,8 @@ def load_config(config_path: str | Path | None = None) -> ShipperConfig:
 
     if not sender.dry_run and (not sender.host or not sender.user):
         raise ConfigError("sender.host and sender.user are required unless sender.dry_run=true")
+    if not sender.dry_run and sender.ssh_key is not None and not sender.ssh_key.exists():
+        raise ConfigError(f"sender.ssh_key path does not exist: {sender.ssh_key}")
 
     config = ShipperConfig(
         paths=PathsConfig(

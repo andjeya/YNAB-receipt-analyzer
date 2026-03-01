@@ -13,7 +13,7 @@ CONFIG_DIR="/etc/receipt-shipper"
 SERVICE_NAME="receipt-shipper.service"
 
 mkdir -p "${INSTALL_ROOT}" "${CONFIG_DIR}"
-rsync -a --delete "${APP_ROOT}/" "${INSTALL_ROOT}/"
+rsync -a --exclude config/ "${APP_ROOT}/" "${INSTALL_ROOT}/"
 
 python3 -m venv "${INSTALL_ROOT}/.venv"
 "${INSTALL_ROOT}/.venv/bin/pip" install --upgrade pip
