@@ -12,7 +12,7 @@ from app.migrations import ensure_schema_current
 from app.models import GameCorrectnessState
 from app.services.ingestion import IngestionScanner
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("app.worker.scanner")
 
 
 def _as_utc(value: datetime | None) -> datetime | None:

@@ -6,6 +6,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 
 export function Providers({ children }: { children: ReactNode }) {
+  const showDevtools = process.env.NODE_ENV !== "production";
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -21,7 +22,7 @@ export function Providers({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       {children}
-      <ReactQueryDevtools initialIsOpen={false} />
+      {showDevtools ? <ReactQueryDevtools initialIsOpen={false} /> : null}
     </QueryClientProvider>
   );
 }

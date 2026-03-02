@@ -19,6 +19,12 @@ export default function ReceiptDetailError({
       <div className="rounded border border-red-200 bg-red-50 p-6">
         <h2 className="mb-2 text-base font-semibold text-red-800">Failed to render receipt</h2>
         <p className="mb-4 text-sm text-red-700">An unexpected error occurred while displaying this receipt.</p>
+        {error.message ? (
+          <p className="mb-2 rounded border border-red-200 bg-white px-3 py-2 text-left text-xs text-red-700">{error.message}</p>
+        ) : null}
+        {error.digest ? (
+          <p className="mb-4 text-left text-[11px] text-red-600/70">digest: {error.digest}</p>
+        ) : null}
         <div className="flex items-center gap-4">
           <button
             onClick={reset}
