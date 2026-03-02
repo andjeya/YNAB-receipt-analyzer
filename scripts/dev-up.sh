@@ -17,6 +17,7 @@ source "${repo_root}/scripts/dev-env.sh"
 run_dir="${repo_root}/.run"
 log_dir="${run_dir}/logs"
 pid_dir="${run_dir}/pids"
+frontend_pattern="next-server|apps/server/frontend/.next/standalone/server.js"
 mkdir -p "${log_dir}" "${pid_dir}"
 
 start_redis_if_needed() {
@@ -88,15 +89,15 @@ start_service \
   "python apps/server/worker/scanner.py" \
   "PYTHONPATH=apps/server/backend:apps/server/shared python apps/server/worker/scanner.py"
 
-if ! is_running_pattern "next-server"; then
+if ! is_running_pattern "${frontend_pattern}"; then
   echo "[build] frontend (production mode, no hot reload)"
   (cd apps/server/frontend && npm run build)
 fi
 
 start_service \
   "frontend" \
-  "next-server" \
-  "cd apps/server/frontend && npm run start -- --hostname 0.0.0.0 --port 3000"
+  "${frontend_pattern}" \
+  "cd apps/server/frontend && HOSTNAME=0.0.0.0 PORT=3000 node .next/standalone/server.js"
 
 echo
 echo "Services:"

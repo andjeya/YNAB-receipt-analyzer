@@ -16,6 +16,7 @@ ENV INTERNAL_API_ORIGIN=${INTERNAL_API_ORIGIN}
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY apps/server/frontend ./
+RUN mkdir -p public
 RUN npm run build
 
 FROM node:22-alpine AS runner

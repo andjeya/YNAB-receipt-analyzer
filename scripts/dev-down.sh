@@ -9,7 +9,7 @@ cd "${repo_root}"
 echo "Stopping local dev services..."
 
 # Match the processes started by scripts/dev-up.sh and direct manual starts.
-pkill -f "uvicorn app.main:app|apps/server/worker/worker.py|apps/server/worker/scanner.py|next-server|next start" || true
+pkill -f "uvicorn app.main:app|apps/server/worker/worker.py|apps/server/worker/scanner.py|apps/server/frontend/.next/standalone/server.js|next-server|next start" || true
 
 sleep 0.3
 

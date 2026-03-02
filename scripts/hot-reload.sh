@@ -4,7 +4,7 @@
 #
 # Usage:
 #   ./scripts/hot-reload.sh --on      # next dev + uvicorn --reload
-#   ./scripts/hot-reload.sh --off     # next build/start + plain uvicorn
+#   ./scripts/hot-reload.sh --off     # next build + standalone server + plain uvicorn
 #   ./scripts/hot-reload.sh --status  # show current mode
 
 # with hot reload on
@@ -63,9 +63,10 @@ start_service() {
 }
 
 stop_frontend() {
-  pkill -f "next-server" 2>/dev/null || true
-  pkill -f "next dev"    2>/dev/null || true
-  pkill -f "next start"  2>/dev/null || true
+  pkill -f "apps/server/frontend/.next/standalone/server.js" 2>/dev/null || true
+  pkill -f "next-server"                                    2>/dev/null || true
+  pkill -f "next dev"                                       2>/dev/null || true
+  pkill -f "next start"                                     2>/dev/null || true
 }
 
 stop_api() {
@@ -76,7 +77,7 @@ show_status() {
   if [[ -f "${flag_file}" ]]; then
     echo "hot-reload: ON  (next dev + uvicorn --reload)"
   else
-    echo "hot-reload: OFF (next build/start + plain uvicorn)"
+    echo "hot-reload: OFF (next build + standalone server + plain uvicorn)"
   fi
 }
 
@@ -112,7 +113,7 @@ case "${1:-}" in
     ;;
 
   --off)
-    echo "==> Disabling hot reload (production mode)"
+    echo "==> Disabling hot reload (production mode: standalone frontend)"
     echo "[stop] api"
     stop_api
     echo "[stop] frontend"
@@ -126,7 +127,7 @@ case "${1:-}" in
     (cd apps/server/frontend && npm run build)
 
     start_service "frontend" \
-      "cd apps/server/frontend && npm run start -- --hostname 0.0.0.0 --port 3000"
+      "cd apps/server/frontend && HOSTNAME=0.0.0.0 PORT=3000 node .next/standalone/server.js"
 
     rm -f "${flag_file}"
     echo
