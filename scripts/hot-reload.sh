@@ -125,6 +125,8 @@ case "${1:-}" in
 
     echo "[build] frontend"
     (cd apps/server/frontend && npm run build)
+    echo "[sync] frontend standalone assets"
+    "${repo_root}/scripts/sync-frontend-standalone-assets.sh"
 
     start_service "frontend" \
       "cd apps/server/frontend && HOSTNAME=0.0.0.0 PORT=3000 node .next/standalone/server.js"

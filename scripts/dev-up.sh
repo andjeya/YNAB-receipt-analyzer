@@ -92,6 +92,8 @@ start_service \
 if ! is_running_pattern "${frontend_pattern}"; then
   echo "[build] frontend (production mode, no hot reload)"
   (cd apps/server/frontend && npm run build)
+  echo "[sync] frontend standalone assets"
+  "${repo_root}/scripts/sync-frontend-standalone-assets.sh"
 fi
 
 start_service \
