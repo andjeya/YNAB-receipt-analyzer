@@ -1,9 +1,38 @@
-import { ReceiptTwinPayload } from "@/lib/types";
+import { ReceiptLineItem, ReceiptTwinPayload } from "@/lib/types";
+
+function normalizeLineItems(value: unknown): ReceiptLineItem[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((candidate): candidate is Record<string, unknown> => Boolean(candidate) && typeof candidate === "object")
+    .map((item, index) => {
+      const indexValue = Number(item.index);
+      const quantityValue = Number(item.quantity);
+      const unitPriceValue = Number(item.unit_price);
+      const lineTotalValue = Number(item.line_total);
+      const rawTaxCode = item.tax_code;
+      const itemType = String(item.item_type ?? "").trim();
+      const taxCode = typeof rawTaxCode === "string" && rawTaxCode.trim() ? rawTaxCode : null;
+
+      return {
+        index: Number.isFinite(indexValue) ? indexValue : index,
+        raw_text: String(item.raw_text ?? ""),
+        translated_text: String(item.translated_text ?? ""),
+        quantity: Number.isFinite(quantityValue) ? quantityValue : null,
+        unit_price: Number.isFinite(unitPriceValue) ? unitPriceValue : null,
+        line_total: Number.isFinite(lineTotalValue) ? lineTotalValue : null,
+        tax_code: taxCode,
+        item_type: itemType || "product",
+      };
+    });
+}
 
 export function cloneTwinPayload(payload: ReceiptTwinPayload): ReceiptTwinPayload {
   return {
     ...payload,
-    line_items: payload.line_items.map((item) => ({ ...item })),
+    line_items: normalizeLineItems(payload.line_items),
   };
 }
 

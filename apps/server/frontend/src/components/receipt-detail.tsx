@@ -126,11 +126,15 @@ function CategorySearchSelect({
 
 function toDraftFromPayload(payload: Record<string, unknown>, fallbackPayee: string): ValidationPayloadInput {
   const splitsSource = Array.isArray(payload.splits) ? payload.splits : [];
-  const parsedSplits = splitsSource.map((split) => {
+  const parsedSplits = splitsSource.flatMap((split) => {
+    if (!split || typeof split !== "object") {
+      return [];
+    }
     const record = split as Record<string, unknown>;
+    const amount = Number(record.amount ?? 0);
     return {
       category_id: String(record.category_id ?? ""),
-      amount: Number(record.amount ?? 0),
+      amount: Number.isFinite(amount) ? amount : 0,
       memo: String(record.memo ?? ""),
     };
   });
@@ -275,12 +279,14 @@ const INLINE_IMAGE_MIME_TYPES = new Set([
   "image/gif",
 ]);
 
-function isInlineImageMimeType(mimeType: string): boolean {
-  return INLINE_IMAGE_MIME_TYPES.has(mimeType.toLowerCase());
+function isInlineImageMimeType(mimeType: string | null | undefined): boolean {
+  const normalized = String(mimeType ?? "").trim().toLowerCase();
+  if (!normalized) return false;
+  return INLINE_IMAGE_MIME_TYPES.has(normalized);
 }
 
-function isPdfMimeType(mimeType: string): boolean {
-  const normalized = mimeType.toLowerCase();
+function isPdfMimeType(mimeType: string | null | undefined): boolean {
+  const normalized = String(mimeType ?? "").trim().toLowerCase();
   return normalized === "application/pdf" || normalized.endsWith("+pdf");
 }
 
@@ -341,7 +347,13 @@ function TwinAndScanSection({ receiptId, receipt, mobileView, setMobileView, mob
   mobilePanelRef: { current: HTMLDivElement | null };
   onTwinUpdated: () => void;
 }) {
-  const scanPanel = <ScanPanel receiptId={receiptId} mimeType={receipt.mime_type} originalFilename={receipt.original_filename} />;
+  const scanPanel = (
+    <ScanPanel
+      receiptId={receiptId}
+      mimeType={String(receipt.mime_type ?? "")}
+      originalFilename={String(receipt.original_filename ?? "")}
+    />
+  );
   return (
     <section className="animate-reveal space-y-3" style={{ animationDelay: "55ms" }}>
       <div className="hidden gap-3 md:grid md:grid-cols-2">
@@ -670,7 +682,11 @@ function DuplicateReviewSection({
           <p className="text-xs text-ink/70">Date {receipt.display_receipt_date ?? "--"}</p>
           <p className="text-xs text-ink/70">Total {formatAmount(receipt.display_total_milliunits)}</p>
           <div className="h-80 overflow-hidden rounded-xl border border-ink/10 bg-black/5">
-            <ScanPanel receiptId={receipt.id} mimeType={receipt.mime_type} originalFilename={receipt.original_filename} />
+            <ScanPanel
+              receiptId={receipt.id}
+              mimeType={String(receipt.mime_type ?? "")}
+              originalFilename={String(receipt.original_filename ?? "")}
+            />
           </div>
         </Card>
 
@@ -685,8 +701,8 @@ function DuplicateReviewSection({
               <div className="h-80 overflow-hidden rounded-xl border border-ink/10 bg-black/5">
                 <ScanPanel
                   receiptId={matchedReceipt.id}
-                  mimeType={matchedReceipt.mime_type}
-                  originalFilename={matchedReceipt.original_filename}
+                  mimeType={String(matchedReceipt.mime_type ?? "")}
+                  originalFilename={String(matchedReceipt.original_filename ?? "")}
                 />
               </div>
             </>
@@ -832,11 +848,39 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   }, [mobileView, receiptId]);
 
   const categories = useMemo(
-    () => (cacheQuery.data?.filter((item) => item.entity_type === "category") ?? []) as CategoryOption[],
+    () =>
+      (cacheQuery.data ?? [])
+        .filter((item) => item.entity_type === "category")
+        .map((item) => ({
+          entity_id: String(item.entity_id ?? "").trim(),
+          name: String(item.name ?? "").trim(),
+          group_name: item.group_name == null ? null : String(item.group_name),
+        }))
+        .filter((item) => item.entity_id.length > 0 && item.name.length > 0),
     [cacheQuery.data],
   );
-  const accounts = useMemo(() => cacheQuery.data?.filter((item) => item.entity_type === "account") ?? [], [cacheQuery.data]);
-  const payees = useMemo(() => cacheQuery.data?.filter((item) => item.entity_type === "payee") ?? [], [cacheQuery.data]);
+  const accounts = useMemo(
+    () =>
+      (cacheQuery.data ?? [])
+        .filter((item) => item.entity_type === "account")
+        .map((item) => ({
+          entity_id: String(item.entity_id ?? "").trim(),
+          name: String(item.name ?? "").trim() || "Unknown account",
+        }))
+        .filter((item) => item.entity_id.length > 0),
+    [cacheQuery.data],
+  );
+  const payees = useMemo(
+    () =>
+      (cacheQuery.data ?? [])
+        .filter((item) => item.entity_type === "payee")
+        .map((item) => ({
+          entity_id: String(item.entity_id ?? "").trim(),
+          name: String(item.name ?? "").trim(),
+        }))
+        .filter((item) => item.entity_id.length > 0 && item.name.length > 0),
+    [cacheQuery.data],
+  );
   const categoryIds = useMemo(() => new Set(categories.map((c) => c.entity_id)), [categories]);
   const accountIds = useMemo(() => new Set(accounts.map((a) => a.entity_id)), [accounts]);
 
@@ -860,7 +904,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     const seen = new Set<string>();
     return payees
       .filter((payee) => {
-        const normalizedName = payee.name.toLowerCase();
+        const normalizedName = String(payee.name ?? "").toLowerCase();
         if (!normalizedName.includes(query) || seen.has(normalizedName)) return false;
         seen.add(normalizedName);
         return true;
@@ -907,6 +951,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   }
 
   const receipt = receiptQuery.data;
+  const correctionHistory = Array.isArray(receipt.correction_history) ? receipt.correction_history : [];
   const isSyncing = syncMutation.isPending || receipt.status === "syncing";
   const syncButtonLabel = isSyncing ? "Syncing" : receipt.has_successful_sync ? "Resync to YNAB" : "Sync to YNAB";
   const resetDraft = () => {
@@ -1027,7 +1072,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             dirty={dirty}
             lockWarnings={lockWarnings}
             syncReadinessErrors={syncReadinessErrors}
-            correctionHistory={receipt.correction_history}
+            correctionHistory={correctionHistory}
           />
 
           <ActionButtonBar
