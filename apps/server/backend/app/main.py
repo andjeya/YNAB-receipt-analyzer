@@ -83,6 +83,7 @@ async def _periodic_cache_refresh() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    configure_logging(settings.log_file_path)
     await asyncio.to_thread(ensure_schema_current)
     try:
         await asyncio.to_thread(_reset_stuck_jobs)
