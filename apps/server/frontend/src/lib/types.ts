@@ -43,6 +43,7 @@ export interface Validation {
   version: number;
   source: string;
   payload: Record<string, unknown>;
+  allocation_workspace: AllocationWorkspace | null;
   is_valid: boolean;
   errors: string[] | null;
   created_at: string;
@@ -147,6 +148,36 @@ export interface ValidationSplitInput {
   memo: string;
 }
 
+export interface AllocationItem {
+  item_id: string;
+  source_index: number;
+  label: string;
+  amount: number | null;
+  tax_code: string | null;
+  item_type: string;
+}
+
+export interface AllocationLane {
+  lane_id: string;
+  category_id: string | null;
+  pinned_amount: number | null;
+}
+
+export interface AllocationAssignment {
+  item_id: string;
+  lane_id: string;
+}
+
+export interface AllocationWorkspace {
+  version: number;
+  twin_version: number;
+  generated_at: string;
+  items: AllocationItem[];
+  lanes: AllocationLane[];
+  assignments: AllocationAssignment[];
+  warnings: string[];
+}
+
 export interface ValidationPayloadInput {
   payee_name: string;
   account_id: string;
@@ -162,6 +193,12 @@ export interface SaveDraftResponse {
   validation: Validation;
   can_sync: boolean;
   lock_warnings: string[];
+}
+
+export interface AllocationRecomputeResponse {
+  payload: ValidationPayloadInput;
+  workspace: AllocationWorkspace;
+  warnings: string[];
 }
 
 export interface SaveTwinRequest {

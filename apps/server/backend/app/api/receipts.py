@@ -19,6 +19,8 @@ from app.enums import ReceiptStatus, YNABSyncStatus
 from app.jobs.queue import EXTRACTION_QUEUE_NAME, SYNC_QUEUE_NAME, enqueue_extraction_job, enqueue_sync_job
 from app.models import ExtractionRun, Receipt, ReceiptCorrection, ReceiptTwin, TimingMetric, Validation, YNABSync
 from app.schemas import (
+    AllocationRecomputeRequest,
+    AllocationRecomputeResponse,
     ConfirmedSectionsOut,
     DuplicateConfirmResponse,
     DuplicateOverrideRequest,
@@ -38,6 +40,11 @@ from app.schemas import (
     TwinConfirmRequest,
     TwinConfirmResponse,
     ValidationOut,
+)
+from app.services.allocation_workspace import (
+    build_initial_allocation_workspace,
+    reconcile_allocation_workspace,
+    recompute_payload_from_workspace,
 )
 from app.services.correctness import award_water
 from app.services.duplicates import apply_semantic_duplicate_state, build_semantic_signature
@@ -153,6 +160,7 @@ def _to_validation_schema(validation: Validation) -> ValidationOut:
         version=validation.version,
         source=validation.source,
         payload=validation.payload,
+        allocation_workspace=validation.allocation_workspace,
         is_valid=validation.is_valid,
         errors=validation.errors,
         created_at=validation.created_at,
@@ -235,6 +243,7 @@ def _create_validation_version(
     *,
     receipt: Receipt,
     payload: dict[str, Any],
+    allocation_workspace: dict[str, Any] | None,
     source: str,
     is_valid: bool,
     errors: list[str],
@@ -245,6 +254,7 @@ def _create_validation_version(
         version=next_version,
         source=source,
         payload=payload,
+        allocation_workspace=allocation_workspace,
         is_valid=is_valid,
         errors=errors,
     )
@@ -283,6 +293,7 @@ def _refresh_validation_from_confirmed_twin_sections(
         db,
         receipt=receipt,
         payload=normalized_payload,
+        allocation_workspace=latest_validation.allocation_workspace,
         source=source,
         is_valid=is_valid,
         errors=errors,
@@ -721,10 +732,19 @@ def save_draft(
         allowed_category_ids=allowed_category_ids,
         allowed_account_ids=allowed_account_ids,
     )
+    twin_payload = latest_twin.payload if latest_twin and isinstance(latest_twin.payload, dict) else None
+    twin_version = latest_twin.version if latest_twin else 0
+    allocation_workspace = reconcile_allocation_workspace(
+        normalized_payload,
+        request.allocation_workspace,
+        twin_payload=twin_payload,
+        twin_version=twin_version,
+    )
     validation = _create_validation_version(
         db,
         receipt=receipt,
         payload=normalized_payload,
+        allocation_workspace=allocation_workspace,
         source=request.source,
         is_valid=is_valid,
         errors=errors,
@@ -804,6 +824,62 @@ def save_draft(
         validation=_to_validation_schema(validation),
         can_sync=is_valid and receipt.status != ReceiptStatus.DUPLICATE_REVIEW.value,
         lock_warnings=lock_warnings,
+    )
+
+
+@router.post("/{receipt_id}/allocation/recompute", response_model=AllocationRecomputeResponse)
+def recompute_allocation_workspace(
+    receipt_id: str,
+    request: AllocationRecomputeRequest,
+    db: Session = Depends(db_session),
+    settings: Settings = Depends(app_settings),
+) -> AllocationRecomputeResponse:
+    receipt = db.get(Receipt, receipt_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    latest_validation = _latest_validation(db, receipt.id)
+    if latest_validation is None:
+        raise HTTPException(status_code=409, detail="Receipt has no validation draft")
+
+    latest_twin = _latest_twin(db, receipt.id)
+    twin_payload = latest_twin.payload if latest_twin and isinstance(latest_twin.payload, dict) else None
+    twin_version = latest_twin.version if latest_twin else 0
+    base_workspace = request.workspace or latest_validation.allocation_workspace
+    if not base_workspace:
+        base_workspace = build_initial_allocation_workspace(
+            latest_validation.payload,
+            twin_payload=twin_payload,
+            twin_version=twin_version,
+        )
+
+    workspace_payload = reconcile_allocation_workspace(
+        latest_validation.payload,
+        base_workspace,
+        twin_payload=twin_payload,
+        twin_version=twin_version,
+    )
+    recomputed_payload, recomputed_workspace, warnings = recompute_payload_from_workspace(
+        latest_validation.payload,
+        workspace_payload,
+        mode=request.mode,
+    )
+
+    reference_data = get_cached_reference_data(db, settings)
+    allowed_category_ids = {item.entity_id for item in reference_data["categories"]}
+    allowed_account_ids = {item.entity_id for item in reference_data["accounts"]}
+    normalized_payload, is_valid, errors = validate_payload(
+        recomputed_payload,
+        allowed_category_ids=allowed_category_ids,
+        allowed_account_ids=allowed_account_ids,
+    )
+    if not is_valid:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+
+    return AllocationRecomputeResponse(
+        payload=normalized_payload,
+        workspace=recomputed_workspace,
+        warnings=warnings,
     )
 
 

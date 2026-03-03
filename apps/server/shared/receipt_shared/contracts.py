@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, datetime, time
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -129,6 +129,51 @@ class ReceiptTwinExtraction(BaseModel):
     total_amount: float
     payment_method: str = ""
     receipt_language: str = "en"
+
+
+class AllocationItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str = Field(min_length=1)
+    source_index: int = Field(ge=0)
+    label: str = ""
+    amount: float | None = None
+    tax_code: str | None = None
+    item_type: str = "product"
+
+
+class AllocationLane(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lane_id: str = Field(min_length=1)
+    category_id: str | None = None
+    pinned_amount: float | None = None
+
+    @field_validator("category_id", mode="before")
+    @classmethod
+    def normalize_category_id(cls, value: str | None) -> str | None:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+
+class AllocationAssignment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str = Field(min_length=1)
+    lane_id: str = Field(min_length=1)
+
+
+class AllocationWorkspace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(ge=1, default=1)
+    twin_version: int = Field(ge=0, default=0)
+    generated_at: datetime
+    items: list[AllocationItem] = Field(default_factory=list)
+    lanes: list[AllocationLane] = Field(default_factory=list)
+    assignments: list[AllocationAssignment] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ValidationSplit(BaseModel):

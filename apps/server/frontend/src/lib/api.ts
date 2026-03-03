@@ -16,6 +16,8 @@ import {
   ReceiptDetail,
   ReceiptSummary,
   SaveDraftResponse,
+  AllocationWorkspace,
+  AllocationRecomputeResponse,
   SaveTwinRequest,
   SaveTwinResponse,
   StatsSummary,
@@ -69,10 +71,25 @@ export function getReceiptDetail(receiptId: string) {
   return request<ReceiptDetail>(`/receipts/${receiptId}`);
 }
 
-export function saveDraft(receiptId: string, payload: ValidationPayloadInput) {
+export function saveDraft(
+  receiptId: string,
+  payload: ValidationPayloadInput,
+  allocationWorkspace?: AllocationWorkspace | Record<string, unknown> | null,
+) {
   return request<SaveDraftResponse>(`/receipts/${receiptId}/draft`, {
     method: "POST",
-    body: JSON.stringify({ payload, source: "user" }),
+    body: JSON.stringify({ payload, allocation_workspace: allocationWorkspace ?? null, source: "user" }),
+  });
+}
+
+export function recomputeAllocationWorkspace(
+  receiptId: string,
+  workspace: AllocationWorkspace | Record<string, unknown>,
+  mode: "discard_manual_amounts" | "keep_manual_amounts" = "discard_manual_amounts",
+) {
+  return request<AllocationRecomputeResponse>(`/receipts/${receiptId}/allocation/recompute`, {
+    method: "POST",
+    body: JSON.stringify({ workspace, mode }),
   });
 }
 

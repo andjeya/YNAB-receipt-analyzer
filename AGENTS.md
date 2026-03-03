@@ -99,6 +99,18 @@ Entry guidance:
 - include date/time, 1-2 line summary, and explicit file references
 - prefer reference format: `refs: plan-..., session-..., report-...`
 
+### Future Implementation List
+
+Each `month-summary.md` should also maintain a short `## Future Implementation List` section.
+
+Use this section to capture ideas discovered during sessions that are out of current scope or too complex to implement now, but may be valuable later.
+
+Guidance:
+
+- keep each item very brief (1 line synopsis)
+- include date/time and explicit references to related session/report/plan files for details
+- treat this as a backlog pointer, not a detailed design doc
+
 ## Update Cadence
 
 Agents should update notes:

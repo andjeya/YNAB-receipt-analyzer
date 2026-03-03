@@ -15,6 +15,7 @@ from app.db import SessionLocal
 from app.utils import utcnow
 from app.enums import ReceiptStatus
 from app.models import ExtractionRun, Receipt, ReceiptTwin, TimingMetric, Validation
+from app.services.allocation_workspace import build_initial_allocation_workspace
 from app.services.duplicates import apply_semantic_duplicate_state
 from app.services.reconciliation import run_ynab_reconciliation
 from app.services.validation import build_initial_validation_payload, validate_payload
@@ -198,6 +199,7 @@ def _create_validation(
     *,
     receipt: Receipt,
     payload: dict[str, Any],
+    allocation_workspace: dict[str, Any] | None,
     source: str,
 ) -> Validation:
     def _attempt() -> Validation:
@@ -207,6 +209,7 @@ def _create_validation(
             version=next_version,
             source=source,
             payload=payload,
+            allocation_workspace=allocation_workspace,
             is_valid=True,
             errors=[],
         )
@@ -419,7 +422,18 @@ def _run_simple_extraction(ctx: _ExtractionCtx) -> None:
             allowed_account_ids=ctx.allowed_account_ids,
         )
         if is_valid:
-            _create_validation(ctx.db, receipt=ctx.receipt, payload=normalized_payload, source="model")
+            workspace = build_initial_allocation_workspace(
+                normalized_payload,
+                twin_payload=None,
+                twin_version=0,
+            )
+            _create_validation(
+                ctx.db,
+                receipt=ctx.receipt,
+                payload=normalized_payload,
+                allocation_workspace=workspace,
+                source="model",
+            )
             _set_primary_extraction_run(ctx.db, ctx.receipt.id, run.id)
             ctx.receipt.status = ReceiptStatus.NEEDS_REVIEW.value
             ctx.receipt.status_reason = None
@@ -531,9 +545,24 @@ def _run_unified_attempt(ctx: _ExtractionCtx) -> _UnifiedAttemptResult:
 
 def _finalize_unified_success(ctx: _ExtractionCtx, unified: _UnifiedAttemptResult) -> None:
     """Persist a successful unified extraction result and commit."""
-    _create_validation(ctx.db, receipt=ctx.receipt, payload=unified.validation_payload, source="model")
+    twin_payload_for_workspace: dict[str, Any] | None = None
+    twin_version = 0
     if _is_twin_payload_minimally_usable(unified.twin_payload):
-        _create_model_twin(ctx.db, receipt=ctx.receipt, payload=unified.twin_payload or {})
+        twin = _create_model_twin(ctx.db, receipt=ctx.receipt, payload=unified.twin_payload or {})
+        twin_payload_for_workspace = twin.payload if isinstance(twin.payload, dict) else None
+        twin_version = twin.version
+    workspace = build_initial_allocation_workspace(
+        unified.validation_payload or {},
+        twin_payload=twin_payload_for_workspace,
+        twin_version=twin_version,
+    )
+    _create_validation(
+        ctx.db,
+        receipt=ctx.receipt,
+        payload=unified.validation_payload or {},
+        allocation_workspace=workspace,
+        source="model",
+    )
     _set_primary_extraction_run(ctx.db, ctx.receipt.id, unified.run.id)
     unified.run.schema_errors = unified.errors
 
@@ -680,9 +709,24 @@ def _run_fallback_and_finalize(ctx: _ExtractionCtx, unified: _UnifiedAttemptResu
             allow_unknown_account=True,
         )
         if is_valid:
-            _create_validation(ctx.db, receipt=ctx.receipt, payload=normalized_payload, source="model")
+            twin_payload_for_workspace: dict[str, Any] | None = None
+            twin_version = 0
             if _is_twin_payload_minimally_usable(fallback_twin_payload):
-                _create_model_twin(ctx.db, receipt=ctx.receipt, payload=fallback_twin_payload or {})
+                twin = _create_model_twin(ctx.db, receipt=ctx.receipt, payload=fallback_twin_payload or {})
+                twin_payload_for_workspace = twin.payload if isinstance(twin.payload, dict) else None
+                twin_version = twin.version
+            workspace = build_initial_allocation_workspace(
+                normalized_payload,
+                twin_payload=twin_payload_for_workspace,
+                twin_version=twin_version,
+            )
+            _create_validation(
+                ctx.db,
+                receipt=ctx.receipt,
+                payload=normalized_payload,
+                allocation_workspace=workspace,
+                source="model",
+            )
             _set_primary_extraction_run(ctx.db, ctx.receipt.id, fallback_ynab_run.id)
             ctx.receipt.status = ReceiptStatus.NEEDS_REVIEW.value
             ctx.receipt.status_reason = None

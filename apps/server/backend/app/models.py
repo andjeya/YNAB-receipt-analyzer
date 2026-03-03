@@ -136,6 +136,7 @@ class Validation(Base):
     source: Mapped[str] = mapped_column(String(32), nullable=False)
 
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    allocation_workspace: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     is_valid: Mapped[bool] = mapped_column(Boolean, nullable=False)
     errors: Mapped[list[str] | None] = mapped_column(JSON)
 

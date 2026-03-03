@@ -41,6 +41,7 @@ class ValidationOut(BaseModel):
     version: int
     source: str
     payload: dict[str, Any]
+    allocation_workspace: dict[str, Any] | None = None
     is_valid: bool
     errors: list[str] | None = None
     created_at: datetime
@@ -116,6 +117,7 @@ class ReceiptCorrectionOut(BaseModel):
 
 class SaveDraftRequest(BaseModel):
     payload: dict[str, Any]
+    allocation_workspace: dict[str, Any] | None = None
     source: str = Field(default="user")
 
 
@@ -123,6 +125,17 @@ class SaveDraftResponse(BaseModel):
     validation: ValidationOut
     can_sync: bool
     lock_warnings: list[str] = Field(default_factory=list)
+
+
+class AllocationRecomputeRequest(BaseModel):
+    workspace: dict[str, Any]
+    mode: Literal["discard_manual_amounts", "keep_manual_amounts"] = "discard_manual_amounts"
+
+
+class AllocationRecomputeResponse(BaseModel):
+    payload: dict[str, Any]
+    workspace: dict[str, Any]
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SyncRequest(BaseModel):

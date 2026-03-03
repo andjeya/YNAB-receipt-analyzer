@@ -13,10 +13,18 @@ import {
   getReceiptDetail,
   getYnabCache,
   overrideDuplicateReceipt,
+  recomputeAllocationWorkspace,
   receiptFileUrl,
   saveDraft,
 } from "@/lib/api";
-import { ReceiptDetail, ValidationPayloadInput } from "@/lib/types";
+import { AllocationWorkspace, ReceiptDetail, ValidationPayloadInput } from "@/lib/types";
+import {
+  clearWorkspacePins,
+  moveWorkspaceItems,
+  reconcileWorkspaceToDraft,
+  setWorkspaceLanePinnedAmount,
+  workspaceFromApi,
+} from "@/lib/allocation-workspace";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -24,6 +32,7 @@ import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { ReceiptTwinViewer } from "@/components/receipt-twin-viewer";
+import { AllocationBoard } from "@/components/allocation-board";
 
 const UNKNOWN_ACCOUNT_ID = "__unknown__";
 const PAYEE_SUGGESTION_LIMIT = 12;
@@ -483,13 +492,14 @@ function MemoCard({ draft, setDraft, setDirty }: {
   );
 }
 
-function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode, splitTotal }: {
+function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode, splitTotal, onSplitAmountEdited }: {
   draft: ValidationPayloadInput;
   setDraft: (d: ValidationPayloadInput) => void;
   setDirty: (v: boolean) => void;
   categories: CategoryOption[];
   isSplitMode: boolean;
   splitTotal: number;
+  onSplitAmountEdited?: (index: number, amount: number) => void;
 }) {
   return (
     <Card className="animate-reveal space-y-3" style={{ animationDelay: "170ms" }}>
@@ -573,9 +583,11 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
                   value={split.amount}
                   onChange={(event) => {
                     const nextSplits = [...draft.splits];
-                    nextSplits[index] = { ...split, amount: Number(event.target.value) || 0 };
+                    const nextAmount = Number(event.target.value) || 0;
+                    nextSplits[index] = { ...split, amount: nextAmount };
                     setDraft({ ...draft, splits: nextSplits });
                     setDirty(true);
+                    onSplitAmountEdited?.(index, nextAmount);
                   }}
                 />
                 <CategorySearchSelect
@@ -761,9 +773,13 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<ValidationPayloadInput | null>(null);
+  const [allocationWorkspace, setAllocationWorkspace] = useState<AllocationWorkspace | null>(null);
   const [cancelBaseline, setCancelBaseline] = useState<ValidationPayloadInput | null>(null);
+  const [cancelBaselineWorkspace, setCancelBaselineWorkspace] = useState<AllocationWorkspace | null>(null);
   const [baselineReceiptId, setBaselineReceiptId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [selectedAllocationItemIds, setSelectedAllocationItemIds] = useState<Set<string>>(new Set());
+  const [allocationWarnings, setAllocationWarnings] = useState<string[]>([]);
   const [payeeMenuOpen, setPayeeMenuOpen] = useState(false);
   const [lockWarnings, setLockWarnings] = useState<string[]>([]);
   const [mobileView, setMobileView] = useState<"twin" | "scan">("twin");
@@ -783,31 +799,68 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
 
   useEffect(() => {
     if (!receiptQuery.data) return;
+    const nextDraft = toDraft(receiptQuery.data);
+    const rawWorkspace = workspaceFromApi(
+      receiptQuery.data.latest_validation?.allocation_workspace ?? null,
+      nextDraft,
+      receiptQuery.data.latest_twin,
+    );
+    const nextWorkspace = receiptQuery.data.latest_validation?.source === "model"
+      ? clearWorkspacePins(rawWorkspace)
+      : rawWorkspace;
     if (baselineReceiptId !== receiptQuery.data.id) {
       setBaselineReceiptId(receiptQuery.data.id);
       setCancelBaseline(toModelBaselineDraft(receiptQuery.data));
-      setDraft(toDraft(receiptQuery.data));
+      setCancelBaselineWorkspace(nextWorkspace);
+      setDraft(nextDraft);
+      setAllocationWorkspace(nextWorkspace);
+      setAllocationWarnings(nextWorkspace.warnings ?? []);
       setDirty(false);
       setLockWarnings([]);
+      setSelectedAllocationItemIds(new Set());
       setMobileView("twin");
       return;
     }
-    if (!dirty) setDraft(toDraft(receiptQuery.data));
+    if (!dirty) {
+      setDraft(nextDraft);
+      setAllocationWorkspace(nextWorkspace);
+      setAllocationWarnings(nextWorkspace.warnings ?? []);
+      setSelectedAllocationItemIds(new Set());
+    }
   }, [receiptQuery.data, baselineReceiptId, dirty]);
 
   const saveMutation = useMutation({
-    mutationFn: (nextDraft: ValidationPayloadInput) =>
+    mutationFn: ({ nextDraft, nextWorkspace }: { nextDraft: ValidationPayloadInput; nextWorkspace: AllocationWorkspace | null }) =>
       saveDraft(receiptId, {
         ...nextDraft,
         transaction_time: nextDraft.transaction_time?.trim() ? nextDraft.transaction_time : null,
-      }),
+      }, nextWorkspace),
     onSuccess: (result) => {
       setDirty(false);
       setLockWarnings(result.lock_warnings ?? []);
+      if (draft && result.validation.allocation_workspace) {
+        const refreshedWorkspace = workspaceFromApi(
+          result.validation.allocation_workspace,
+          draft,
+          receiptQuery.data?.latest_twin ?? null,
+        );
+        setAllocationWorkspace(refreshedWorkspace);
+        setAllocationWarnings(refreshedWorkspace.warnings ?? []);
+      }
       queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
     },
+  });
+
+  const recomputeMutation = useMutation({
+    mutationFn: ({
+      workspace,
+      mode,
+    }: {
+      workspace: AllocationWorkspace;
+      mode: "discard_manual_amounts" | "keep_manual_amounts";
+    }) => recomputeAllocationWorkspace(receiptId, workspace, mode),
   });
 
   const syncMutation = useMutation({
@@ -838,14 +891,26 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
 
   useEffect(() => {
     if (!draft || !dirty) return;
-    const timer = setTimeout(() => { saveMutation.mutate(draft); }, 900);
+    const timer = setTimeout(() => {
+      saveMutation.mutate({ nextDraft: draft, nextWorkspace: allocationWorkspace });
+    }, 900);
     return () => clearTimeout(timer);
-  }, [draft, dirty, saveMutation]);
+  }, [draft, allocationWorkspace, dirty, saveMutation]);
 
   useEffect(() => {
     if (!mobilePanelRef.current) return;
     mobilePanelRef.current.scrollTo({ top: 0, behavior: "auto" });
   }, [mobileView, receiptId]);
+
+  useEffect(() => {
+    if (!draft) return;
+    setAllocationWorkspace((previous) => reconcileWorkspaceToDraft(previous, draft, receiptQuery.data?.latest_twin ?? null));
+  }, [draft, receiptQuery.data?.latest_twin]);
+
+  useEffect(() => {
+    if (!allocationWorkspace) return;
+    setAllocationWarnings(allocationWorkspace.warnings ?? []);
+  }, [allocationWorkspace]);
 
   const categories = useMemo(
     () =>
@@ -914,7 +979,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
 
   const isDuplicateReview = receiptQuery.data?.status === "duplicate_review";
   const syncReadinessErrors = useMemo(() => [...twinConfirmationErrors, ...validationErrors], [twinConfirmationErrors, validationErrors]);
-  const canSync = !!draft && syncReadinessErrors.length === 0 && !saveMutation.isPending && !dirty && !isDuplicateReview;
+  const canSync = !!draft && syncReadinessErrors.length === 0 && !saveMutation.isPending && !recomputeMutation.isPending && !dirty && !isDuplicateReview;
   const isSplitMode = !!draft && draft.splits.length > 0;
   const splitTotal = draft ? draft.splits.reduce((sum, split) => sum + Math.round(Number(split.amount || 0) * 100), 0) / 100 : 0;
   const accountNeedsAttention = draft?.account_id === UNKNOWN_ACCOUNT_ID;
@@ -922,7 +987,12 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     () => parseCategoryAmbiguityFlags((receiptQuery.data?.latest_extraction?.parsed_json ?? null) as Record<string, unknown> | null),
     [receiptQuery.data?.latest_extraction?.parsed_json],
   );
-  const canResetToBaseline = !!draft && !!cancelBaseline && JSON.stringify(draft) !== JSON.stringify(cancelBaseline);
+  const canResetToBaseline = useMemo(() => {
+    if (!draft || !cancelBaseline) return false;
+    const draftChanged = JSON.stringify(draft) !== JSON.stringify(cancelBaseline);
+    const workspaceChanged = JSON.stringify(allocationWorkspace ?? null) !== JSON.stringify(cancelBaselineWorkspace ?? null);
+    return draftChanged || workspaceChanged;
+  }, [draft, cancelBaseline, allocationWorkspace, cancelBaselineWorkspace]);
   const duplicateMatchId = receiptQuery.data?.duplicate_of_receipt_id ?? null;
   const duplicateMatchQuery = useQuery({
     queryKey: ["receipt", duplicateMatchId],
@@ -959,7 +1029,56 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     setDirty(false);
     setPayeeMenuOpen(false);
     setDraft(cancelBaseline);
-    saveMutation.mutate(cancelBaseline);
+    setAllocationWorkspace(cancelBaselineWorkspace);
+    setAllocationWarnings(cancelBaselineWorkspace?.warnings ?? []);
+    setSelectedAllocationItemIds(new Set());
+    saveMutation.mutate({ nextDraft: cancelBaseline, nextWorkspace: cancelBaselineWorkspace });
+  };
+  const runAllocationRecompute = (
+    mode: "discard_manual_amounts" | "keep_manual_amounts",
+    workspaceOverride?: AllocationWorkspace,
+  ) => {
+    if (!draft || !allocationWorkspace) return;
+    const sourceWorkspace = workspaceOverride ?? allocationWorkspace;
+    recomputeMutation.mutate(
+      { workspace: sourceWorkspace, mode },
+      {
+        onSuccess: (result) => {
+          const nextDraft = toDraftFromPayload(
+            result.payload as unknown as Record<string, unknown>,
+            draft.payee_name,
+          );
+          const nextWorkspace = workspaceFromApi(
+            result.workspace,
+            nextDraft,
+            receiptQuery.data?.latest_twin ?? null,
+          );
+          setDraft(nextDraft);
+          setAllocationWorkspace(nextWorkspace);
+          setAllocationWarnings(result.warnings ?? nextWorkspace.warnings ?? []);
+          setDirty(true);
+        },
+        onError: (error) => {
+          const message = error instanceof Error && error.message.trim() ? error.message : "Failed to recompute allocations";
+          setAllocationWarnings((previous) => [...previous, message]);
+        },
+      },
+    );
+  };
+  const handleMoveAllocatedItems = (itemIds: string[], laneId: string) => {
+    if (!allocationWorkspace || itemIds.length === 0) return;
+    const nextWorkspace = moveWorkspaceItems(allocationWorkspace, itemIds, laneId);
+    setAllocationWorkspace(nextWorkspace);
+    setSelectedAllocationItemIds(new Set());
+    setDirty(true);
+    runAllocationRecompute("keep_manual_amounts", nextWorkspace);
+  };
+  const handleSplitAmountPinned = (index: number, amount: number) => {
+    setAllocationWorkspace((previous) => {
+      if (!previous) return previous;
+      return setWorkspaceLanePinnedAmount(previous, `split-${index}`, amount);
+    });
+    setDirty(true);
   };
   const refreshReceiptContext = () => {
     queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
@@ -1065,7 +1184,35 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             categories={categories}
             isSplitMode={isSplitMode}
             splitTotal={splitTotal}
+            onSplitAmountEdited={handleSplitAmountPinned}
           />
+
+          {allocationWorkspace ? (
+            <AllocationBoard
+              workspace={allocationWorkspace}
+              categories={categories}
+              selectedItemIds={selectedAllocationItemIds}
+              onToggleItem={(itemId) => {
+                setSelectedAllocationItemIds((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(itemId)) next.delete(itemId);
+                  else next.add(itemId);
+                  return next;
+                });
+              }}
+              onClearSelection={() => setSelectedAllocationItemIds(new Set())}
+              onMoveItems={handleMoveAllocatedItems}
+              onRecomputeDiscard={() => {
+                if (!allocationWorkspace) return;
+                const nextWorkspace = clearWorkspacePins(allocationWorkspace);
+                setAllocationWorkspace(nextWorkspace);
+                runAllocationRecompute("discard_manual_amounts", nextWorkspace);
+              }}
+              onRecomputeKeep={() => runAllocationRecompute("keep_manual_amounts")}
+              isRecomputing={recomputeMutation.isPending}
+              warnings={allocationWarnings}
+            />
+          ) : null}
 
           <ValidationStatusSection
             isAutosaving={saveMutation.isPending}
