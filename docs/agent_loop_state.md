@@ -115,8 +115,12 @@ Local webapp must also be loaded and **visually inspected** via Playwright
 - [ ] Near-duplicate (date+total, no time) warning (provisional: yes).
 
 ### M5 — E2E harness
+- [ ] Add `data-testid` attributes to interactive controls (twin confirm buttons, sync bar, allocation lanes) — 2026-06-10 live E2E had to fall back to the API for twin confirms because text-based selectors matched the wrong button.
 - [ ] Playwright + mocked backend.
 - [ ] "Cannot approve unsafe" approval-gate suite.
+
+### Live E2E baseline (2026-06-10, passed)
+Full pipeline validated against the real test budget: receipt `2026_02_23_13_09_21.pdf` → ingest (GUI scan button) → Gemini extraction (all 6 line items + total exact vs human-read ground truth) → GUI sync click → YNAB transaction `16b484ec` (−119190 milliunits, Groceries, Anna Venture X, approved=false, blue flag, memo marker). Confirms: money path exact ×1000 with correct sign; `import_id` absent (M2 gap live-confirmed). Two fresh June scans (`receipt_examples/2026-06-10 19.43.*.pdf`) are reserved as the next live-validation inputs.
 
 ### M6 — Delight pass
 - [ ] Completion celebrations, batch review flow.
