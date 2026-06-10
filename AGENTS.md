@@ -143,3 +143,12 @@ At week close, move completed week folders to:
 - `plans/archive/YYYY/MM/week-XX/`
 
 Do not auto-archive active weeks.
+
+## Implementation Loop
+
+Before any implementation work, read `docs/agent_loop_state.md` — it is the
+single source of truth for the autonomous loop. Follow its milestone order
+(lowest-numbered open milestone first, smallest unchecked task) and its Hard
+Rules. Production YNAB writes are never autonomous; enabling sync against a
+non-test token is never autonomous. Update `docs/agent_loop_state.md` and the
+`plans/` notes every session.
