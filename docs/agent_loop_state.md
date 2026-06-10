@@ -107,6 +107,8 @@ Local webapp must also be loaded and **visually inspected** via Playwright
 - [ ] Toast/error layer + `onError` on sync/autosave; mismatch warnings visible in read mode.
 
 ### M4 — Workflow completeness
+- [ ] Fix "Original Scan" pane rendering empty on receipt detail (observed on every receipt in 2026-06-10 live review — reviewer cannot compare against source).
+- [ ] Hide extraction artifact rows (e.g. bare `0000370179/1695152 · 0×` lines) from the twin line-item display instead of rendering them in red.
 - [ ] Allocation board polish (pin badges, lane totals, keyboard DnD sensor, undo).
 - [ ] Twin staleness refresh action.
 - [ ] Ingest-scan result feedback.
