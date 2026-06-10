@@ -85,3 +85,7 @@ PY
 
 __ynab_load_dev_env "$@"
 unset -f __ynab_load_dev_env
+
+# Convenience launchers for agent CLIs inside this devcontainer.
+alias codex-yolo='codex --dangerously-bypass-approvals-and-sandbox'
+alias claude-yolo='claude --dangerously-skip-permissions'
