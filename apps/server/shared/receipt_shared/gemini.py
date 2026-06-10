@@ -414,8 +414,13 @@ def _default_thinking_config_for_model(model_name: str) -> dict[str, Any]:
 
 def _is_unsupported_thinking_config_error(exc: Exception) -> bool:
     error_str = str(exc).lower()
-    return "thinking level is not supported" in error_str or (
-        "thinking" in error_str and "not supported" in error_str
+    if "thinking" not in error_str:
+        return False
+    # API-side rejection for models without thinking support, or pydantic
+    # extra_forbidden from an SDK whose ThinkingConfig predates a field.
+    return (
+        "not supported" in error_str
+        or "extra inputs are not permitted" in error_str
     )
 
 

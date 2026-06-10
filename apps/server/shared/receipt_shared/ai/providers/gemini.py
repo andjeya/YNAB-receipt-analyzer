@@ -52,10 +52,22 @@ def _default_thinking_config_for_model(model_name: str) -> dict[str, Any]:
     return {}
 
 
+def _supported_thinking_kwargs(thinking_kwargs: dict[str, Any]) -> dict[str, Any]:
+    if types is None:
+        return {}
+    supported_fields = types.ThinkingConfig.model_fields
+    return {key: value for key, value in thinking_kwargs.items() if key in supported_fields}
+
+
 def _is_unsupported_thinking_config_error(exc: Exception) -> bool:
     error_str = str(exc).lower()
-    return "thinking level is not supported" in error_str or (
-        "thinking" in error_str and "not supported" in error_str
+    if "thinking" not in error_str:
+        return False
+    # API-side rejection for models without thinking support, or pydantic
+    # extra_forbidden from an SDK whose ThinkingConfig predates a field.
+    return (
+        "not supported" in error_str
+        or "extra inputs are not permitted" in error_str
     )
 
 
@@ -167,7 +179,13 @@ class GeminiProvider:
 
         attempt = 0
         thinking_enabled = True
-        thinking_kwargs = _default_thinking_config_for_model(model.provider_model)
+        default_thinking_kwargs = _default_thinking_config_for_model(model.provider_model)
+        thinking_kwargs = _supported_thinking_kwargs(default_thinking_kwargs)
+        if default_thinking_kwargs and not thinking_kwargs:
+            logger.warning(
+                "Installed google-genai ThinkingConfig does not support %s; proceeding without thinking config",
+                sorted(default_thinking_kwargs),
+            )
 
         while True:
             try:
