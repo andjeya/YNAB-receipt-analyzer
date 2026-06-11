@@ -1,10 +1,27 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, time
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 TRANSACTION_KINDS = ("purchase", "refund")
+
+
+def normalize_card_last_four(value: str | int | float | None) -> str | None:
+    """Return the trailing 4 ASCII digits of a card identifier, or None.
+
+    Drops any trailing decimal portion first so a numeric value like 5830.0 /
+    "5830.0" yields "5830" (not "8300"). Restricts to ASCII digits so non-ASCII
+    digit glyphs do not produce a non-ASCII key. None if fewer than 4 digits.
+    """
+    if value is None:
+        return None
+    text = re.sub(r"\.\d+$", "", str(value).strip())  # strip a trailing decimal part
+    digits = re.sub(r"[^0-9]", "", text)
+    if len(digits) < 4:
+        return None
+    return digits[-4:]
 
 
 class GeminiSplit(BaseModel):
@@ -46,11 +63,17 @@ class GeminiReceiptExtraction(BaseModel):
     transaction_date: date | None = None
     transaction_time: time | None = None
     memo: str = ""
+    card_last_four: str | None = None
     total_amount: float
     transaction_kind: str = Field(default="purchase")
     category_id: str | None = None
     splits: list[GeminiSplit] = Field(default_factory=list)
     category_ambiguity_flags: list[GeminiCategoryAmbiguityFlag] = Field(default_factory=list)
+
+    @field_validator("card_last_four", mode="before")
+    @classmethod
+    def normalize_card_last_four_field(cls, value: str | int | None) -> str | None:
+        return normalize_card_last_four(value)
 
     @field_validator("category_id", mode="before")
     @classmethod
@@ -97,6 +120,7 @@ class UnifiedReceiptExtraction(BaseModel):
     tax_total: float | None = None
     total_amount: float
     payment_method: str = ""
+    card_last_four: str | None = None
     receipt_language: str = "en"
 
     # YNAB draft fields.
@@ -107,6 +131,11 @@ class UnifiedReceiptExtraction(BaseModel):
     category_id: str | None = None
     splits: list[GeminiSplit] = Field(default_factory=list)
     category_ambiguity_flags: list[GeminiCategoryAmbiguityFlag] = Field(default_factory=list)
+
+    @field_validator("card_last_four", mode="before")
+    @classmethod
+    def normalize_card_last_four_field(cls, value: str | int | None) -> str | None:
+        return normalize_card_last_four(value)
 
     @field_validator("category_id", mode="before")
     @classmethod
@@ -152,7 +181,13 @@ class ReceiptTwinExtraction(BaseModel):
     tax_total: float | None = None
     total_amount: float
     payment_method: str = ""
+    card_last_four: str | None = None
     receipt_language: str = "en"
+
+    @field_validator("card_last_four", mode="before")
+    @classmethod
+    def normalize_card_last_four_field(cls, value: str | int | None) -> str | None:
+        return normalize_card_last_four(value)
 
 
 class AllocationItem(BaseModel):

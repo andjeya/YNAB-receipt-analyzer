@@ -342,6 +342,18 @@ class ReceiptCorrection(Base):
     receipt: Mapped[Receipt] = relationship(back_populates="corrections")
 
 
+class CardAccountMapping(Base):
+    __tablename__ = "card_account_mappings"
+    __table_args__ = (UniqueConstraint("budget_id", "card_last_four", name="uq_card_account_mapping_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    budget_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    card_last_four: Mapped[str] = mapped_column(String(4), nullable=False)
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
 class YNABReconciliationRun(Base):
     __tablename__ = "ynab_reconciliation_runs"
 

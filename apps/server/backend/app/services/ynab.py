@@ -16,7 +16,8 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.config import Settings
 from app.enums import ReceiptStatus, YNABCacheEntityType, YNABSyncStatus
 from app.utils import utcnow
-from app.models import Receipt, ReceiptCorrection, TimingMetric, Validation, YNABCache, YNABSync
+from app.models import Receipt, ReceiptCorrection, ReceiptTwin, TimingMetric, Validation, YNABCache, YNABSync
+from app.services.card_mapping import upsert_card_mapping
 from app.services.duplicates import apply_semantic_duplicate_state
 from app.services.game import apply_sync_gamification
 from app.services.incidents import record_incident
@@ -999,6 +1000,29 @@ def _apply_post_sync(
         )
         for correction in unresolved_corrections:
             correction.resynced_at = finished_at
+
+        # Learn card→account mapping from this sync (non-blocking inner try).
+        try:
+            latest_twin = db.scalar(
+                select(ReceiptTwin)
+                .where(ReceiptTwin.receipt_id == receipt.id)
+                .order_by(ReceiptTwin.version.desc())
+            )
+            if latest_twin is not None and isinstance(latest_twin.payload, dict):
+                card_last_four = latest_twin.payload.get("card_last_four")
+                synced_account_id = validation.payload.get("account_id") if isinstance(validation.payload, dict) else None
+                if card_last_four and synced_account_id and settings.ynab_budget_id:
+                    upsert_card_mapping(
+                        db,
+                        budget_id=settings.ynab_budget_id,
+                        card_last_four=card_last_four,
+                        account_id=synced_account_id,
+                    )
+        except Exception:
+            logger.exception(
+                "Card mapping upsert failed for receipt %s (non-fatal, sync already committed)",
+                receipt.id,
+            )
 
         db.commit()
     except Exception:

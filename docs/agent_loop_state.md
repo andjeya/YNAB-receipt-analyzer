@@ -155,6 +155,11 @@ Full pipeline validated against the real test budget: receipt `2026_02_23_13_09_
 - [ ] `gamification-dashboard.tsx` decision (wire or delete).
 - [ ] a11y: dialog semantics, focus traps, contrast.
 
+### F1 — Learned card→account mapping (feature, 2026-06-11) — IN PROGRESS
+User feature request before the next milestone. A persistent `card_last_four → ynab_account` map (per budget) that auto-suggests the account for known cards (incl. Apple Pay virtual cards, which have a stable distinct last-4). Settled decisions: LEARN ON SYNC (non-blocking upsert in post-sync bookkeeping); learned mapping ALWAYS WINS at extraction time (overrides AI guess, still user-editable, ignored if mapped account deleted); key = normalized trailing 4 digits (null for cash); many-cards→one-account allowed; debug-mode-only admin panel (Card last-4 → Account name, view/edit/delete).
+- [x] Inc1 backend ✅ 2026-06-11 (checker: FINDINGS incl. 1 MAJOR → resolved). `card_account_mappings` table + migration 0008 (idempotent); `card_last_four` on 3 extraction contracts + prompts (normalization strips trailing decimal + ASCII-only → no "5830.0"→"8300" mis-key); services/card_mapping.py (lookup w/ account-in-cache guard = override can't push a sync-invalid account; upsert last-write-wins, no full-rollback so caller's bookkeeping survives a race); override wired at the single `_validate_ynab_payload` chokepoint (all 3 extraction paths; NOT on draft-save so user edits never clobbered); non-fatal upsert on sync; debug API (404 when off). 342 tests pass (+74).
+- [ ] Inc2 frontend: debug admin panel (Dialog, two columns) + optional "remembered from last time" account hint.
+
 ### M7 — Test-budget validation → production (human-gated)
 - [x] Full live validation against `testplandevelopmentonly` (API + Playwright UI) — THREE passes: baseline (Costco, pre-M2), #1 (TJ, post-M2 dry-run+import_id), #2 (Kroger, post-M6 full polished flow incl. coupon/discount edge case). All matched human-read ground truth exactly.
 - [ ] **Production enablement — BLOCKED ON HUMAN. Never autonomous.** Requires: a separate production YNAB token (current token reaches only the test budget), human review of the 3 test-budget transactions, and explicit sign-off. The loop STOPS here.

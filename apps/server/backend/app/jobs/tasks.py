@@ -16,6 +16,7 @@ from app.utils import utcnow
 from app.enums import ReceiptStatus
 from app.models import ExtractionRun, Receipt, ReceiptTwin, TimingMetric, Validation
 from app.services.allocation_workspace import build_initial_allocation_workspace
+from app.services.card_mapping import lookup_account_for_card
 from app.services.duplicates import apply_semantic_duplicate_state
 from app.services.reconciliation import run_ynab_reconciliation
 from app.services.validation import build_initial_validation_payload, validate_payload
@@ -48,6 +49,7 @@ TWIN_PAYLOAD_FIELDS = (
     "tax_total",
     "total_amount",
     "payment_method",
+    "card_last_four",
     "receipt_language",
 )
 
@@ -269,8 +271,18 @@ def _validate_ynab_payload(
     default_account_id: str | None,
     allowed_category_ids: set[str],
     allowed_account_ids: set[str],
+    db: Any = None,
+    budget_id: str | None = None,
 ) -> tuple[dict[str, Any], bool, list[str]]:
     initial_payload = build_initial_validation_payload(parsed_json, default_account_id)
+
+    # Apply learned card→account mapping override (ALWAYS wins over AI guess).
+    if db is not None and budget_id:
+        card_last_four = parsed_json.get("card_last_four")
+        mapped_account = lookup_account_for_card(db, budget_id, card_last_four)
+        if mapped_account:
+            initial_payload["account_id"] = mapped_account
+
     return validate_payload(
         initial_payload,
         allowed_category_ids=allowed_category_ids,
@@ -420,6 +432,8 @@ def _run_simple_extraction(ctx: _ExtractionCtx) -> None:
             default_account_id=ctx.settings.ynab_default_account_id,
             allowed_category_ids=ctx.allowed_category_ids,
             allowed_account_ids=ctx.allowed_account_ids,
+            db=ctx.db,
+            budget_id=ctx.settings.ynab_budget_id,
         )
         if is_valid:
             workspace = build_initial_allocation_workspace(
@@ -509,6 +523,8 @@ def _run_unified_attempt(ctx: _ExtractionCtx) -> _UnifiedAttemptResult:
             default_account_id=ctx.settings.ynab_default_account_id,
             allowed_category_ids=ctx.allowed_category_ids,
             allowed_account_ids=ctx.allowed_account_ids,
+            db=ctx.db,
+            budget_id=ctx.settings.ynab_budget_id,
         )
         unified_twin_payload = _normalize_twin_payload(unified_analysis.parsed_json)
         twin_warnings, twin_hard_fail = _evaluate_twin_quality(
@@ -630,6 +646,8 @@ def _run_fallback_and_finalize(ctx: _ExtractionCtx, unified: _UnifiedAttemptResu
             default_account_id=ctx.settings.ynab_default_account_id,
             allowed_category_ids=ctx.allowed_category_ids,
             allowed_account_ids=ctx.allowed_account_ids,
+            db=ctx.db,
+            budget_id=ctx.settings.ynab_budget_id,
         )
         if is_valid:
             fallback_ynab_payload = normalized_payload

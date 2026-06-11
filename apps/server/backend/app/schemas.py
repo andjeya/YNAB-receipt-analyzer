@@ -438,5 +438,21 @@ class GameDebugSeedUpdateRequest(BaseModel):
     apply_to_live_state: bool = True
 
 
+class CardMappingOut(BaseModel):
+    id: int
+    card_last_four: str
+    account_id: str
+    account_name: str | None = None
+
+
+class CardMappingListOut(BaseModel):
+    items: list[CardMappingOut]
+
+
+class CardMappingUpsertRequest(BaseModel):
+    card_last_four: str
+    account_id: str
+
+
 ReceiptDetailOut.model_rebuild()
 GameForestOut.model_rebuild()

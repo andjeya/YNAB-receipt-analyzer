@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
-from app.api import config, game, health, ingestion, receipts, stats, ynab
+from app.api import card_mappings, config, game, health, ingestion, receipts, stats, ynab
 from app.config import get_settings
 from app.db import SessionLocal
 from app.enums import ReceiptStatus, YNABSyncStatus
@@ -147,3 +147,4 @@ app.include_router(ynab.router, prefix=settings.api_prefix)
 app.include_router(stats.router, prefix=settings.api_prefix)
 app.include_router(game.router, prefix=settings.api_prefix)
 app.include_router(config.router, prefix=settings.api_prefix)
+app.include_router(card_mappings.router, prefix=settings.api_prefix)

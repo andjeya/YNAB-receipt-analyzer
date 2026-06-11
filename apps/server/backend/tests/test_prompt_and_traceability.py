@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from app.services.validation import build_initial_validation_payload
 from app.services.ynab import _append_receipt_id_marker
 from receipt_shared.contracts import GeminiReceiptExtraction
-from receipt_shared.gemini import build_analysis_prompt, build_unified_prompt
+from receipt_shared.gemini import build_analysis_prompt, build_twin_extraction_prompt, build_unified_prompt
 
 
 SAMPLE_CATEGORIES = [SimpleNamespace(id="cat-1", group_name="Essentials", name="Groceries")]
@@ -168,6 +168,57 @@ class TestTransactionKindPromptRule:
             }
         )
         assert parsed.transaction_kind == "purchase"
+
+
+class TestCardLastFourPromptRule:
+    """Verify the card_last_four field and extraction rule appear in all 3 prompts."""
+
+    def test_analysis_prompt_includes_card_last_four_field(self):
+        prompt = build_analysis_prompt(
+            "Map categories.",
+            SAMPLE_CATEGORIES,
+            SAMPLE_ACCOUNTS,
+            SAMPLE_PAYEES,
+        )
+        assert '"card_last_four": "string | null"' in prompt
+
+    def test_analysis_prompt_includes_card_extraction_rule(self):
+        prompt = build_analysis_prompt(
+            "Map categories.",
+            SAMPLE_CATEGORIES,
+            SAMPLE_ACCOUNTS,
+            SAMPLE_PAYEES,
+        )
+        assert "Extract card_last_four" in prompt
+        assert "Never invent digits" in prompt
+
+    def test_unified_prompt_includes_card_last_four_field(self):
+        prompt = build_unified_prompt(
+            "Map categories.",
+            SAMPLE_CATEGORIES,
+            SAMPLE_ACCOUNTS,
+            SAMPLE_PAYEES,
+        )
+        assert '"card_last_four": "string | null"' in prompt
+
+    def test_unified_prompt_includes_card_extraction_rule(self):
+        prompt = build_unified_prompt(
+            "Map categories.",
+            SAMPLE_CATEGORIES,
+            SAMPLE_ACCOUNTS,
+            SAMPLE_PAYEES,
+        )
+        assert "Extract card_last_four" in prompt
+        assert "Never invent digits" in prompt
+
+    def test_twin_prompt_includes_card_last_four_field(self):
+        prompt = build_twin_extraction_prompt("Extract receipt data.")
+        assert '"card_last_four": "string | null"' in prompt
+
+    def test_twin_prompt_includes_card_extraction_rule(self):
+        prompt = build_twin_extraction_prompt("Extract receipt data.")
+        assert "Extract card_last_four" in prompt
+        assert "Never invent digits" in prompt
 
 
 class TestReceiptMemoMarker:

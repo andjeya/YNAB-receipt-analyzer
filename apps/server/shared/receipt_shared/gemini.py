@@ -185,6 +185,7 @@ Schema:
   "transaction_date": "YYYY-MM-DD | null",
   "transaction_time": "HH:MM | null",
   "memo": "string",
+  "card_last_four": "string | null",
   "total_amount": number,
   "transaction_kind": "purchase | refund",
   "category_id": "string | null",
@@ -222,6 +223,7 @@ Rules:
 9. If any line item could map to multiple categories with confidence >= 0.70, include it in category_ambiguity_flags.
 10. category_ambiguity_flags should be [] when there are no qualifying ambiguous items.
 11. If the document is clearly a refund, return, or credit (negative running total, REFUND/RETURN/CREDIT headers, parenthesized/negative line totals throughout), set transaction_kind to "refund"; otherwise "purchase". Report all amounts (total and line totals) as POSITIVE magnitudes — do not negate them; the kind carries direction. If the receipt mixes purchases and refunds, treat it as "purchase" (mixed receipts are not yet supported).
+12. Extract card_last_four: the last 4 digits of the card used for payment, as a 4-character digit string. For a masked PAN (e.g. **** **** **** 5830, XXXXXXXXXXXX1108) use its trailing 4 digits. For Apple Pay / Google Pay / digital wallets use the device account number's last 4 if printed (stable per device-card). Set to null for cash, gift cards with no number, or when no card digits are printed. Never invent digits.
 
 {reference_context}
 
@@ -267,6 +269,7 @@ Unified schema:
   "tax_total": "number | null",
   "total_amount": number,
   "payment_method": "string",
+  "card_last_four": "string | null",
   "receipt_language": "string",
   "payee_name": "string",
   "account_id": "string",
@@ -309,6 +312,7 @@ Rules:
    - Keep it concise (ideally <= 180 characters) while preserving useful detail.
 12. If category confidence is ambiguous (>= 0.70 across candidates), include category_ambiguity_flags.
 13. If the document is clearly a refund, return, or credit (negative running total, REFUND/RETURN/CREDIT headers, parenthesized/negative line totals throughout), set transaction_kind to "refund"; otherwise "purchase". Report all amounts (total and line totals) as POSITIVE magnitudes — do not negate them; the kind carries direction. If the receipt mixes purchases and refunds, treat it as "purchase" (mixed receipts are not yet supported).
+14. Extract card_last_four: the last 4 digits of the card used for payment, as a 4-character digit string. For a masked PAN (e.g. **** **** **** 5830, XXXXXXXXXXXX1108) use its trailing 4 digits. For Apple Pay / Google Pay / digital wallets use the device account number's last 4 if printed (stable per device-card). Set to null for cash, gift cards with no number, or when no card digits are printed. Never invent digits.
 
 {reference_context}
 
@@ -347,6 +351,7 @@ Schema:
   "tax_total": "number | null",
   "total_amount": number,
   "payment_method": "string",
+  "card_last_four": "string | null",
   "receipt_language": "string"
 }}
 
@@ -358,6 +363,7 @@ Rules:
 5. If date is unclear, set transaction_date to null.
 6. If time is unclear or unavailable, set transaction_time to null.
 7. Include line_items when possible. Keep uncertain numeric fields as null.
+8. Extract card_last_four: the last 4 digits of the card used for payment, as a 4-character digit string. For a masked PAN (e.g. **** **** **** 5830, XXXXXXXXXXXX1108) use its trailing 4 digits. For Apple Pay / Google Pay / digital wallets use the device account number's last 4 if printed (stable per device-card). Set to null for cash, gift cards with no number, or when no card digits are printed. Never invent digits.
 
 Input receipt is provided as an attached file in this request.
 """.strip()
