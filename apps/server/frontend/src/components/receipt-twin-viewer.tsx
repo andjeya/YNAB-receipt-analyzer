@@ -279,6 +279,7 @@ export function ReceiptTwinViewer({
                   variant={dateTimeConfirmed ? "outline" : "solid"}
                   size="sm"
                   className="h-7 px-2"
+                  data-testid="confirm-date-time"
                   onClick={() => {
                     void handleConfirm("date_time");
                   }}
@@ -356,6 +357,7 @@ export function ReceiptTwinViewer({
                   variant={totalConfirmed ? "outline" : "solid"}
                   size="sm"
                   className="h-7 px-2"
+                  data-testid="confirm-total"
                   onClick={() => {
                     void handleConfirm("total");
                   }}

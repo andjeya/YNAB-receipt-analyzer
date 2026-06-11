@@ -89,6 +89,7 @@ function DraggableAllocationItem({
       {...attributes}
       type="button"
       aria-pressed={selected}
+      data-testid={`alloc-item-${item.source_index}`}
       className={`w-full rounded-xl border px-2 py-1.5 text-left text-xs transition ${
         selected ? "border-sky-500 bg-sky-100 text-sky-900" : "border-ink/15 bg-white text-ink hover:bg-sand/50"
       }`}
@@ -145,6 +146,7 @@ function LaneColumn({
       ref={setNodeRef}
       role="group"
       aria-label={title}
+      data-testid={`lane-${lane.lane_id}`}
       className={`rounded-2xl border p-2 ${isOver ? "border-sky-500 bg-sky-50" : "border-ink/15 bg-sand/40"}`}
     >
       <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
@@ -318,10 +320,10 @@ export function AllocationBoard({
           <Button variant="outline" size="sm" onClick={onClearSelection} disabled={selectedItemIds.size === 0}>
             Clear selection
           </Button>
-          <Button variant="outline" size="sm" onClick={handleRecomputeKeep} disabled={isRecomputing}>
+          <Button variant="outline" size="sm" data-testid="recompute-keep" onClick={handleRecomputeKeep} disabled={isRecomputing}>
             {isRecomputing ? "Recomputing..." : "Recompute (Keep Pinned)"}
           </Button>
-          <Button size="sm" onClick={handleRecomputeDiscard} disabled={isRecomputing}>
+          <Button size="sm" data-testid="recompute-discard" onClick={handleRecomputeDiscard} disabled={isRecomputing}>
             Recompute (Discard Pinned)
           </Button>
           {undoAvailable && onWorkspaceChange ? (

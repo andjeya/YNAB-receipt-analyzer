@@ -511,6 +511,7 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
           <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Account</label>
           <Select
             value={draft.account_id}
+            data-testid="account-select"
             className={accountNeedsAttention ? "border-amber-500 bg-amber-50 text-amber-900 focus:ring-amber-300" : undefined}
             onChange={(event) => {
               setDraft({ ...draft, account_id: event.target.value });
@@ -829,7 +830,7 @@ function ActionButtonBar({ isSyncing, onReset, canReset, isAutosaving, onSync, c
         <Button variant="outline" className="flex-1" onClick={onReset} disabled={!canReset || isAutosaving}>
           Cancel
         </Button>
-        <Button className="flex-1" variant={isSyncing ? "outline" : "solid"} onClick={onSync} disabled={!canSync || isSyncing}>
+        <Button className="flex-1" variant={isSyncing ? "outline" : "solid"} onClick={onSync} disabled={!canSync || isSyncing} data-testid="sync-button">
           {syncButtonLabel}
         </Button>
       </div>

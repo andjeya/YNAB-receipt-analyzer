@@ -47,3 +47,7 @@ plans/
 
 # Local/private Gemini guidance (do not commit)
 apps/server/shared/receipt_shared/resources/category_guidance.json
+
+# Playwright e2e artifacts
+apps/server/frontend/test-results/
+apps/server/frontend/playwright-report/

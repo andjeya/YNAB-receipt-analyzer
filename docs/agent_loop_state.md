@@ -123,10 +123,10 @@ Local webapp must also be loaded and **visually inspected** via Playwright
 - [ ] Ingest-scan result feedback.
 - [x] Near-duplicate (date+total, no time) warning — implemented as kind-aware near-match: refund matching purchase signature → NEEDS_REVIEW + near_match_reason note (non-blocking); 3 new backend tests.
 
-### M5 — E2E harness
-- [ ] Add `data-testid` attributes to interactive controls (twin confirm buttons, sync bar, allocation lanes) — 2026-06-10 live E2E had to fall back to the API for twin confirms because text-based selectors matched the wrong button.
-- [ ] Playwright + mocked backend.
-- [ ] "Cannot approve unsafe" approval-gate suite.
+### M5 — E2E harness ✅ COMPLETE 2026-06-11
+- [x] Add `data-testid` attributes to interactive controls (twin confirm buttons, sync bar, allocation lanes) — `confirm-date-time`, `confirm-total`, `sync-button`, `account-select`, `lane-${laneId}`, `alloc-item-${source_index}`, `recompute-keep`, `recompute-discard`.
+- [x] Playwright 1.60.0 + mocked backend — `playwright.config.ts` (testDir e2e, webServer `next dev --port 3001`, INTERNAL_API_ORIGIN=127.0.0.1:9); `e2e/fixtures.ts` (buildStandardRouter, all receipt states, config variants).
+- [x] "Cannot approve unsafe" approval-gate suite — `e2e/sync-safety.spec.ts`, 12/12 tests passing 15.2s. No safety gaps found.
 
 ### Live validation #1 (2026-06-11, passed — post-M2)
 Trader Joe's receipt (`2026-06-10 19.43.06.pdf`, ground truth $25.62 / 2026-06-07 / 7 lines) through the full pipeline at commit cdc32e4: dry-run phase persisted the exact create-intent payload (amount -25620, import_id `RA:1:0644b3e2…` 36 chars, approved=false, blue flag) with ZERO YNAB writes (API-verified); same sync row then transitioned dry_run→live and created YNAB transaction `13b59672` matching ground truth on every field. No worker/api log anomalies. GUI twin-confirm still needs data-testid (M5). Receipt id `0644b3e2-c24e-4d56-8aa9-3c8a6ab2769d`.
