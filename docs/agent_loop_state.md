@@ -128,6 +128,15 @@ Local webapp must also be loaded and **visually inspected** via Playwright
 - [x] Playwright 1.60.0 + mocked backend — `playwright.config.ts` (testDir e2e, webServer `next dev --port 3001`, INTERNAL_API_ORIGIN=127.0.0.1:9); `e2e/fixtures.ts` (buildStandardRouter, all receipt states, config variants).
 - [x] "Cannot approve unsafe" approval-gate suite — `e2e/sync-safety.spec.ts`, 12/12 tests passing 15.2s. No safety gaps found.
 
+### Live validation #2 (2026-06-11, passed — post-M6, full polished flow)
+Kroger receipt (`2026-06-10 19.43.20.pdf`) — the discount/tax edge case. Ground truth: SodaStream carbonator $31.99 list − $15.00 Kroger coupon + $1.02 tax = $18.01, 2026-06-08. **Coupon handled correctly**: extraction typed the $15 line as `discount`, subtotal $16.99, total $18.01 (NOT $31.99); dry-run persisted amount -18010 + import_id `RA:1:62da5ad1…` with ZERO YNAB writes (API-verified); live sync created YNAB `f1d87e2e` = −18010 milliunits, Kroger/Groceries/approved=false/blue, matching ground truth exactly. Twin-confirm data-testids resolved the selector ambiguity (no API fallback). Preview dialog showed −$18.01 (outflow) + twin checks; Snappy visible in header. Receipt id `62da5ad1-645b-4ed6-9e98-f38cb1707828`.
+
+FOLLOW-UPS surfaced (not blockers):
+- **Mode-badge vs worker-env decoupling:** the preview badge reflects the SERVER `ynab_dry_run` config flag; a per-worker `YNAB_DRY_RUN=true` process override makes the run dry while the badge still says LIVE. Normal operation (no override) they agree, but the badge should ideally reflect the actual execution mode. Consider surfacing worker dry-run state or removing the per-process override path.
+- Mode badge shows budget UUID, not friendly name (budget name not cacheable without a network call — known M3 limitation).
+- Minor GUI robustness: hamburger "Check ingestion queue" didn't auto-fire under Playwright (used API); account-set occasionally lost the category (re-set via /draft). Worth a GUI hardening pass.
+- Test budget now holds 3 app-created transactions (Costco $119.19, TJ $25.62, Kroger $18.01) — all unapproved/flagged, for human review/cleanup.
+
 ### Live validation #1 (2026-06-11, passed — post-M2)
 Trader Joe's receipt (`2026-06-10 19.43.06.pdf`, ground truth $25.62 / 2026-06-07 / 7 lines) through the full pipeline at commit cdc32e4: dry-run phase persisted the exact create-intent payload (amount -25620, import_id `RA:1:0644b3e2…` 36 chars, approved=false, blue flag) with ZERO YNAB writes (API-verified); same sync row then transitioned dry_run→live and created YNAB transaction `13b59672` matching ground truth on every field. No worker/api log anomalies. GUI twin-confirm still needs data-testid (M5). Receipt id `0644b3e2-c24e-4d56-8aa9-3c8a6ab2769d`.
 
@@ -147,8 +156,8 @@ Full pipeline validated against the real test budget: receipt `2026_02_23_13_09_
 - [ ] a11y: dialog semantics, focus traps, contrast.
 
 ### M7 — Test-budget validation → production (human-gated)
-- [ ] Full live validation against `testplandevelopmentonly` (API + Playwright UI).
-- [ ] Production enablement — **human-only checklist, never autonomous**.
+- [x] Full live validation against `testplandevelopmentonly` (API + Playwright UI) — THREE passes: baseline (Costco, pre-M2), #1 (TJ, post-M2 dry-run+import_id), #2 (Kroger, post-M6 full polished flow incl. coupon/discount edge case). All matched human-read ground truth exactly.
+- [ ] **Production enablement — BLOCKED ON HUMAN. Never autonomous.** Requires: a separate production YNAB token (current token reaches only the test budget), human review of the 3 test-budget transactions, and explicit sign-off. The loop STOPS here.
 
 ## Blocked on Human (open decisions)
 - Memo re-sync endpoint (gemini-2.5-flash-lite) — still wanted?
