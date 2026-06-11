@@ -121,6 +121,9 @@ Local webapp must also be loaded and **visually inspected** via Playwright
 - [ ] Playwright + mocked backend.
 - [ ] "Cannot approve unsafe" approval-gate suite.
 
+### Live validation #1 (2026-06-11, passed — post-M2)
+Trader Joe's receipt (`2026-06-10 19.43.06.pdf`, ground truth $25.62 / 2026-06-07 / 7 lines) through the full pipeline at commit cdc32e4: dry-run phase persisted the exact create-intent payload (amount -25620, import_id `RA:1:0644b3e2…` 36 chars, approved=false, blue flag) with ZERO YNAB writes (API-verified); same sync row then transitioned dry_run→live and created YNAB transaction `13b59672` matching ground truth on every field. No worker/api log anomalies. GUI twin-confirm still needs data-testid (M5). Receipt id `0644b3e2-c24e-4d56-8aa9-3c8a6ab2769d`.
+
 ### Live E2E baseline (2026-06-10, passed)
 Full pipeline validated against the real test budget: receipt `2026_02_23_13_09_21.pdf` → ingest (GUI scan button) → Gemini extraction (all 6 line items + total exact vs human-read ground truth) → GUI sync click → YNAB transaction `16b484ec` (−119190 milliunits, Groceries, Anna Venture X, approved=false, blue flag, memo marker). Confirms: money path exact ×1000 with correct sign; `import_id` absent (M2 gap live-confirmed). Two fresh June scans (`receipt_examples/2026-06-10 19.43.*.pdf`) are reserved as the next live-validation inputs.
 
