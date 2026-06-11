@@ -10,6 +10,7 @@ import { cloneTwinPayload, computeTwinEditWarnings, normalizeTwinTimeForInput } 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { useToast } from "@/components/ui/toast";
 
 type TwinSection = "date_time" | "total";
 
@@ -57,6 +58,7 @@ export function ReceiptTwinViewer({
   twin: ReceiptTwin | null;
   onUpdated: () => void;
 }) {
+  const { toast } = useToast();
   const [editMode, setEditMode] = useState(false);
   const [sectionEditMode, setSectionEditMode] = useState<TwinSection | null>(null);
   const [allowRawEdit, setAllowRawEdit] = useState(false);
@@ -102,6 +104,7 @@ export function ReceiptTwinViewer({
     },
     onError: (error) => {
       setActionError(toErrorMessage(error));
+      toast({ variant: "error", message: toErrorMessage(error), title: "Twin save failed" });
     },
   });
 
@@ -114,6 +117,7 @@ export function ReceiptTwinViewer({
     },
     onError: (error) => {
       setActionError(toErrorMessage(error));
+      toast({ variant: "error", message: toErrorMessage(error), title: "Confirm failed" });
     },
   });
 
@@ -125,6 +129,7 @@ export function ReceiptTwinViewer({
     },
     onError: (error) => {
       setActionError(toErrorMessage(error));
+      toast({ variant: "error", message: toErrorMessage(error), title: "Retry failed" });
     },
   });
 
@@ -510,8 +515,10 @@ export function ReceiptTwinViewer({
         <p>Payment: {draft.payment_method || "--"}</p>
       </section>
 
-      {editMode && warnings.length > 0 ? (
-        <section className="space-y-1 rounded-xl border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
+      {warnings.length > 0 ? (
+        <section
+          className="space-y-1 rounded-xl border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900"
+        >
           {warnings.map((warning) => (
             <p key={warning}>- {warning}</p>
           ))}

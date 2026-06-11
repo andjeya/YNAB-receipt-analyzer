@@ -34,6 +34,8 @@ import {
 } from "@/lib/api";
 import { GameDisplayState, GameForestTile, GameIncident, ReceiptStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { formatSignedDollars, signedDollars } from "@/lib/money";
+import { useToast } from "@/components/ui/toast";
 import { extractReceiptIdFromText } from "@/lib/receipt-id";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -50,11 +52,6 @@ const FILTERS: Array<{ label: string; value: "" | ReceiptStatus }> = [
   { label: "Errors", value: "error_extract" },
   { label: "Synced", value: "synced" },
 ];
-
-function formatAmount(milliunits: number | null): string {
-  if (milliunits == null) return "--";
-  return `$${Math.abs(milliunits / 1000).toFixed(2)}`;
-}
 
 function formatWaitTime(value: number | null | undefined): string {
   if (value == null) return "Not scored";
@@ -411,7 +408,19 @@ function ReceiptListItem({
           ) : null}
 
           <div className="mt-3 flex items-center justify-between gap-2">
-            <p className="text-sm font-semibold">{formatAmount(receipt.display_total_milliunits)}</p>
+            {(() => {
+              const kind = receipt.transaction_kind ?? "purchase";
+              const millis = receipt.display_total_milliunits;
+              if (millis == null) return <p className="text-sm font-semibold">--</p>;
+              const dollars = signedDollars(millis / 1000, kind);
+              const formatted = formatSignedDollars(dollars);
+              const isRefund = kind === "refund";
+              return (
+                <p className={cn("text-sm font-semibold", isRefund ? "text-emerald-700" : undefined)}>
+                  {formatted}
+                </p>
+              );
+            })()}
             <div className="flex items-center gap-2">
               {tile?.display_state === "shredded" ? (
                 <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700">
@@ -652,6 +661,7 @@ function GameIncidentModal({ incident, incidentWatersSpent, incidentBurnsTrigger
 
 export function ReceiptList() {
   const router = useRouter();
+  const { toast } = useToast();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<"" | ReceiptStatus>("");
@@ -755,11 +765,19 @@ export function ReceiptList() {
 
   const scanMutation = useMutation({
     mutationFn: triggerScan,
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       setMenuOpen(false);
+      toast({
+        variant: "success",
+        message: `${data.ingested_count} ingested, ${data.duplicate_count} duplicate, ${data.skipped_count} skipped`,
+        title: "Scan complete",
+      });
+    },
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Scan failed" });
     },
   });
 
@@ -773,6 +791,9 @@ export function ReceiptList() {
       queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
       setMenuOpen(false);
     },
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Failed to fetch YNAB updates" });
+    },
   });
 
   const rebuildMutation = useMutation({
@@ -783,6 +804,9 @@ export function ReceiptList() {
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       setMenuOpen(false);
     },
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Rebuild failed" });
+    },
   });
 
   const recomputeMutation = useMutation({
@@ -791,6 +815,9 @@ export function ReceiptList() {
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
       setMenuOpen(false);
+    },
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Recompute failed" });
     },
   });
 
@@ -801,6 +828,9 @@ export function ReceiptList() {
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
     },
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Shred failed" });
+    },
   });
 
   const spendWaterMutation = useMutation({
@@ -809,6 +839,9 @@ export function ReceiptList() {
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
       setWaterSpendOpen(false);
+    },
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Failed to spend water" });
     },
   });
 
@@ -819,6 +852,9 @@ export function ReceiptList() {
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
+    },
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Failed to acknowledge incident" });
     },
   });
 
@@ -846,7 +882,8 @@ export function ReceiptList() {
       queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
       setDebugPanelOpen(false);
     },
-    onError: () => {
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Failed to save debug seed" });
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       setDebugPanelOpen(false);
     },

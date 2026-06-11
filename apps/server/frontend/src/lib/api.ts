@@ -1,4 +1,5 @@
 import {
+  AppConfig,
   CacheEntity,
   FetchYnabUpdatesResponse,
   GameDebugSeed,
@@ -27,6 +28,9 @@ import {
   ReceiptTwin,
   ValidationPayloadInput,
 } from "@/lib/types";
+import { ApiError, extractDetailMessage } from "@/lib/api-error";
+
+export { ApiError } from "@/lib/api-error";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
@@ -42,7 +46,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body || `Request failed: ${response.status}`);
+    const message = extractDetailMessage(body, response.status);
+    throw new ApiError(message, response.status);
   }
 
   if (response.status === 204) {
@@ -231,4 +236,8 @@ export function updateGameDebugSeed(payload: GameDebugSeedUpdateRequest) {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function getAppConfig() {
+  return request<AppConfig>("/config");
 }

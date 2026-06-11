@@ -10,6 +10,7 @@ import { ArrowLeft, Droplets, Flame, Plus, Trash2 } from "lucide-react";
 import {
   confirmDuplicateReceipt,
   enqueueSync,
+  getAppConfig,
   getReceiptDetail,
   getYnabCache,
   overrideDuplicateReceipt,
@@ -18,6 +19,10 @@ import {
   saveDraft,
 } from "@/lib/api";
 import { AllocationWorkspace, ReceiptDetail, ValidationPayloadInput } from "@/lib/types";
+import { formatSignedDollarsWithDirection, formatDollarsMagnitude, signedDollars } from "@/lib/money";
+import { useToast } from "@/components/ui/toast";
+import { SyncPreviewDialog } from "@/components/sync-preview-dialog";
+import { SyncStatusStrip } from "@/components/sync-status-strip";
 import {
   clearWorkspacePins,
   moveWorkspaceItems,
@@ -275,11 +280,6 @@ function validateDraft(
   }
 
   return errors;
-}
-
-function formatAmount(value: number | null): string {
-  if (value == null) return "--";
-  return `$${Math.abs(value / 1000).toFixed(2)}`;
 }
 
 const INLINE_IMAGE_MIME_TYPES = new Set([
@@ -635,31 +635,23 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
   );
 }
 
-function ValidationStatusSection({ isAutosaving, dirty, lockWarnings, syncReadinessErrors, correctionHistory }: {
+function ValidationStatusSection({ isAutosaving, dirty, lockWarnings, correctionHistory }: {
   isAutosaving: boolean;
   dirty: boolean;
   lockWarnings: string[];
-  syncReadinessErrors: string[];
   correctionHistory: ReceiptDetail["correction_history"];
 }) {
   return (
     <>
       <section className="animate-reveal rounded-2xl bg-white/80 p-3 text-xs text-ink/70" style={{ animationDelay: "210ms" }}>
-        <p className="mb-2 font-semibold text-ink/70">
+        <p className="font-semibold text-ink/70">
           {isAutosaving ? "Autosaving..." : dirty ? "Changes pending autosave" : "Draft saved"}
         </p>
         {lockWarnings.length > 0 ? (
-          <div className="mb-2 space-y-1 rounded-xl border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
+          <div className="mt-2 space-y-1 rounded-xl border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
             {lockWarnings.map((warning) => <p key={warning}>- {warning}</p>)}
           </div>
         ) : null}
-        {syncReadinessErrors.length ? (
-          <ul className="space-y-1 text-red-700">
-            {syncReadinessErrors.map((error) => <li key={error}>- {error}</li>)}
-          </ul>
-        ) : (
-          <p>Validation passes. Sync can run.</p>
-        )}
       </section>
       {correctionHistory.length > 0 ? (
         <section className="animate-reveal rounded-2xl border border-black/20 bg-black/90 p-3 text-xs text-white" style={{ animationDelay: "225ms" }}>
@@ -707,7 +699,7 @@ function DuplicateReviewSection({
           <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Incoming Receipt</p>
           <p className="text-sm font-semibold">{receipt.display_payee_name ?? receipt.original_filename}</p>
           <p className="text-xs text-ink/70">Date {receipt.display_receipt_date ?? "--"}</p>
-          <p className="text-xs text-ink/70">Total {formatAmount(receipt.display_total_milliunits)}</p>
+          <p className="text-xs text-ink/70">Total {formatDollarsMagnitude(receipt.display_total_milliunits)}</p>
           <div className="h-80 overflow-hidden rounded-xl border border-ink/10 bg-black/5">
             <ScanPanel
               receiptId={receipt.id}
@@ -724,7 +716,7 @@ function DuplicateReviewSection({
             <>
               <p className="text-sm font-semibold">{matchedReceipt.display_payee_name ?? matchedReceipt.original_filename}</p>
               <p className="text-xs text-ink/70">Date {matchedReceipt.display_receipt_date ?? "--"}</p>
-              <p className="text-xs text-ink/70">Total {formatAmount(matchedReceipt.display_total_milliunits)}</p>
+              <p className="text-xs text-ink/70">Total {formatDollarsMagnitude(matchedReceipt.display_total_milliunits)}</p>
               <div className="h-80 overflow-hidden rounded-xl border border-ink/10 bg-black/5">
                 <ScanPanel
                   receiptId={matchedReceipt.id}
@@ -787,6 +779,7 @@ function ActionButtonBar({ isSyncing, onReset, canReset, isAutosaving, onSync, c
 export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [draft, setDraft] = useState<ValidationPayloadInput | null>(null);
   const [allocationWorkspace, setAllocationWorkspace] = useState<AllocationWorkspace | null>(null);
   const [cancelBaseline, setCancelBaseline] = useState<ValidationPayloadInput | null>(null);
@@ -798,6 +791,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const [payeeMenuOpen, setPayeeMenuOpen] = useState(false);
   const [lockWarnings, setLockWarnings] = useState<string[]>([]);
   const [mobileView, setMobileView] = useState<"twin" | "scan">("twin");
+  const [previewOpen, setPreviewOpen] = useState(false);
   const mobilePanelRef = useRef<HTMLDivElement | null>(null);
 
   const receiptQuery = useQuery({
@@ -810,6 +804,12 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     queryKey: ["ynab-cache"],
     queryFn: () => getYnabCache(),
     staleTime: 20_000,
+  });
+
+  const configQuery = useQuery({
+    queryKey: ["config"],
+    queryFn: () => getAppConfig(),
+    staleTime: 60_000,
   });
 
   useEffect(() => {
@@ -866,6 +866,13 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
     },
+    onError: (e) => {
+      toast({
+        variant: "error",
+        message: e instanceof Error && e.message ? e.message : "Autosave failed — your changes may not be saved",
+        title: "Autosave failed",
+      });
+    },
   });
 
   const recomputeMutation = useMutation({
@@ -876,13 +883,28 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
       workspace: AllocationWorkspace;
       mode: "discard_manual_amounts" | "keep_manual_amounts";
     }) => recomputeAllocationWorkspace(receiptId, workspace, mode),
+    onError: (e) => {
+      toast({
+        variant: "error",
+        message: e instanceof Error && e.message ? e.message : "Failed to recompute allocations",
+      });
+    },
   });
 
   const syncMutation = useMutation({
     mutationFn: () => enqueueSync(receiptId),
     onSuccess: () => {
+      setPreviewOpen(false);
       queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      toast({ variant: "success", message: "Sync enqueued", title: "Sync enqueued" });
+    },
+    onError: (e) => {
+      toast({
+        variant: "error",
+        message: e instanceof Error && e.message ? e.message : "Failed to enqueue sync",
+        title: "Sync failed",
+      });
     },
   });
 
@@ -893,6 +915,12 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
       queryClient.invalidateQueries({ queryKey: ["stats"] });
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
     },
+    onError: (e) => {
+      toast({
+        variant: "error",
+        message: e instanceof Error && e.message ? e.message : "Failed to confirm duplicate",
+      });
+    },
   });
 
   const overrideDuplicateMutation = useMutation({
@@ -901,6 +929,12 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
       queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
+    },
+    onError: (e) => {
+      toast({
+        variant: "error",
+        message: e instanceof Error && e.message ? e.message : "Failed to override duplicate detection",
+      });
     },
   });
 
@@ -993,8 +1027,37 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   }, [draft, payees]);
 
   const isDuplicateReview = receiptQuery.data?.status === "duplicate_review";
+  const config = configQuery.data ?? null;
+
+  // Strip reasons — unified blocking list shown above ActionButtonBar
+  const stripReasons = useMemo(() => {
+    const reasons: string[] = [...twinConfirmationErrors, ...validationErrors];
+    if (config && !config.ynab_sync_enabled) {
+      reasons.push("YNAB sync is disabled");
+    }
+    if (dirty || saveMutation.isPending) {
+      reasons.push("Unsaved changes — waiting for autosave");
+    }
+    return reasons;
+  }, [twinConfirmationErrors, validationErrors, config, dirty, saveMutation.isPending]);
+
+  // syncReadinessErrors kept for backward compat / canSync gate
   const syncReadinessErrors = useMemo(() => [...twinConfirmationErrors, ...validationErrors], [twinConfirmationErrors, validationErrors]);
   const canSync = !!draft && syncReadinessErrors.length === 0 && !saveMutation.isPending && !recomputeMutation.isPending && !dirty && !isDuplicateReview;
+
+  // Confirm-dialog guard — disabled when any readiness gate is blocking
+  const isConfirmDisabled =
+    dirty ||
+    saveMutation.isPending ||
+    recomputeMutation.isPending ||
+    syncReadinessErrors.length > 0 ||
+    isDuplicateReview;
+  const confirmDisabledReason: string | undefined = (() => {
+    if (!isConfirmDisabled) return undefined;
+    if (dirty || saveMutation.isPending) return "Finish saving the draft before syncing.";
+    // First reason from stripReasons (twinConfirmationErrors + validationErrors + sync-disabled)
+    return stripReasons[0];
+  })();
   const isSplitMode = !!draft && draft.splits.length > 0;
   const splitTotal = draft ? draft.splits.reduce((sum, split) => sum + Math.round(Number(split.amount || 0) * 100), 0) / 100 : 0;
   const accountNeedsAttention = draft?.account_id === UNKNOWN_ACCOUNT_ID;
@@ -1117,6 +1180,16 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     overrideDuplicateMutation.mutate();
   };
 
+  // Derive last dry-run transaction for the preview dialog (non-hook; defined after early-return guards)
+  const latestSync = receipt.latest_sync;
+  const lastDryRunTransaction: Record<string, unknown> | null = (() => {
+    if (!latestSync || latestSync.status !== "dry_run") return null;
+    const rawReq = latestSync.raw_request;
+    if (!rawReq) return null;
+    const txn = (rawReq as Record<string, unknown>).transaction;
+    return txn && typeof txn === "object" ? (txn as Record<string, unknown>) : null;
+  })();
+
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 pb-28 pt-4">
       <header className="animate-reveal rounded-3xl bg-white/90 p-4 shadow-float">
@@ -1126,7 +1199,15 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
         <div className="mt-3 flex items-start justify-between gap-2">
           <div>
             <h1 className="font-[var(--font-heading)] text-xl font-bold">{receipt.display_payee_name ?? receipt.original_filename}</h1>
-            <p className="mt-1 text-sm text-ink/70">Total {formatAmount(receipt.display_total_milliunits)}</p>
+            <p className="mt-1 text-sm text-ink/70">
+              Total{" "}
+              {receipt.display_total_milliunits != null && draft
+                ? formatSignedDollarsWithDirection(
+                    signedDollars(receipt.display_total_milliunits / 1000, draft.transaction_kind),
+                    draft.transaction_kind,
+                  )
+                : "--"}
+            </p>
           </div>
           <StatusBadge status={receipt.status} />
         </div>
@@ -1233,18 +1314,44 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             isAutosaving={saveMutation.isPending}
             dirty={dirty}
             lockWarnings={lockWarnings}
-            syncReadinessErrors={syncReadinessErrors}
             correctionHistory={correctionHistory}
           />
+
+          <SyncStatusStrip reasons={stripReasons} />
 
           <ActionButtonBar
             isSyncing={isSyncing}
             onReset={resetDraft}
             canReset={canResetToBaseline}
             isAutosaving={saveMutation.isPending}
-            onSync={() => syncMutation.mutate()}
+            onSync={() => setPreviewOpen(true)}
             canSync={canSync}
             syncButtonLabel={syncButtonLabel}
+          />
+
+          {/* Sync preview/confirm dialog */}
+          <SyncPreviewDialog
+            open={previewOpen}
+            onClose={() => setPreviewOpen(false)}
+            draft={draft}
+            accounts={accounts}
+            categories={categories}
+            hasSuccessfulSync={receipt.has_successful_sync}
+            mode={{
+              dryRun: config?.ynab_dry_run ?? true,
+              syncEnabled: config?.ynab_sync_enabled ?? false,
+              budgetName: config?.ynab_budget_name ?? null,
+              budgetId: config?.ynab_budget_id ?? null,
+              newFlagColor: config?.new_transaction_flag_color ?? "green",
+              updatedFlagColor: config?.updated_transaction_flag_color ?? "blue",
+            }}
+            lastDryRunTransaction={lastDryRunTransaction}
+            isConfirmDisabled={isConfirmDisabled}
+            confirmDisabledReason={confirmDisabledReason}
+            isSyncing={isSyncing}
+            dateTimeConfirmed={dateTimeConfirmed}
+            totalConfirmed={totalConfirmed}
+            onConfirm={() => syncMutation.mutate()}
           />
         </>
       )}

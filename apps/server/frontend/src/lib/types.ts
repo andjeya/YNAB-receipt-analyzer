@@ -15,6 +15,7 @@ export interface ReceiptSummary {
   display_payee_name: string | null;
   display_total_milliunits: number | null;
   display_receipt_date: string | null;
+  transaction_kind: "purchase" | "refund";
   ingested_at: string;
   updated_at: string;
   correction_detected_at: string | null;
@@ -22,6 +23,25 @@ export interface ReceiptSummary {
   correction_shade_opacity: number | null;
   correction_message: string | null;
   duplicate_of_receipt_id: string | null;
+}
+
+export interface AppConfig {
+  ynab_sync_enabled: boolean;
+  ynab_dry_run: boolean;
+  ynab_budget_id: string | null;
+  ynab_budget_name: string | null;
+  new_transaction_flag_color: string;
+  updated_transaction_flag_color: string;
+}
+
+export interface YNABSyncRecord {
+  id: number;
+  status: string;
+  match_mode: string;
+  raw_request: Record<string, unknown> | null;
+  created_transaction_id: string | null;
+  matched_transaction_id: string | null;
+  completed_at: string | null;
 }
 
 export interface ExtractionRun {
@@ -117,6 +137,7 @@ export interface ReceiptDetail {
   sync_started_at: string | null;
   sync_completed_at: string | null;
   has_successful_sync: boolean;
+  latest_sync: YNABSyncRecord | null;
   correction_detected_at: string | null;
   correction_expires_at: string | null;
   correction_shade_opacity: number | null;

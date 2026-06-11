@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { useState } from "react";
 import type { ReactNode } from "react";
+import { ToastProvider } from "@/components/ui/toast";
 
 export function Providers({ children }: { children: ReactNode }) {
   const showDevtools = process.env.NODE_ENV !== "production";
@@ -21,8 +22,10 @@ export function Providers({ children }: { children: ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {children}
-      {showDevtools ? <ReactQueryDevtools initialIsOpen={false} /> : null}
+      <ToastProvider>
+        {children}
+        {showDevtools ? <ReactQueryDevtools initialIsOpen={false} /> : null}
+      </ToastProvider>
     </QueryClientProvider>
   );
 }

@@ -90,6 +90,17 @@ a {
   }
 }
 
+@keyframes toast-in {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .animate-incident-enter {
   animation: incident-enter 240ms ease-out;
 }
@@ -110,12 +121,17 @@ a {
   animation: burn-flash 700ms ease-in-out infinite;
 }
 
+.animate-toast-in {
+  animation: toast-in 200ms ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-incident-enter,
   .animate-fire-fade,
   .animate-water-pulse,
   .animate-water-burst,
-  .animate-burn-flash {
+  .animate-burn-flash,
+  .animate-toast-in {
     animation: none !important;
   }
 }

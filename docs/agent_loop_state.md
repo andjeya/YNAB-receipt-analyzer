@@ -103,10 +103,10 @@ Local webapp must also be loaded and **visually inspected** via Playwright
 - [x] Reconciliation amount-drift → pull + NEEDS_REVIEW flag + correction/fire, never push; `_split_signature` deliberately stays amount-blind (regression-tested).
 - [x] Stuck-job reset also FAILs stale RUNNING sync rows (receipt/row coherence).
 
-### M3 — Approval UX
-- [ ] Sync preview modal: full signed payload (sign, account, splits, duplicate status, mode badge) + explicit confirm. Checker notes from M0: (a) the persisted dry-run payload is the *create-intent* payload — label it as such, since a matched-update live path may send a minimal memo-marker update instead; (b) branch the previewed flag color on update-vs-create (`prior_success_sync and not force_create` → updated color) instead of always-blue.
-- [ ] Signed amount display (remove `Math.abs` in formatAmount helpers).
-- [ ] Toast/error layer + `onError` on sync/autosave; mismatch warnings visible in read mode.
+### M3 — Approval UX ✅ COMPLETE 2026-06-11 (checker: FINDINGS 1 MAJOR + 5 MINOR → all resolved)
+- [x] Sync preview/confirm dialog (bank register, hand-rolled a11y Dialog primitive w/ focus trap) — signed payload, account names, mode badge (DRY RUN / LIVE→budget / SYNC DISABLED via new GET /api/config), create-vs-update intent labeling + flag-color branch (M0 notes addressed), last-dry-run reference payload, confirm gated on ALL readiness errors + dirty/autosave; syncMutation reachable ONLY via dialog confirm. Twin confirmation now ALSO enforced server-side (400 twin_unconfirmed; twin-less receipts exempt, mirroring client).
+- [x] Signed amounts everywhere (Math.abs removed from money displays; refunds +$ emerald, purchases −$ ink; thousands separators; magnitude formatter for duplicate cards); transaction_kind on ReceiptSummary (batched query, no N+1); JS milliunit mirror now string-safe ROUND_HALF_UP (0.5005→501 parity with money.py).
+- [x] Toast layer (aria-live, reduced-motion) + parsed ApiError messages + onError on all 13 mutations; ingest-scan success counts toast; twin warnings visible in read mode; aggregated "Resolve before syncing" strip adjacent to action bar.
 
 ### M4 — Workflow completeness
 - [ ] Fix "Original Scan" pane rendering empty on receipt detail (observed on every receipt in 2026-06-10 live review — reviewer cannot compare against source).

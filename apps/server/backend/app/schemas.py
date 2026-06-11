@@ -23,6 +23,7 @@ class ReceiptSummary(BaseModel):
     display_payee_name: str | None = None
     display_total_milliunits: int | None = None
     display_receipt_date: date | None = None
+    transaction_kind: str = "purchase"
     ingested_at: datetime
     updated_at: datetime
     correction_detected_at: datetime | None = None
@@ -30,6 +31,15 @@ class ReceiptSummary(BaseModel):
     correction_shade_opacity: float | None = None
     correction_message: str | None = None
     duplicate_of_receipt_id: str | None = None
+
+
+class AppConfigOut(BaseModel):
+    ynab_sync_enabled: bool
+    ynab_dry_run: bool
+    ynab_budget_id: str | None = None
+    ynab_budget_name: str | None = None
+    new_transaction_flag_color: str
+    updated_transaction_flag_color: str
 
 
 class ExtractionRunOut(BaseModel):

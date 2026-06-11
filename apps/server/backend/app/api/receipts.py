@@ -10,7 +10,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
-from sqlalchemy import select, update as sa_update
+from sqlalchemy import func, select, update as sa_update
 from sqlalchemy.orm import Session
 
 from app.api.deps import app_settings, db_session
@@ -358,6 +358,56 @@ def _to_correction_schema(correction: ReceiptCorrection) -> ReceiptCorrectionOut
     )
 
 
+def _latest_validation_kind(db: Session, receipt_id: str) -> str:
+    """Return transaction_kind from the latest validation payload, defaulting to 'purchase'."""
+    row = db.scalar(
+        select(Validation.payload)
+        .where(Validation.receipt_id == receipt_id)
+        .order_by(Validation.version.desc())
+        .limit(1)
+    )
+    if row and isinstance(row, dict):
+        kind = row.get("transaction_kind")
+        if kind in ("purchase", "refund"):
+            return kind
+    return "purchase"
+
+
+def _batch_latest_validation_kinds(db: Session, receipt_ids: list[str]) -> dict[str, str]:
+    """Batch query: return transaction_kind for each receipt_id from its latest validation.
+
+    Uses a subquery on max(version) per receipt_id to avoid per-receipt round trips.
+    Falls back to "purchase" for any receipt without a valid kind.
+    """
+    if not receipt_ids:
+        return {}
+    # Subquery: max version per receipt_id
+    max_version_sq = (
+        select(Validation.receipt_id, func.max(Validation.version).label("max_version"))
+        .where(Validation.receipt_id.in_(receipt_ids))
+        .group_by(Validation.receipt_id)
+        .subquery()
+    )
+    # Join back to get the payload of the latest version row
+    rows = db.execute(
+        select(Validation.receipt_id, Validation.payload)
+        .join(
+            max_version_sq,
+            (Validation.receipt_id == max_version_sq.c.receipt_id)
+            & (Validation.version == max_version_sq.c.max_version),
+        )
+    ).all()
+    result: dict[str, str] = {}
+    for row_receipt_id, payload in rows:
+        kind = "purchase"
+        if isinstance(payload, dict):
+            raw_kind = payload.get("transaction_kind")
+            if raw_kind in ("purchase", "refund"):
+                kind = raw_kind
+        result[row_receipt_id] = kind
+    return result
+
+
 def _latest_correction(db: Session, receipt_id: str) -> ReceiptCorrection | None:
     return db.scalar(
         select(ReceiptCorrection)
@@ -451,10 +501,13 @@ def list_receipts(
     stmt = stmt.limit(limit)
     receipts = list(db.scalars(stmt))
     now = utcnow()
+    receipt_ids = [r.id for r in receipts]
+    kind_map = _batch_latest_validation_kinds(db, receipt_ids)
     summaries: list[ReceiptSummary] = []
     for receipt in receipts:
         correction = _latest_correction(db, receipt.id)
         shade = _correction_shade_opacity(correction, now)
+        kind = kind_map.get(receipt.id, "purchase")
         summaries.append(
             ReceiptSummary(
                 id=receipt.id,
@@ -463,6 +516,7 @@ def list_receipts(
                 display_payee_name=receipt.display_payee_name,
                 display_total_milliunits=receipt.display_total_milliunits,
                 display_receipt_date=receipt.display_receipt_date,
+                transaction_kind=kind,
                 ingested_at=receipt.ingested_at,
                 updated_at=receipt.updated_at,
                 correction_detected_at=correction.detected_at if correction else None,
@@ -980,6 +1034,20 @@ def sync_receipt(
     validation = _latest_validation(db, receipt.id)
     if validation is None or not validation.is_valid:
         raise HTTPException(status_code=400, detail="Receipt must have a valid draft before sync")
+
+    # Enforce twin confirmation when a twin extraction exists for this receipt.
+    # Mirrors the frontend: only block when a twin exists; no-twin receipts proceed.
+    twin = _latest_twin(db, receipt.id)
+    if twin is not None:
+        confirmed = _normalize_confirmed_sections(twin.confirmed_sections)
+        if not confirmed["date_time"] or not confirmed["total"]:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "twin_unconfirmed",
+                    "message": "Confirm Date + Time and Total in the Receipt Twin before syncing.",
+                },
+            )
 
     if not settings.ynab_sync_enabled:
         raise HTTPException(
