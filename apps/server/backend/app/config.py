@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     ynab_reconciliation_lookback_days: int = 90
     ynab_new_transaction_flag_color: str = "blue"
     ynab_updated_transaction_flag_color: str = "purple"
+    ynab_sync_enabled: bool = False
+    ynab_dry_run: bool = True
 
     debug_tools_enabled: bool = False
     debug_tools_flag_file: Path = Path("./data/debug_tools_enabled.flag")

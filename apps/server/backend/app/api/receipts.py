@@ -40,6 +40,7 @@ from app.schemas import (
     TwinConfirmRequest,
     TwinConfirmResponse,
     ValidationOut,
+    YNABSyncOut,
 )
 from app.services.allocation_workspace import (
     build_initial_allocation_workspace,
@@ -318,6 +319,27 @@ def _has_successful_sync(db: Session, receipt_id: str) -> bool:
     return row_id is not None
 
 
+def _latest_sync(db: Session, receipt_id: str) -> YNABSync | None:
+    return db.scalar(
+        select(YNABSync)
+        .where(YNABSync.receipt_id == receipt_id)
+        .order_by(YNABSync.completed_at.desc().nullslast(), YNABSync.id.desc())
+        .limit(1)
+    )
+
+
+def _to_sync_schema(sync: YNABSync) -> YNABSyncOut:
+    return YNABSyncOut(
+        id=sync.id,
+        status=sync.status,
+        match_mode=sync.match_mode,
+        raw_request=sync.raw_request,
+        created_transaction_id=sync.created_transaction_id,
+        matched_transaction_id=sync.matched_transaction_id,
+        completed_at=sync.completed_at,
+    )
+
+
 def _to_correction_schema(correction: ReceiptCorrection) -> ReceiptCorrectionOut:
     return ReceiptCorrectionOut(
         id=correction.id,
@@ -464,6 +486,7 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
     model_validation = _latest_model_validation(db, receipt_id)
     twin = _latest_twin(db, receipt_id)
     has_successful_sync = _has_successful_sync(db, receipt_id)
+    latest_sync_row = _latest_sync(db, receipt_id)
     correction = _latest_correction(db, receipt.id)
     correction_history = list(
         db.scalars(
@@ -497,6 +520,7 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
         sync_started_at=receipt.sync_started_at,
         sync_completed_at=receipt.sync_completed_at,
         has_successful_sync=has_successful_sync,
+        latest_sync=_to_sync_schema(latest_sync_row) if latest_sync_row else None,
         correction_detected_at=correction.detected_at if correction else None,
         correction_expires_at=correction.expires_at if correction else None,
         correction_shade_opacity=shade,
@@ -946,6 +970,7 @@ def sync_receipt(
     receipt_id: str,
     request: SyncRequest,
     db: Session = Depends(db_session),
+    settings: Settings = Depends(app_settings),
 ) -> SyncEnqueueResponse:
     receipt = db.get(Receipt, receipt_id)
     if receipt is None:
@@ -954,6 +979,18 @@ def sync_receipt(
     validation = _latest_validation(db, receipt.id)
     if validation is None or not validation.is_valid:
         raise HTTPException(status_code=400, detail="Receipt must have a valid draft before sync")
+
+    if not settings.ynab_sync_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ynab_sync_disabled",
+                "message": (
+                    "YNAB sync is disabled. Set YNAB_SYNC_ENABLED=true to enable writing "
+                    "to YNAB."
+                ),
+            },
+        )
 
     duplicate_state = apply_semantic_duplicate_state(
         db,

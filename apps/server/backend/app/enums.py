@@ -25,6 +25,7 @@ class YNABSyncStatus(str, Enum):
     RUNNING = "running"
     MATCHED_UPDATED = "matched_updated"
     CREATED = "created"
+    DRY_RUN = "dry_run"
     FAILED = "failed"
 
 

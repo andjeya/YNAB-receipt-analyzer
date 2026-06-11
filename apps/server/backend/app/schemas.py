@@ -6,6 +6,16 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class YNABSyncOut(BaseModel):
+    id: int
+    status: str
+    match_mode: str
+    raw_request: dict[str, Any] | None = None
+    created_transaction_id: str | None = None
+    matched_transaction_id: str | None = None
+    completed_at: datetime | None = None
+
+
 class ReceiptSummary(BaseModel):
     id: str
     status: str
@@ -90,6 +100,7 @@ class ReceiptDetailOut(BaseModel):
     sync_started_at: datetime | None = None
     sync_completed_at: datetime | None = None
     has_successful_sync: bool = False
+    latest_sync: "YNABSyncOut | None" = None
     correction_detected_at: datetime | None = None
     correction_expires_at: datetime | None = None
     correction_shade_opacity: float | None = None

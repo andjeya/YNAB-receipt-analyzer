@@ -317,11 +317,14 @@ def test_sync_endpoint_blocks_semantic_duplicate_with_409() -> None:
             settings=settings,
         )
 
+        # ynab_sync_enabled=True so the kill-switch does not fire before the duplicate check.
+        sync_settings = Settings(_env_file=None, ynab_budget_id="budget-1", ynab_sync_enabled=True)
         with pytest.raises(HTTPException) as exc_info:
             sync_receipt(
                 receipt_id=second.id,
                 request=SyncRequest(),
                 db=db,
+                settings=sync_settings,
             )
 
         assert exc_info.value.status_code == 409

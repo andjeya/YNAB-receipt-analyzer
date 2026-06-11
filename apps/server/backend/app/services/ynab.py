@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 RECEIPT_ID_MARKER_PREFIX = "[receipt_id:"
 
 
+class YNABSyncDisabledError(RuntimeError):
+    """Raised when a YNAB write is attempted while sync is disabled."""
+
+
 def make_idempotency_key(
     receipt_id: str,
     validation_id: int,
@@ -716,6 +720,55 @@ def _sync_match_or_create(
         sync_row.raw_response = ynab_response
 
 
+def _apply_dry_run(
+    db: Session,
+    receipt: Receipt,
+    validation: Validation,
+    sync_row: YNABSync,
+    persisted_payload: dict[str, Any],
+    idempotency_key: str,
+    started_perf: float,
+) -> dict[str, Any]:
+    """Persist the would-be transaction payload without calling YNAB."""
+    duration_ms = int((time.perf_counter() - started_perf) * 1000)
+    finished_at = utcnow()
+
+    sync_row.status = YNABSyncStatus.DRY_RUN.value
+    sync_row.raw_request = {"transaction": persisted_payload}
+    sync_row.raw_response = None
+    sync_row.matched_transaction_id = None
+    sync_row.created_transaction_id = None
+    sync_row.duration_ms = duration_ms
+    sync_row.completed_at = finished_at
+
+    receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+    receipt.status_reason = "Dry run: transaction payload built and saved but not sent to YNAB."
+    receipt.sync_completed_at = finished_at
+
+    db.add(
+        TimingMetric(
+            receipt_id=receipt.id,
+            metric_name="sync_duration_ms",
+            metric_value_ms=duration_ms,
+            metadata_json={"sync_id": sync_row.id, "idempotency_key": idempotency_key, "dry_run": True},
+        )
+    )
+
+    logger.info(
+        "YNAB dry-run for receipt_id=%s: payload persisted, no write performed request=%s",
+        receipt.id,
+        sync_row.raw_request,
+    )
+    db.commit()
+    return {
+        "status": YNABSyncStatus.DRY_RUN.value,
+        "idempotency_key": idempotency_key,
+        "transaction_id": None,
+        "already_synced": False,
+        "dry_run": True,
+    }
+
+
 def _apply_post_sync(
     db: Session,
     receipt: Receipt,
@@ -854,8 +907,29 @@ def sync_receipt_to_ynab(
         if not settings.ynab_budget_id:
             raise ValueError("YNAB_BUDGET_ID is not configured")
 
-        client = get_ynab_client(settings)
+        if not settings.ynab_sync_enabled:
+            raise YNABSyncDisabledError(
+                "YNAB sync is disabled (YNAB_SYNC_ENABLED=false). "
+                "No transaction was written."
+            )
+
+        # Build + validate the full payload BEFORE any client construction so
+        # dry-run exercises the exact same validation as the live path.
         transaction_payload = _build_sync_transaction_payload(db, receipt, validation, settings)
+
+        new_flag_color = settings.ynab_new_transaction_flag_color
+        persisted_payload = dict(transaction_payload)
+        persisted_payload["approved"] = False
+        if new_flag_color:
+            persisted_payload["flag_color"] = new_flag_color
+
+        if settings.ynab_dry_run:
+            return _apply_dry_run(
+                db, receipt, validation, sync_row,
+                persisted_payload, idempotency_key, started_perf,
+            )
+
+        client = get_ynab_client(settings)
 
         logger.info(
             "Starting YNAB sync receipt_id=%s validation_id=%s mode=%s request=%s",
@@ -865,6 +939,7 @@ def sync_receipt_to_ynab(
             {"transaction": transaction_payload},
         )
 
+        # Note: dry_run→live reuses the same sync_row; the field resets above clear stale dry-run fields.
         if prior_success_sync is not None and not force_create:
             _sync_update_existing(
                 client, settings.ynab_budget_id, settings, sync_row,

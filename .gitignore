@@ -7,7 +7,8 @@
 .env.local
 
 # Local AI tool state/config
-.claude/
+.claude/*
+!.claude/agents/
 .codex/
 
 # PDF receipts

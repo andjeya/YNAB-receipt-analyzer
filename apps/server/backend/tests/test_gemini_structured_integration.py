@@ -11,6 +11,7 @@ from receipt_shared.ynab_client import Category
 
 
 @pytest.mark.integration
+@pytest.mark.enable_socket
 def test_gemini_structured_calls_do_not_raise_additional_properties_payload_error():
     settings = get_settings()
     if not settings.gemini_api_key:
