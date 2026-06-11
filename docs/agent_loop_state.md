@@ -81,10 +81,10 @@ Local webapp must also be loaded and **visually inspected** via Playwright
 
 ## Milestones
 
-### M0 — Safety foundations
-- [ ] Add `ynab_sync_enabled: bool = False` (default) + `dry_run` mode (payload built + persisted + previewable, **no POST**) to `config.py` / sync path.
-- [ ] `pytest.ini` + `integration` marker + default network isolation (live tests opt-in only).
-- [ ] Direct unit tests for `receipt_shared/money.py` (`dollars_to_milliunits`, `milliunits_to_dollars`, rounding, sign).
+### M0 — Safety foundations ✅ COMPLETE 2026-06-11 (checker: APPROVE)
+- [x] `ynab_sync_enabled: bool = False` + `ynab_dry_run: bool = True` — gated at API (409 `ynab_sync_disabled`) AND authoritatively in `sync_receipt_to_ynab` before any client construction; dry-run persists payload on `YNABSync` (status `dry_run`), exposed via `latest_sync` on the detail API (M3 preview hook); receipt → `needs_review`. Dev `.env` overrides to enabled+live (test budget only).
+- [x] `apps/server/backend/pytest.ini` — `integration` marker excluded by default; pytest-socket blocks external network (localhost allowed; live Gemini test carries `enable_socket` for `-m integration` opt-in runs). Canonical command no longer needs `--deselect`.
+- [x] Direct `money.py` tests (33) — pins ROUND_HALF_UP, float-artifact handling, and the negative-input/outflow quirk (deferred to M1 by design).
 - [x] Fix Gemini `thinking_level`/`ThinkingConfig` extraction bug — **DONE 2026-06-10** (google-genai 1.30.0→1.75.0; thinking-config feature-detection + broadened fallback in `apps/server/shared/receipt_shared/ai/providers/gemini.py`; live integration test passed, 112/112).
 - [x] Commit `.devcontainer/devcontainer-lock.json` — **DONE 2026-06-10** (commit `61bca39`, with yolo aliases + bubblewrap persistence).
 
@@ -102,7 +102,7 @@ Local webapp must also be loaded and **visually inspected** via Playwright
 - [ ] Reconciliation amount-drift → **pull/flag, never push** (provisional).
 
 ### M3 — Approval UX
-- [ ] Sync preview modal: full signed payload (sign, account, splits, duplicate status, mode badge) + explicit confirm.
+- [ ] Sync preview modal: full signed payload (sign, account, splits, duplicate status, mode badge) + explicit confirm. Checker notes from M0: (a) the persisted dry-run payload is the *create-intent* payload — label it as such, since a matched-update live path may send a minimal memo-marker update instead; (b) branch the previewed flag color on update-vs-create (`prior_success_sync and not force_create` → updated color) instead of always-blue.
 - [ ] Signed amount display (remove `Math.abs` in formatAmount helpers).
 - [ ] Toast/error layer + `onError` on sync/autosave; mismatch warnings visible in read mode.
 
@@ -138,6 +138,7 @@ Full pipeline validated against the real test budget: receipt `2026_02_23_13_09_
 - Time-less duplicate near-match warning — recommendation **yes** adopted *provisionally*.
 
 ## Decisions Log (append-only)
+- **2026-06-11** — M0 complete (maker: Opus plan + Sonnet implementers; checker: Opus, verdict APPROVE with 2 MINOR deferred-to-M3 notes). Suite: 152 passed, 1 deselected. Dev `.env` sets `YNAB_SYNC_ENABLED=true` / `YNAB_DRY_RUN=false` (token reaches only the test budget); code defaults remain safe-off. A standing checker agent exists at `.claude/agents/checker.md` — note: new agent definitions register at session start, so spawn it via subagent_type "checker" from the NEXT session on (this session used general-purpose + charter file, equivalent).
 - **2026-06-10** — Refunds are supported end-to-end: inflow transactions must be representable; memo language like "Returning X" (wording flexible). Replaces `total <= 0` rejection with a designed refund path in M1/M2.
 - **2026-06-10** — Delete-recreate is prohibited: when YNAB ignores split-structure updates, leave the YNAB transaction untouched and flag the receipt for manual fixing (at minimum for bank-linked transactions; default never delete-recreate).
 - **2026-06-10** — Current YNAB token sees only the dev test budget `testplandevelopmentonly` (verified live). Live dev writes hit only this budget. Production uses a different, human-managed token. `ynab_sync_enabled`/`dry_run` still required (M0) so the safety model survives a production token.
