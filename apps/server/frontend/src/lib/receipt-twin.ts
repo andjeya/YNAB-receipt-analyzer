@@ -101,3 +101,32 @@ export function computeTwinEditWarnings(payload: ReceiptTwinPayload): string[] {
 
   return warnings;
 }
+
+/**
+ * Returns true when a line item represents a real purchasable product/service
+ * worth showing in read mode. Returns false for extraction artifacts such as:
+ *   - Rows with no meaningful description AND zero/null quantity AND zero/null amount
+ *   - Subtotal / total label rows (already excluded from allocation, but also
+ *     excluded from read-mode display here for consistency)
+ *
+ * In edit mode all rows are shown (raw fidelity), but visually de-emphasized
+ * rather than alarming red.
+ */
+export function isRealLineItem(item: ReceiptLineItem): boolean {
+  const kind = String(item.item_type || "product").toLowerCase();
+  if (kind === "subtotal" || kind === "total") return false;
+
+  const hasDescription =
+    (item.raw_text?.trim().length ?? 0) > 0 ||
+    (item.translated_text?.trim().length ?? 0) > 0;
+  const hasQuantity =
+    typeof item.quantity === "number" && Number.isFinite(item.quantity) && item.quantity !== 0;
+  const hasAmount =
+    typeof item.line_total === "number" && Number.isFinite(item.line_total) && item.line_total !== 0;
+
+  // Hide rows that have no usable description AND no quantity AND no amount —
+  // these are bare extraction artifacts (e.g. raw scanner codes, blank entries).
+  if (!hasDescription && !hasQuantity && !hasAmount) return false;
+
+  return true;
+}

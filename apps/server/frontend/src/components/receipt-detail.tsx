@@ -24,6 +24,7 @@ import { useToast } from "@/components/ui/toast";
 import { SyncPreviewDialog } from "@/components/sync-preview-dialog";
 import { SyncStatusStrip } from "@/components/sync-status-strip";
 import {
+  buildFallbackWorkspace,
   clearWorkspacePins,
   moveWorkspaceItems,
   reconcileWorkspaceToDraft,
@@ -308,41 +309,101 @@ function ScanPanel({ receiptId, mimeType, originalFilename }: {
 }) {
   const previewUrl = receiptFileUrl(receiptId);
   const downloadUrl = receiptFileUrl(receiptId, false);
+  const [imageError, setImageError] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(true);
+
+  const isImage = isInlineImageMimeType(mimeType);
+  const isPdf = isPdfMimeType(mimeType);
+
+  const fallbackLinks = (
+    <div className="flex flex-wrap items-center justify-center gap-2">
+      <a
+        href={previewUrl}
+        target="_blank"
+        rel="noreferrer"
+        className="rounded-md border border-ink/20 bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:bg-sand/70"
+      >
+        Open in new tab
+      </a>
+      <a
+        href={downloadUrl}
+        className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-white hover:bg-ink/90"
+        download
+      >
+        Download
+      </a>
+    </div>
+  );
 
   return (
     <Card className="h-full overflow-hidden p-0">
-      <div className="border-b border-ink/10 px-3 py-2">
+      <div className="flex items-center justify-between border-b border-ink/10 px-3 py-2">
         <h2 className="text-sm font-semibold">Original Scan</h2>
+        <div className="flex gap-3">
+          <a
+            href={previewUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs text-ink/50 underline hover:text-ink/80"
+          >
+            Open
+          </a>
+          <a
+            href={downloadUrl}
+            className="text-xs text-ink/50 underline hover:text-ink/80"
+            download
+          >
+            Download
+          </a>
+        </div>
       </div>
       <div className="h-[28rem] overflow-auto bg-black/5 p-2">
-        {isInlineImageMimeType(mimeType) ? (
+        {isImage && !imageError ? (
           <div className="relative h-full min-h-[22rem] w-full">
-            <Image src={previewUrl} alt={originalFilename} fill unoptimized className="object-contain" />
+            <Image
+              src={previewUrl}
+              alt={originalFilename}
+              fill
+              unoptimized
+              className="object-contain"
+              onError={() => setImageError(true)}
+            />
           </div>
-        ) : isPdfMimeType(mimeType) ? (
-          <iframe src={`${previewUrl}#toolbar=1&view=FitH`} title="Receipt scan PDF" className="h-full min-h-[22rem] w-full border-0" />
+        ) : isImage && imageError ? (
+          <div className="flex h-full min-h-[22rem] flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-ink/20 bg-white/70 px-4 text-center">
+            <p className="text-sm text-ink/75">Image preview unavailable.</p>
+            {fallbackLinks}
+          </div>
+        ) : isPdf ? (
+          <div className="relative h-full min-h-[22rem] w-full">
+            {pdfLoading ? (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/5 text-xs text-ink/50">
+                Loading PDF…
+              </div>
+            ) : null}
+            {/* object element provides a native fallback paragraph when the browser PDF plugin is absent */}
+            <object
+              data={`${previewUrl}#toolbar=1&view=FitH`}
+              type="application/pdf"
+              className="h-full min-h-[22rem] w-full border-0"
+              onLoad={() => setPdfLoading(false)}
+              aria-label="Receipt scan PDF"
+            >
+              {/* Rendered when browser cannot display the PDF inline (headless, plugin disabled, etc.) */}
+              <div className="flex h-full min-h-[22rem] flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-ink/20 bg-white/70 px-4 text-center">
+                <p className="text-sm text-ink/75">
+                  PDF inline preview is not available in this browser. Use the links above to view the receipt.
+                </p>
+                {fallbackLinks}
+              </div>
+            </object>
+          </div>
         ) : (
           <div className="flex h-full min-h-[22rem] flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-ink/20 bg-white/70 px-4 text-center">
             <p className="text-sm text-ink/75">
               Preview not available for this file type ({mimeType || "unknown"}).
             </p>
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <a
-                href={previewUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-md border border-ink/20 bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:bg-sand/70"
-              >
-                Open file
-              </a>
-              <a
-                href={downloadUrl}
-                className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-white hover:bg-ink/90"
-                download
-              >
-                Download file
-              </a>
-            </div>
+            {fallbackLinks}
           </div>
         )}
       </div>
@@ -1158,6 +1219,29 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     });
     setDirty(true);
   };
+  const handleWorkspaceChange = (next: AllocationWorkspace) => {
+    setAllocationWorkspace(next);
+    setDirty(true);
+  };
+  const handleRefreshFromTwin = () => {
+    if (!draft) return;
+    const twin = receiptQuery.data?.latest_twin ?? null;
+    // Rebuild from current twin items, preserving pins for lanes that still exist.
+    const fresh = buildFallbackWorkspace(draft, twin);
+    if (allocationWorkspace) {
+      const existingPins = new Map(
+        allocationWorkspace.lanes.map((lane) => [lane.lane_id, lane.pinned_amount ?? null]),
+      );
+      fresh.lanes = fresh.lanes.map((lane) => ({
+        ...lane,
+        pinned_amount: existingPins.get(lane.lane_id) ?? null,
+      }));
+    }
+    const nextWarnings = (fresh.warnings ?? []).filter((w) => !w.includes("Line items changed"));
+    setAllocationWorkspace({ ...fresh, warnings: nextWarnings });
+    setAllocationWarnings(nextWarnings);
+    setDirty(true);
+  };
   const refreshReceiptContext = () => {
     queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
     queryClient.invalidateQueries({ queryKey: ["receipts"] });
@@ -1307,6 +1391,8 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
               onRecomputeKeep={() => runAllocationRecompute("keep_manual_amounts")}
               isRecomputing={recomputeMutation.isPending}
               warnings={allocationWarnings}
+              onWorkspaceChange={handleWorkspaceChange}
+              onRefreshFromTwin={handleRefreshFromTwin}
             />
           ) : null}
 

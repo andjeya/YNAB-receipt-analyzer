@@ -10,9 +10,9 @@ from sqlalchemy.orm import Session
 from app.api.receipts import confirm_duplicate_receipt, override_duplicate_receipt, save_draft, sync_receipt
 from app.config import Settings
 from app.enums import ReceiptStatus, YNABCacheEntityType
-from app.models import Base, Receipt, YNABCache
+from app.models import Base, Receipt, Validation, YNABCache
 from app.schemas import DuplicateOverrideRequest, SaveDraftRequest, SyncRequest
-from app.services.duplicates import normalize_payee_key, normalize_total_cents, normalize_transaction_time
+from app.services.duplicates import apply_semantic_duplicate_state, normalize_payee_key, normalize_total_cents, normalize_transaction_time
 
 
 def _memory_session() -> Session:
@@ -330,3 +330,182 @@ def test_sync_endpoint_blocks_semantic_duplicate_with_409() -> None:
         assert exc_info.value.status_code == 409
         assert isinstance(exc_info.value.detail, dict)
         assert exc_info.value.detail.get("code") == "duplicate_receipt"
+
+
+# ---------------------------------------------------------------------------
+# Task D — Kind-aware near-duplicate messaging
+# ---------------------------------------------------------------------------
+
+def _seed_receipt_with_validation(
+    db: Session,
+    *,
+    receipt_id: str,
+    file_hash: str,
+    payload: dict,
+) -> Receipt:
+    """Seed a receipt AND a Validation row so that _latest_kind_for_receipt can read its kind."""
+    receipt = Receipt(
+        id=receipt_id,
+        storage_key=f"receipts/{receipt_id}.jpg",
+        original_filename=f"{receipt_id}.jpg",
+        file_hash=file_hash,
+        file_ext=".jpg",
+        mime_type="image/jpeg",
+        file_size_bytes=123,
+        status=ReceiptStatus.NEEDS_REVIEW.value,
+    )
+    db.add(receipt)
+    db.flush()  # get receipt.id into the session
+    validation = Validation(
+        receipt_id=receipt_id,
+        version=1,
+        payload=payload,
+        source="user",
+        is_valid=True,
+        errors=None,
+    )
+    db.add(validation)
+    db.commit()
+    db.refresh(receipt)
+    return receipt
+
+
+def test_kind_differing_match_is_downgraded_to_near_match_not_blocked() -> None:
+    """A refund that matches a purchase on signature must not be blocked as a duplicate."""
+    settings = Settings(_env_file=None, ynab_budget_id="budget-1")
+
+    purchase_payload = _payload(payee="Trader Joe's", total=12.30, time_text="09:41")
+    purchase_payload["transaction_kind"] = "purchase"
+
+    refund_payload = _payload(payee="Trader Joe's", total=12.30, time_text="09:41")
+    refund_payload["transaction_kind"] = "refund"
+
+    with _memory_session() as db:
+        _add_cache_entities(db, settings.ynab_budget_id or "")
+        purchase_receipt = _seed_receipt_with_validation(
+            db,
+            receipt_id="aaaaaaaa-0001-4000-8000-000000000001",
+            file_hash="hash-kind-purchase",
+            payload=purchase_payload,
+        )
+        # Seed semantic fields on the purchase receipt so signature is present
+        apply_semantic_duplicate_state(db, receipt=purchase_receipt, payload=purchase_payload)
+        db.commit()
+
+        # Now save a refund with the same payee/date/time/total
+        refund_receipt = _seed_receipt(
+            db,
+            receipt_id="aaaaaaaa-0001-4000-8000-000000000002",
+            file_hash="hash-kind-refund",
+        )
+        result = apply_semantic_duplicate_state(db, receipt=refund_receipt, payload=refund_payload)
+        db.commit()
+
+        db.refresh(refund_receipt)
+
+        # Must NOT be flagged as DUPLICATE_REVIEW — it's a different kind
+        assert refund_receipt.status != ReceiptStatus.DUPLICATE_REVIEW.value
+        assert refund_receipt.duplicate_of_receipt_id is None
+        assert result.near_match is True
+        assert result.near_match_reason is not None
+        assert "Near-match" in result.near_match_reason
+
+
+def test_same_kind_match_still_blocks_as_duplicate() -> None:
+    """Two purchases with same signature must still be treated as hard duplicates."""
+    settings = Settings(_env_file=None, ynab_budget_id="budget-1")
+
+    purchase_payload_1 = _payload(payee="Costco", total=50.00, time_text="10:00")
+    purchase_payload_1["transaction_kind"] = "purchase"
+
+    purchase_payload_2 = _payload(payee="costco", total=50.00, time_text="10:00")
+    purchase_payload_2["transaction_kind"] = "purchase"
+
+    with _memory_session() as db:
+        _add_cache_entities(db, settings.ynab_budget_id or "")
+        first = _seed_receipt_with_validation(
+            db,
+            receipt_id="bbbbbbbb-0001-4000-8000-000000000001",
+            file_hash="hash-same-kind-1",
+            payload=purchase_payload_1,
+        )
+        from app.services.duplicates import apply_semantic_duplicate_state
+        apply_semantic_duplicate_state(db, receipt=first, payload=purchase_payload_1)
+        db.commit()
+
+        second = _seed_receipt(
+            db,
+            receipt_id="bbbbbbbb-0001-4000-8000-000000000002",
+            file_hash="hash-same-kind-2",
+        )
+        result = apply_semantic_duplicate_state(db, receipt=second, payload=purchase_payload_2)
+        db.commit()
+
+        db.refresh(second)
+
+        assert second.status == ReceiptStatus.DUPLICATE_REVIEW.value
+        assert second.duplicate_of_receipt_id == first.id
+        assert result.near_match is False
+
+
+def test_mixed_pool_blocks_when_any_same_kind_match_exists() -> None:
+    """If the matched pool contains a different-kind receipt FIRST but a same-kind
+    receipt later, the same-kind match must still block (no slip-through)."""
+    settings = Settings(_env_file=None, ynab_budget_id="budget-1")
+
+    refund_payload = _payload(payee="Trader Joe's", total=12.30, time_text="09:41")
+    refund_payload["transaction_kind"] = "refund"
+    purchase_payload = _payload(payee="Trader Joe's", total=12.30, time_text="09:41")
+    purchase_payload["transaction_kind"] = "purchase"
+
+    with _memory_session() as db:
+        _add_cache_entities(db, settings.ynab_budget_id or "")
+        # Seed a DIFFERENT-kind (refund) match first (earlier ingested_at)...
+        refund_receipt = _seed_receipt_with_validation(
+            db,
+            receipt_id="dddddddd-0001-4000-8000-000000000001",
+            file_hash="hash-mixed-refund",
+            payload=refund_payload,
+        )
+        apply_semantic_duplicate_state(db, receipt=refund_receipt, payload=refund_payload)
+        db.commit()
+        # ...then a SAME-kind (purchase) match.
+        purchase_receipt = _seed_receipt_with_validation(
+            db,
+            receipt_id="dddddddd-0001-4000-8000-000000000002",
+            file_hash="hash-mixed-purchase",
+            payload=purchase_payload,
+        )
+        apply_semantic_duplicate_state(db, receipt=purchase_receipt, payload=purchase_payload)
+        db.commit()
+
+        # A second purchase arrives — the pool is [refund, purchase]; it MUST block
+        # on the same-kind purchase, not be downgraded on the refund's differing kind.
+        incoming = _seed_receipt(
+            db,
+            receipt_id="dddddddd-0001-4000-8000-000000000003",
+            file_hash="hash-mixed-incoming",
+        )
+        result = apply_semantic_duplicate_state(db, receipt=incoming, payload=purchase_payload)
+        db.commit()
+        db.refresh(incoming)
+
+        assert incoming.status == ReceiptStatus.DUPLICATE_REVIEW.value
+        assert incoming.duplicate_of_receipt_id == purchase_receipt.id
+        assert result.near_match is False
+
+
+def test_near_match_result_has_near_match_false_by_default() -> None:
+    """DuplicateCheckResult.near_match defaults to False (no regression in normal path)."""
+    settings = Settings(_env_file=None, ynab_budget_id="budget-1")
+
+    with _memory_session() as db:
+        _add_cache_entities(db, settings.ynab_budget_id or "")
+        receipt = _seed_receipt(
+            db,
+            receipt_id="cccccccc-0001-4000-8000-000000000001",
+            file_hash="hash-no-match",
+        )
+        payload = _payload(payee="Target", total=20.00, time_text="11:00")
+        result = apply_semantic_duplicate_state(db, receipt=receipt, payload=payload)
+        assert result.near_match is False

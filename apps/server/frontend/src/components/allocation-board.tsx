@@ -1,10 +1,25 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, PointerSensor, TouchSensor, useDraggable, useDroppable, useSensor, useSensors } from "@dnd-kit/core";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Announcements,
+  DndContext,
+  DragEndEvent,
+  DragOverlay,
+  DragStartEvent,
+  KeyboardSensor,
+  PointerSensor,
+  TouchSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
-import { AllocationItem, AllocationWorkspace } from "@/lib/types";
+import { AllocationItem, AllocationLane, AllocationWorkspace } from "@/lib/types";
+import { setWorkspaceLanePinnedAmount } from "@/lib/allocation-workspace";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
@@ -27,6 +42,27 @@ function laneLabel(laneId: string, categoryId: string | null, categories: Catego
   return laneId;
 }
 
+const UNDO_TTL_MS = 6000;
+
+function laneDollarTotal(
+  laneId: string,
+  items: AllocationItem[],
+  assignments: AllocationWorkspace["assignments"],
+): number | null {
+  const laneItemIds = new Set(assignments.filter((a) => a.lane_id === laneId).map((a) => a.item_id));
+  const itemMap = new Map(items.map((item) => [item.item_id, item]));
+  let total = 0;
+  let hasAmount = false;
+  for (const itemId of laneItemIds) {
+    const item = itemMap.get(itemId);
+    if (item && item.amount != null) {
+      total += item.amount;
+      hasAmount = true;
+    }
+  }
+  return hasAmount ? Math.round(total * 100) / 100 : null;
+}
+
 function DraggableAllocationItem({
   item,
   selected,
@@ -38,6 +74,7 @@ function DraggableAllocationItem({
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: item.item_id,
+    data: { item },
   });
   const style = {
     transform: CSS.Translate.toString(transform),
@@ -48,45 +85,88 @@ function DraggableAllocationItem({
     <button
       ref={setNodeRef}
       style={style}
+      {...listeners}
+      {...attributes}
       type="button"
+      aria-pressed={selected}
       className={`w-full rounded-xl border px-2 py-1.5 text-left text-xs transition ${
         selected ? "border-sky-500 bg-sky-100 text-sky-900" : "border-ink/15 bg-white text-ink hover:bg-sand/50"
       }`}
       onClick={() => onToggle(item.item_id)}
-      {...listeners}
-      {...attributes}
     >
       <p className="font-semibold">{item.label || `Item ${item.source_index + 1}`}</p>
-      <p className="text-[11px] text-ink/70">{item.amount == null ? "Unknown amount" : `$${Math.abs(item.amount).toFixed(2)}`}</p>
+      <p className="text-[11px] text-ink/70">
+        {item.amount == null ? "Unknown amount" : `$${Math.abs(item.amount).toFixed(2)}`}
+      </p>
     </button>
   );
 }
 
+function PinBadge({ pinnedAmount, onUnpin }: { pinnedAmount: number; onUnpin: () => void }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border border-sky-400 bg-sky-100 px-2 py-0.5 text-[10px] font-semibold text-sky-800"
+      aria-label={`Pinned at $${pinnedAmount.toFixed(2)}`}
+    >
+      {String.fromCodePoint(0x1f4cc)} {`$${pinnedAmount.toFixed(2)}`}
+      <button
+        type="button"
+        aria-label="Remove pin"
+        className="ml-0.5 rounded-full p-0.5 hover:bg-sky-200"
+        onClick={onUnpin}
+      >
+        {"×"}
+      </button>
+    </span>
+  );
+}
+
 function LaneColumn({
-  laneId,
+  lane,
   title,
+  dollarTotal,
   items,
   selectedItemIds,
   onToggleItem,
+  onUnpin,
 }: {
-  laneId: string;
+  lane: AllocationLane;
   title: string;
+  dollarTotal: number | null;
   items: AllocationItem[];
   selectedItemIds: Set<string>;
   onToggleItem: (itemId: string) => void;
+  onUnpin: (laneId: string) => void;
 }) {
-  const { isOver, setNodeRef } = useDroppable({
-    id: laneId,
-  });
+  const { isOver, setNodeRef } = useDroppable({ id: lane.lane_id });
 
   return (
-    <div ref={setNodeRef} className={`rounded-2xl border p-2 ${isOver ? "border-sky-500 bg-sky-50" : "border-ink/15 bg-sand/40"}`}>
-      <div className="mb-2 flex items-center justify-between">
-        <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">{title}</p>
-        <p className="text-[11px] text-ink/60">{items.length}</p>
+    <div
+      ref={setNodeRef}
+      role="group"
+      aria-label={title}
+      className={`rounded-2xl border p-2 ${isOver ? "border-sky-500 bg-sky-50" : "border-ink/15 bg-sand/40"}`}
+    >
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">{title}</p>
+          {lane.pinned_amount != null ? (
+            <PinBadge pinnedAmount={lane.pinned_amount} onUnpin={() => onUnpin(lane.lane_id)} />
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          {dollarTotal != null ? (
+            <p className="text-[11px] font-semibold text-ink/60">${dollarTotal.toFixed(2)}</p>
+          ) : null}
+          <p className="text-[11px] text-ink/60">{items.length}</p>
+        </div>
       </div>
       <div className="space-y-1">
-        {items.length === 0 ? <p className="rounded-lg border border-dashed border-ink/20 px-2 py-2 text-[11px] text-ink/50">Drop items here</p> : null}
+        {items.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-ink/20 px-2 py-2 text-[11px] text-ink/50">
+            Drop items here
+          </p>
+        ) : null}
         {items.map((item) => (
           <DraggableAllocationItem
             key={item.item_id}
@@ -111,6 +191,8 @@ export function AllocationBoard({
   onRecomputeKeep,
   isRecomputing,
   warnings,
+  onWorkspaceChange,
+  onRefreshFromTwin,
 }: {
   workspace: AllocationWorkspace;
   categories: CategoryOption[];
@@ -122,12 +204,48 @@ export function AllocationBoard({
   onRecomputeKeep: () => void;
   isRecomputing: boolean;
   warnings: string[];
+  onWorkspaceChange?: (next: AllocationWorkspace) => void;
+  onRefreshFromTwin?: () => void;
 }) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 100, tolerance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const [activeDragItemIds, setActiveDragItemIds] = useState<string[]>([]);
+
+  const previousWorkspaceRef = useRef<AllocationWorkspace | null>(null);
+  const [undoAvailable, setUndoAvailable] = useState(false);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const offerUndo = useCallback((snapshot: AllocationWorkspace) => {
+    previousWorkspaceRef.current = snapshot;
+    setUndoAvailable(true);
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    undoTimerRef.current = setTimeout(() => {
+      setUndoAvailable(false);
+      previousWorkspaceRef.current = null;
+    }, UNDO_TTL_MS);
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    if (!previousWorkspaceRef.current || !onWorkspaceChange) return;
+    onWorkspaceChange(previousWorkspaceRef.current);
+    setUndoAvailable(false);
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    previousWorkspaceRef.current = null;
+  }, [onWorkspaceChange]);
+
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    };
+  }, []);
+
+  const handleUnpinLane = (laneId: string) => {
+    if (!onWorkspaceChange) return;
+    onWorkspaceChange(setWorkspaceLanePinnedAmount(workspace, laneId, null));
+  };
 
   const itemsByLane = useMemo(() => {
     const itemMap = new Map(workspace.items.map((item) => [item.item_id, item]));
@@ -148,7 +266,9 @@ export function AllocationBoard({
   const activeItems = useMemo(() => {
     if (activeDragItemIds.length === 0) return [];
     const itemMap = new Map(workspace.items.map((item) => [item.item_id, item]));
-    return activeDragItemIds.map((itemId) => itemMap.get(itemId)).filter((item): item is AllocationItem => !!item);
+    return activeDragItemIds
+      .map((itemId) => itemMap.get(itemId))
+      .filter((item): item is AllocationItem => !!item);
   }, [activeDragItemIds, workspace.items]);
 
   const onDragStart = (event: DragStartEvent) => {
@@ -163,10 +283,32 @@ export function AllocationBoard({
   const onDragEnd = (event: DragEndEvent) => {
     const laneId = event.over ? String(event.over.id) : "";
     if (laneId && activeDragItemIds.length > 0) {
+      offerUndo(workspace);
       onMoveItems(activeDragItemIds, laneId);
     }
     setActiveDragItemIds([]);
   };
+
+  const handleRecomputeDiscard = () => {
+    offerUndo(workspace);
+    onRecomputeDiscard();
+  };
+
+  const handleRecomputeKeep = () => {
+    offerUndo(workspace);
+    onRecomputeKeep();
+  };
+
+  const announcements: Announcements = {
+    onDragStart: ({ active }) => `Picked up item ${active.id}.`,
+    onDragOver: ({ active, over }) =>
+      over ? `Item ${active.id} is over lane ${over.id}.` : `Item ${active.id} is not over a lane.`,
+    onDragEnd: ({ active, over }) =>
+      over ? `Item ${active.id} dropped into lane ${over.id}.` : `Item ${active.id} was dropped.`,
+    onDragCancel: ({ active }) => `Drag of item ${active.id} cancelled.`,
+  };
+
+  const staleWarningIndex = warnings.findIndex((w) => w.includes("Line items changed"));
 
   return (
     <Card className="animate-reveal space-y-3" style={{ animationDelay: "190ms" }}>
@@ -176,26 +318,44 @@ export function AllocationBoard({
           <Button variant="outline" size="sm" onClick={onClearSelection} disabled={selectedItemIds.size === 0}>
             Clear selection
           </Button>
-          <Button variant="outline" size="sm" onClick={onRecomputeKeep} disabled={isRecomputing}>
+          <Button variant="outline" size="sm" onClick={handleRecomputeKeep} disabled={isRecomputing}>
             {isRecomputing ? "Recomputing..." : "Recompute (Keep Pinned)"}
           </Button>
-          <Button size="sm" onClick={onRecomputeDiscard} disabled={isRecomputing}>
+          <Button size="sm" onClick={handleRecomputeDiscard} disabled={isRecomputing}>
             Recompute (Discard Pinned)
           </Button>
+          {undoAvailable && onWorkspaceChange ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-amber-400 text-amber-700 hover:bg-amber-50"
+              onClick={handleUndo}
+            >
+              Undo
+            </Button>
+          ) : null}
         </div>
       </div>
       <p className="text-xs text-ink/65">Select items, then drag one to move the full selected group between lanes.</p>
 
-      <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setActiveDragItemIds([])}>
+      <DndContext
+        sensors={sensors}
+        accessibility={{ announcements }}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        onDragCancel={() => setActiveDragItemIds([])}
+      >
         <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
           {workspace.lanes.map((lane) => (
             <LaneColumn
               key={lane.lane_id}
-              laneId={lane.lane_id}
+              lane={lane}
               title={laneLabel(lane.lane_id, lane.category_id, categories)}
               items={itemsByLane.get(lane.lane_id) ?? []}
+              dollarTotal={laneDollarTotal(lane.lane_id, workspace.items, workspace.assignments)}
               selectedItemIds={selectedItemIds}
               onToggleItem={onToggleItem}
+              onUnpin={handleUnpinLane}
             />
           ))}
         </div>
@@ -216,7 +376,18 @@ export function AllocationBoard({
       {warnings.length > 0 ? (
         <div className="space-y-1 rounded-xl border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
           {warnings.map((warning, index) => (
-            <p key={`${warning}-${index}`}>- {warning}</p>
+            <div key={`${warning}-${index}`} className={index === staleWarningIndex ? "flex items-center gap-2" : ""}>
+              <p>- {warning}</p>
+              {index === staleWarningIndex && onRefreshFromTwin ? (
+                <button
+                  type="button"
+                  className="ml-1 shrink-0 rounded-md border border-amber-400 bg-white px-2 py-0.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
+                  onClick={onRefreshFromTwin}
+                >
+                  Refresh allocation from twin
+                </button>
+              ) : null}
+            </div>
           ))}
         </div>
       ) : null}

@@ -6,7 +6,7 @@ import { Check, Pencil, RefreshCw, Save, X } from "lucide-react";
 
 import { confirmTwinSection, retryTwinExtraction, saveReceiptTwin } from "@/lib/api";
 import { ReceiptLineItem, ReceiptTwin, ReceiptTwinPayload } from "@/lib/types";
-import { cloneTwinPayload, computeTwinEditWarnings, normalizeTwinTimeForInput } from "@/lib/receipt-twin";
+import { cloneTwinPayload, computeTwinEditWarnings, isRealLineItem, normalizeTwinTimeForInput } from "@/lib/receipt-twin";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -28,7 +28,9 @@ function formatCurrency(amount: number | null | undefined): string {
 
 function lineItemClassName(item: ReceiptLineItem): string {
   const kind = (item.item_type || "").toLowerCase();
-  if (kind === "discount") return "text-red-700 italic";
+  // Extraction artifacts (only shown in edit mode for raw fidelity): de-emphasize, never alarm.
+  if (!isRealLineItem(item)) return "text-ink/40 italic";
+  if (kind === "discount") return "text-emerald-700 italic";
   if (kind === "tax") return "text-ink/65";
   if (kind === "subtotal" || kind === "total") return "font-semibold";
   return "";
@@ -428,7 +430,7 @@ export function ReceiptTwinViewer({
       <section className="space-y-2">
         <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Line items</p>
         <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
-          {draft.line_items.map((item, index) => (
+          {draft.line_items.filter((item) => editMode || isRealLineItem(item)).map((item, index) => (
             <div key={`${item.index}-${index}`} className={`rounded-xl border border-ink/10 p-2 text-xs ${lineItemClassName(item)}`}>
               {editMode ? (
                 <div className="space-y-2">

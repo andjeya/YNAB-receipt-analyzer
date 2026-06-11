@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.enums import ReceiptStatus
-from app.models import Receipt
+from app.models import Receipt, Validation
 
 _PAYEE_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 _SPACE_RE = re.compile(r"\s+")
@@ -23,6 +23,26 @@ class DuplicateCheckResult:
     signature: str | None
     duplicate_of_receipt_id: str | None
     match_count: int
+    near_match: bool = False
+    near_match_reason: str | None = None
+
+
+def _latest_kind_for_receipt(db: Session, receipt: Receipt) -> str:
+    """Return transaction_kind from the latest validation payload for a receipt.
+
+    Falls back to 'purchase' when no validation exists or payload is missing.
+    """
+    row = db.scalar(
+        select(Validation.payload)
+        .where(Validation.receipt_id == receipt.id)
+        .order_by(Validation.version.desc())
+        .limit(1)
+    )
+    if row and isinstance(row, dict):
+        kind = row.get("transaction_kind")
+        if kind in ("purchase", "refund"):
+            return kind
+    return "purchase"
 
 
 def normalize_payee_key(value: Any) -> str | None:
@@ -167,7 +187,40 @@ def apply_semantic_duplicate_state(
         return DuplicateCheckResult(signature=signature, duplicate_of_receipt_id=None, match_count=0)
 
     chosen_pool = non_duplicate_review_matches
-    duplicate_of = chosen_pool[0]
+
+    # Kind-aware near-match: if the incoming receipt has a DIFFERENT transaction_kind
+    # from EVERY matched receipt (e.g. a refund matching a same-timestamp purchase),
+    # downgrade from a hard DUPLICATE_REVIEW block to a non-blocking near-match note.
+    # The semantic signature is intentionally kind-blind (by design from M1), so we
+    # compare kinds only at collision time. CRITICAL: we must block whenever ANY
+    # same-kind match exists in the pool — relaxing on the first entry's kind alone
+    # would let a genuine same-kind duplicate slip through a heterogeneous pool.
+    incoming_kind = (payload or {}).get("transaction_kind", "purchase") or "purchase"
+    if incoming_kind not in ("purchase", "refund"):
+        incoming_kind = "purchase"
+    same_kind_matches = [row for row in chosen_pool if _latest_kind_for_receipt(db, row) == incoming_kind]
+    duplicate_of = same_kind_matches[0] if same_kind_matches else chosen_pool[0]
+    matched_kind = _latest_kind_for_receipt(db, duplicate_of)
+
+    if not same_kind_matches:
+        # Near-match: same payee/date/time/total but different kinds — likely a refund of a purchase.
+        # Do NOT block as duplicate; record a near_match note on the status_reason instead.
+        receipt.duplicate_of_receipt_id = None
+        near_reason = (
+            f"Near-match: same payee/date/time/total as receipt {duplicate_of.id} "
+            f"but kinds differ ({incoming_kind} vs {matched_kind}). "
+            f"Not blocked — verify this is not a data entry error."
+        )
+        if receipt.status == ReceiptStatus.DUPLICATE_REVIEW.value:
+            receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+        receipt.status_reason = near_reason
+        return DuplicateCheckResult(
+            signature=signature,
+            duplicate_of_receipt_id=None,
+            match_count=len(chosen_pool),
+            near_match=True,
+            near_match_reason=near_reason,
+        )
 
     receipt.duplicate_of_receipt_id = duplicate_of.id
     receipt.status = ReceiptStatus.DUPLICATE_REVIEW.value

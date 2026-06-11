@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cloneTwinPayload, computeTwinEditWarnings, normalizeTwinTimeForInput } from "./receipt-twin";
-import { ReceiptTwinPayload } from "./types";
+import { cloneTwinPayload, computeTwinEditWarnings, isRealLineItem, normalizeTwinTimeForInput } from "./receipt-twin";
+import { ReceiptLineItem, ReceiptTwinPayload } from "./types";
 
 function samplePayload(): ReceiptTwinPayload {
   return {
@@ -66,4 +66,61 @@ test("computeTwinEditWarnings reports math mismatches", () => {
 test("computeTwinEditWarnings returns empty for aligned totals", () => {
   const warnings = computeTwinEditWarnings(samplePayload());
   assert.deepEqual(warnings, []);
+});
+
+// --- isRealLineItem predicate tests ---
+
+function makeItem(overrides: Partial<ReceiptLineItem>): ReceiptLineItem {
+  return {
+    index: 0,
+    raw_text: "Item",
+    translated_text: "Item",
+    quantity: 1,
+    unit_price: 5,
+    line_total: 5,
+    tax_code: null,
+    item_type: "product",
+    ...overrides,
+  };
+}
+
+test("isRealLineItem: normal product rows are real", () => {
+  assert.equal(isRealLineItem(makeItem({})), true);
+});
+
+test("isRealLineItem: subtotal rows are NOT real", () => {
+  assert.equal(isRealLineItem(makeItem({ item_type: "subtotal", raw_text: "Subtotal" })), false);
+});
+
+test("isRealLineItem: total rows are NOT real", () => {
+  assert.equal(isRealLineItem(makeItem({ item_type: "total", raw_text: "Total" })), false);
+});
+
+test("isRealLineItem: artifact row with no description, zero qty, zero amount is NOT real", () => {
+  assert.equal(
+    isRealLineItem(makeItem({ raw_text: "", translated_text: "", quantity: 0, unit_price: 0, line_total: 0 })),
+    false,
+  );
+});
+
+test("isRealLineItem: artifact row with no description and null qty and null amount is NOT real", () => {
+  assert.equal(
+    isRealLineItem(makeItem({ raw_text: "", translated_text: "", quantity: null, unit_price: null, line_total: null })),
+    false,
+  );
+});
+
+test("isRealLineItem: row with only a description is real (even if amount is null)", () => {
+  assert.equal(
+    isRealLineItem(makeItem({ raw_text: "MYSTERY ITEM", quantity: null, line_total: null })),
+    true,
+  );
+});
+
+test("isRealLineItem: discount row with description is real", () => {
+  assert.equal(isRealLineItem(makeItem({ item_type: "discount", raw_text: "10% discount", line_total: -1 })), true);
+});
+
+test("isRealLineItem: tax row with description is real", () => {
+  assert.equal(isRealLineItem(makeItem({ item_type: "tax", raw_text: "Sales Tax", line_total: 1.5 })), true);
 });

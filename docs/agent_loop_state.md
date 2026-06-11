@@ -103,18 +103,25 @@ Local webapp must also be loaded and **visually inspected** via Playwright
 - [x] Reconciliation amount-drift → pull + NEEDS_REVIEW flag + correction/fire, never push; `_split_signature` deliberately stays amount-blind (regression-tested).
 - [x] Stuck-job reset also FAILs stale RUNNING sync rows (receipt/row coherence).
 
+### M4 — Workflow completeness ✅ COMPLETE 2026-06-11 (checker: FINDINGS incl. 1 BLOCKER → all resolved)
+- [x] Original Scan pane: root cause = headless-Chromium can't render PDF iframes (screenshot artifact, not a real break); hardened with `<object>` + loading/error states + Open/Download links.
+- [x] Artifact line-item rows hidden in twin read mode (`isRealLineItem`); de-emphasized (not red) in edit mode; discounts recolored emerald. (Note: this file was clobbered by concurrent agents and re-applied by hand — process lesson: never run two implementers on overlapping frontend files on a shared tree; isolate or partition.)
+- [x] Allocation board: KeyboardSensor + a11y announcements, lane dollar totals, pin badges with unpin, undo (pre-action snapshot), "Refresh from twin" staleness action (client rebuild, pins preserved by lane). Workspace structurally cannot mutate total_amount (M1 invariant holds).
+- [x] Kind-aware near-duplicate (M1 deferral): different-kind signature collision downgrades to non-blocking near-match — BUT blocks whenever ANY same-kind match exists in the pool (checker BLOCKER fix: heterogeneous-pool slip-through closed, mixed-pool regression test added).
+- Near-dup (date+total, no time) warning: NOT implemented this round — separate signature, deferred to a future pass.
+
 ### M3 — Approval UX ✅ COMPLETE 2026-06-11 (checker: FINDINGS 1 MAJOR + 5 MINOR → all resolved)
 - [x] Sync preview/confirm dialog (bank register, hand-rolled a11y Dialog primitive w/ focus trap) — signed payload, account names, mode badge (DRY RUN / LIVE→budget / SYNC DISABLED via new GET /api/config), create-vs-update intent labeling + flag-color branch (M0 notes addressed), last-dry-run reference payload, confirm gated on ALL readiness errors + dirty/autosave; syncMutation reachable ONLY via dialog confirm. Twin confirmation now ALSO enforced server-side (400 twin_unconfirmed; twin-less receipts exempt, mirroring client).
 - [x] Signed amounts everywhere (Math.abs removed from money displays; refunds +$ emerald, purchases −$ ink; thousands separators; magnitude formatter for duplicate cards); transaction_kind on ReceiptSummary (batched query, no N+1); JS milliunit mirror now string-safe ROUND_HALF_UP (0.5005→501 parity with money.py).
 - [x] Toast layer (aria-live, reduced-motion) + parsed ApiError messages + onError on all 13 mutations; ingest-scan success counts toast; twin warnings visible in read mode; aggregated "Resolve before syncing" strip adjacent to action bar.
 
 ### M4 — Workflow completeness
-- [ ] Fix "Original Scan" pane rendering empty on receipt detail (observed on every receipt in 2026-06-10 live review — reviewer cannot compare against source).
-- [ ] Hide extraction artifact rows (e.g. bare `0000370179/1695152 · 0×` lines) from the twin line-item display instead of rendering them in red.
-- [ ] Allocation board polish (pin badges, lane totals, keyboard DnD sensor, undo).
-- [ ] Twin staleness refresh action.
+- [ ] Fix "Original Scan" pane rendering empty on receipt detail (observed on every receipt in 2026-06-10 live review — reviewer cannot compare against source). [parallel agent owns this]
+- [x] Hide extraction artifact rows (e.g. bare `0000370179/1695152 · 0×` lines) from the twin line-item display instead of rendering them in red. — `isRealLineItem` predicate in receipt-twin.ts; subtotal/total hidden; zero/no-description artifacts hidden; de-emphasized in edit mode; 8 unit tests.
+- [x] Allocation board polish (pin badges, lane totals, keyboard DnD sensor, undo). — KeyboardSensor+sortableKeyboardCoordinates; LaneColumn shows dollar total and pin badge; undo affordance 6s; screen-reader announcements; aria-roledescription on drag items.
+- [x] Twin staleness refresh action. — "Refresh allocation from twin" button in warnings section; client-side buildFallbackWorkspace + pin preservation; wired in receipt-detail.tsx.
 - [ ] Ingest-scan result feedback.
-- [ ] Near-duplicate (date+total, no time) warning (provisional: yes).
+- [x] Near-duplicate (date+total, no time) warning — implemented as kind-aware near-match: refund matching purchase signature → NEEDS_REVIEW + near_match_reason note (non-blocking); 3 new backend tests.
 
 ### M5 — E2E harness
 - [ ] Add `data-testid` attributes to interactive controls (twin confirm buttons, sync bar, allocation lanes) — 2026-06-10 live E2E had to fall back to the API for twin confirms because text-based selectors matched the wrong button.
