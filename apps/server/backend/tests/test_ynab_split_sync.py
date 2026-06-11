@@ -451,12 +451,31 @@ class TestBuildSubtransactions:
                 {"amount": 20.0, "category_id": CATEGORY_B, "memo": "cleaning"},
             ]
         }
-        result = _build_subtransactions(payload)
+        result = _build_subtransactions(payload, outflow=True)
         # dollars_to_milliunits with outflow=True negates positive amounts
         assert result[0]["amount"] == -30000
         assert result[1]["amount"] == -20000
         assert result[0]["category_id"] == CATEGORY_A
         assert result[1]["memo"] == "cleaning"
+
+    def test_outflow_false_returns_positive_milliunits(self):
+        payload = {
+            "splits": [
+                {"amount": 30.0, "category_id": CATEGORY_A, "memo": "food"},
+            ]
+        }
+        result = _build_subtransactions(payload, outflow=False)
+        assert result[0]["amount"] == 30000
+
+    def test_default_outflow_is_purchase(self):
+        """Default behavior (outflow=True) produces negative milliunits for purchase."""
+        payload = {
+            "splits": [
+                {"amount": 50.0, "category_id": CATEGORY_A, "memo": ""},
+            ]
+        }
+        result = _build_subtransactions(payload)
+        assert result[0]["amount"] == -50000
 
 
 # ---------------------------------------------------------------------------

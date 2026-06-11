@@ -25,6 +25,7 @@ from app.services.incidents import record_incident
 from app.services.validation import validate_payload
 from app.services.ynab import get_cached_reference_data, get_ynab_client
 from app.utils import utcnow
+from receipt_shared.money import dollars_to_milliunits
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ def _latest_successful_sync_rows(db: Session, since_at: datetime) -> list[YNABSy
 
 
 def _dollars_from_milliunits(value: int) -> float:
-    return abs(Decimal(int(value)) / Decimal("1000"))
+    return float(abs(Decimal(int(value)) / Decimal("1000")))
 
 
 def _build_corrected_payload(
@@ -130,6 +131,21 @@ def _build_corrected_payload(
 
     subtransactions = _active_subtransactions(ynab_transaction)
     if subtransactions:
+        sub_amounts = [int(sub.get("amount", 0)) for sub in subtransactions]
+        has_positive = any(a > 0 for a in sub_amounts)
+        has_negative = any(a < 0 for a in sub_amounts)
+        if has_positive and has_negative:
+            # Mixed inflow/outflow splits — cannot safely adopt; log and return prior payload unchanged.
+            logger.warning(
+                "Reconciliation: YNAB transaction has mixed inflow/outflow splits; "
+                "skipping payload update to avoid corruption. "
+                "transaction_id=%s",
+                ynab_transaction.get("id"),
+            )
+            return prior_payload
+        total_amount_mu = int(ynab_transaction.get("amount", 0))
+        ynab_kind = "refund" if total_amount_mu > 0 else "purchase"
+        next_payload["transaction_kind"] = ynab_kind
         next_payload["category_id"] = None
         next_payload["splits"] = [
             {
@@ -140,6 +156,9 @@ def _build_corrected_payload(
             for sub in subtransactions
         ]
     else:
+        total_amount_mu = int(ynab_transaction.get("amount", 0))
+        ynab_kind = "refund" if total_amount_mu > 0 else "purchase"
+        next_payload["transaction_kind"] = ynab_kind
         next_payload["category_id"] = str(ynab_transaction.get("category_id") or "")
         next_payload["splits"] = []
 
@@ -216,7 +235,7 @@ def _apply_corrected_validation(
 
     payee_name = str(normalized_payload.get("payee_name") or "").strip()
     receipt.display_payee_name = payee_name or None
-    receipt.display_total_milliunits = int(float(normalized_payload.get("total_amount", 0)) * 1000)
+    receipt.display_total_milliunits = dollars_to_milliunits(normalized_payload.get("total_amount", 0), outflow=False)
     if normalized_payload.get("transaction_date"):
         receipt.display_receipt_date = datetime.fromisoformat(str(normalized_payload["transaction_date"])).date()
     # Keep receipts synced after reconciliation updates; correction metadata and

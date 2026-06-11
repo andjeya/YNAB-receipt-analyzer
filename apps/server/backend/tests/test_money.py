@@ -60,20 +60,22 @@ class TestDollarsToMilliunits:
         # Function signature accepts float|int|str; "12.30" is valid
         assert dollars_to_milliunits("12.30") == -12300
 
-    def test_negative_input_outflow_true(self):
-        # CURRENT BEHAVIOR (pin): negative dollar amount with outflow=True
-        # str(-5.0) → Decimal("-5.0") → -5000 milliunits
-        # condition: milliunits (-5000) > 0 is False → returns -5000 unchanged
-        # NOTE: current behavior; refund/inflow semantics redesigned in M1
-        #       (see docs/agent_loop_state.md)
-        assert dollars_to_milliunits(-5.0, outflow=True) == -5000
+    def test_negative_input_raises(self):
+        # M1 spec: negative amounts are rejected — direction is carried by the outflow flag.
+        import pytest
+        with pytest.raises(ValueError, match="non-negative amount"):
+            dollars_to_milliunits(-5.0, outflow=True)
 
-    def test_negative_input_outflow_false(self):
-        # CURRENT BEHAVIOR (pin): negative dollar with outflow=False
-        # milliunits = -5000; outflow is False so the negate branch is skipped entirely;
-        # returns -5000 unchanged.
-        # NOTE: current behavior; refund/inflow semantics redesigned in M1
-        assert dollars_to_milliunits(-5.0, outflow=False) == -5000
+    def test_negative_input_outflow_false_raises(self):
+        # Negative input is always rejected regardless of outflow flag.
+        import pytest
+        with pytest.raises(ValueError, match="non-negative amount"):
+            dollars_to_milliunits(-5.0, outflow=False)
+
+    def test_negative_zero_boundary_accepted(self):
+        # -0.0004 quantizes to 0.000 (ROUND_HALF_UP) — accepted because dec >= 0 after quantize.
+        assert dollars_to_milliunits(-0.0004) == 0
+        assert dollars_to_milliunits(-0.0004, outflow=False) == 0
 
     def test_integer_input(self):
         assert dollars_to_milliunits(10) == -10000

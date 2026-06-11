@@ -186,6 +186,7 @@ Schema:
   "transaction_time": "HH:MM | null",
   "memo": "string",
   "total_amount": number,
+  "transaction_kind": "purchase | refund",
   "category_id": "string | null",
   "splits": [{{ "category_id": "string", "category_name": "string", "amount": number, "memo": "string" }}],
   "category_ambiguity_flags": [
@@ -220,6 +221,7 @@ Rules:
 8. If time is unclear or unavailable, set transaction_time to null.
 9. If any line item could map to multiple categories with confidence >= 0.70, include it in category_ambiguity_flags.
 10. category_ambiguity_flags should be [] when there are no qualifying ambiguous items.
+11. If the document is clearly a refund, return, or credit (negative running total, REFUND/RETURN/CREDIT headers, parenthesized/negative line totals throughout), set transaction_kind to "refund"; otherwise "purchase". Report all amounts (total and line totals) as POSITIVE magnitudes — do not negate them; the kind carries direction. If the receipt mixes purchases and refunds, treat it as "purchase" (mixed receipts are not yet supported).
 
 {reference_context}
 
@@ -269,6 +271,7 @@ Unified schema:
   "payee_name": "string",
   "account_id": "string",
   "memo": "string",
+  "transaction_kind": "purchase | refund",
   "category_id": "string | null",
   "splits": [{{ "category_id": "string", "category_name": "string", "amount": number, "memo": "string" }}],
   "category_ambiguity_flags": [
@@ -305,6 +308,7 @@ Rules:
    - Avoid vague-only output like "Groceries" without item detail.
    - Keep it concise (ideally <= 180 characters) while preserving useful detail.
 12. If category confidence is ambiguous (>= 0.70 across candidates), include category_ambiguity_flags.
+13. If the document is clearly a refund, return, or credit (negative running total, REFUND/RETURN/CREDIT headers, parenthesized/negative line totals throughout), set transaction_kind to "refund"; otherwise "purchase". Report all amounts (total and line totals) as POSITIVE magnitudes — do not negate them; the kind carries direction. If the receipt mixes purchases and refunds, treat it as "purchase" (mixed receipts are not yet supported).
 
 {reference_context}
 

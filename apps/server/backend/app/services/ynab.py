@@ -231,6 +231,16 @@ def _strip_receipt_id_marker(memo: str | None) -> str:
     return re.sub(r"\s*\[receipt_id:[^\]]*\]", "", memo_text).strip()
 
 
+REFUND_MEMO_PREFIX = "Return: "
+
+
+def _ensure_refund_memo_prefix(memo: str | None) -> str:
+    memo_text = str(memo or "").strip()
+    if memo_text.lower().startswith(("return:", "returning", "refund")):
+        return memo_text
+    return f"{REFUND_MEMO_PREFIX}{memo_text}".strip()
+
+
 def _ynab_has_user_data(
     transaction: dict[str, Any],
     desired_payload: dict[str, Any] | None = None,
@@ -296,10 +306,10 @@ def _full_transaction_payload_from_ynab_transaction(
     return payload
 
 
-def _build_subtransactions(validation_payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_subtransactions(validation_payload: dict[str, Any], *, outflow: bool = True) -> list[dict[str, Any]]:
     return [
         {
-            "amount": dollars_to_milliunits(split["amount"], outflow=True),
+            "amount": dollars_to_milliunits(split["amount"], outflow=outflow),
             "category_id": split["category_id"],
             "memo": split.get("memo", ""),
         }
@@ -512,6 +522,11 @@ def _build_sync_transaction_payload(
     has_splits = len(split_rows) > 0
     category_id = payload.get("category_id")
 
+    kind = payload.get("transaction_kind") or "purchase"
+    outflow = kind != "refund"
+
+    total_milliunits = dollars_to_milliunits(payload["total_amount"], outflow=outflow)
+
     if has_splits:
         split_total = sum((Decimal(str(split.get("amount", 0))) for split in split_rows), Decimal("0"))
         if abs(split_total - Decimal(str(payload["total_amount"]))) > Decimal("0.01"):
@@ -520,21 +535,46 @@ def _build_sync_transaction_payload(
             split_category_id = split.get("category_id")
             if split_category_id not in allowed_category_ids:
                 raise ValueError(f"Validation payload has invalid split category_id: {split_category_id}")
+
+        # Exact milliunit invariant: sum of split milliunits must equal total milliunits exactly.
+        # The dollar-level check above is the user-facing early warning; this is the
+        # authoritative gate.  Independent per-split rounding can produce a legitimate
+        # 1-milliunit drift — that is a bug upstream (the allocation workspace is
+        # responsible for producing exact-cent splits); do not silently adjust here.
+        split_milliunits = [dollars_to_milliunits(split["amount"], outflow=outflow) for split in split_rows]
+        split_milliunits_sum = sum(split_milliunits)
+        if split_milliunits_sum != total_milliunits:
+            raise ValueError(
+                f"Split milliunits sum {split_milliunits_sum} != total milliunits {total_milliunits}. "
+                "Splits must sum exactly to the transaction total in integer milliunits. "
+                "Adjust split amounts upstream (allocation workspace) to resolve the mismatch."
+            )
     else:
         if not category_id:
             raise ValueError("Validation payload must include category_id for single-category mode")
         if category_id not in allowed_category_ids:
             raise ValueError(f"Validation payload has invalid category_id: {category_id}")
 
+    base_memo = payload.get("memo", "")
+    if kind == "refund":
+        base_memo = _ensure_refund_memo_prefix(base_memo)
+
     transaction_payload: dict[str, Any] = {
         "account_id": account_id,
         "date": payload["transaction_date"],
-        "amount": dollars_to_milliunits(payload["total_amount"], outflow=True),
+        "amount": total_milliunits,
         "payee_name": payload["payee_name"],
-        "memo": _append_receipt_id_marker(payload.get("memo", ""), receipt.id),
+        "memo": _append_receipt_id_marker(base_memo, receipt.id),
     }
     if has_splits:
-        transaction_payload["subtransactions"] = _build_subtransactions(payload)
+        transaction_payload["subtransactions"] = [
+            {
+                "amount": split_milliunits[i],
+                "category_id": split_rows[i]["category_id"],
+                "memo": split_rows[i].get("memo", ""),
+            }
+            for i in range(len(split_rows))
+        ]
     else:
         transaction_payload["category_id"] = category_id
     return transaction_payload
@@ -625,6 +665,8 @@ def _sync_match_or_create(
     allow_update_match: bool,
     receipt_id: str,
     force_create: bool,
+    *,
+    receipt: Receipt,
 ) -> None:
     """Match an existing YNAB transaction or create a new one."""
     receipt_date = date.fromisoformat(transaction_payload["date"])
@@ -677,20 +719,37 @@ def _sync_match_or_create(
             updated_payload["memo"] = _strip_receipt_id_marker(matched.get("memo"))
             updated_payload["payee_name"] = matched.get("payee_name") or validation.payload.get("payee_name", "")
             if active_subtransactions:
-                updated_payload["category_id"] = None
-                updated_payload["splits"] = [
-                    {
-                        "category_id": sub.get("category_id", ""),
-                        "amount": abs(milliunits_to_dollars(int(sub.get("amount", 0)))),
-                        "memo": str(sub.get("memo") or ""),
-                    }
-                    for sub in active_subtransactions
-                ]
+                sub_amounts = [int(sub.get("amount", 0)) for sub in active_subtransactions]
+                has_positive = any(a > 0 for a in sub_amounts)
+                has_negative = any(a < 0 for a in sub_amounts)
+                if has_positive and has_negative:
+                    # Mixed inflow/outflow splits — flag for manual review, do NOT overwrite splits.
+                    receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+                    receipt.status_reason = "YNAB transaction has mixed inflow/outflow splits; manual review required."
+                    # Do not update the payload — leave as-is.
+                else:
+                    total_amount_mu = int(matched.get("amount", 0))
+                    ynab_kind = "refund" if total_amount_mu > 0 else "purchase"
+                    updated_payload["transaction_kind"] = ynab_kind
+                    updated_payload["category_id"] = None
+                    updated_payload["splits"] = [
+                        {
+                            "category_id": sub.get("category_id", ""),
+                            "amount": abs(milliunits_to_dollars(int(sub.get("amount", 0)))),
+                            "memo": str(sub.get("memo") or ""),
+                        }
+                        for sub in active_subtransactions
+                    ]
+                    validation.payload = updated_payload
+                    flag_modified(validation, "payload")
             elif ynab_category_id:
+                total_amount_mu = int(matched.get("amount", 0))
+                ynab_kind = "refund" if total_amount_mu > 0 else "purchase"
+                updated_payload["transaction_kind"] = ynab_kind
                 updated_payload["category_id"] = ynab_category_id
                 updated_payload["splits"] = []
-            validation.payload = updated_payload
-            flag_modified(validation, "payload")
+                validation.payload = updated_payload
+                flag_modified(validation, "payload")
         else:
             # No user data in YNAB — receipt is source of truth (existing behavior).
             update_payload_with_flags = dict(transaction_payload)
@@ -949,6 +1008,7 @@ def sync_receipt_to_ynab(
             _sync_match_or_create(
                 client, settings.ynab_budget_id, settings, sync_row,
                 transaction_payload, validation, allow_update_match, receipt.id, force_create,
+                receipt=receipt,
             )
 
         return _apply_post_sync(db, receipt, validation, sync_row, settings, idempotency_key, started_perf)

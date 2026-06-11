@@ -200,17 +200,37 @@ def reconcile_allocation_workspace(
     expected_lane_map = {lane.lane_id: lane for lane in expected_lanes}
     existing_lane_map = {lane.lane_id: lane for lane in workspace.lanes}
 
+    # FIX A: detect stale main-lane pin — the main lane's initial pin is the
+    # payload total_amount (a default, not a user choice).  When the payload
+    # total has since changed (e.g. twin correction) we must not preserve that
+    # old value; doing so would resurrect a stale total via recompute.
+    # Because AllocationLane has no is_user_pin flag we apply the safe rule:
+    # if the existing main-lane pin differs from the current payload
+    # total_amount, treat it as stale and clear it.
+    payload_total = _normalize_amount(_to_decimal(payload.get("total_amount", 0)))
+
     merged_lanes: list[AllocationLane] = []
     for lane in expected_lanes:
         existing_lane = existing_lane_map.get(lane.lane_id)
         if existing_lane is None:
             merged_lanes.append(lane)
             continue
+
+        preserved_pin = existing_lane.pinned_amount if lane.lane_id != UNASSIGNED_LANE_ID else None
+
+        # Clear stale main-lane pin: if the pin was set equal to the old total
+        # and the total has since changed, the pin is a defaulted value, not a
+        # genuine user override, so drop it to avoid corrupting total_amount.
+        if lane.lane_id == MAIN_LANE_ID and preserved_pin is not None:
+            pin_decimal = _normalize_amount(_to_decimal(preserved_pin))
+            if pin_decimal != payload_total:
+                preserved_pin = None
+
         merged_lanes.append(
             AllocationLane(
                 lane_id=lane.lane_id,
                 category_id=lane.category_id,
-                pinned_amount=existing_lane.pinned_amount if lane.lane_id != UNASSIGNED_LANE_ID else None,
+                pinned_amount=preserved_pin,
             )
         )
 
@@ -295,7 +315,15 @@ def recompute_payload_from_workspace(
         item = item_by_id.get(assignment.item_id)
         if item is None or item.amount is None:
             continue
-        lane_totals[assignment.lane_id] += abs(_to_decimal(item.amount))
+        # FIX C: discount line items have negative amounts; they must *subtract*
+        # from the lane's weight, not add to it.  Floor each weight at 0 so
+        # a discount-heavy lane can't produce a negative weight; the all-zero
+        # path in _largest_remainder_allocation already handles that case.
+        lane_totals[assignment.lane_id] += _to_decimal(item.amount)
+
+    # Floor each lane weight at 0 (a net-negative lane collapses to 0, which
+    # triggers the equal-split fallback in _largest_remainder_allocation).
+    lane_totals = {lid: max(v, Decimal("0")) for lid, v in lane_totals.items()}
 
     total_amount = _normalize_amount(_to_decimal(payload.get("total_amount", 0)))
     lane_values = [lane_totals.get(lane_id, Decimal("0")) for lane_id in lane_ids]
@@ -321,6 +349,16 @@ def recompute_payload_from_workspace(
         if remainder < Decimal("0"):
             warnings.append("Pinned split amounts exceed total amount; using pinned values as-is.")
             remainder = Decimal("0")
+        # FIX B: when every lane is pinned and pins don't reach the total,
+        # the unpinned list is empty so _largest_remainder_allocation returns []
+        # and the shortfall silently vanishes.  Emit an explicit warning so the
+        # UI can surface it; the shortfall is still unallocated (validation will
+        # block sync on sum mismatch — no silent corruption).
+        if len(unpinned_ids) == 0 and remainder > Decimal("0"):
+            warnings.append(
+                f"Pinned amounts sum to {pinned_sum} but total is {total_amount}; "
+                f"difference {remainder} is unallocated."
+            )
         distributed = _largest_remainder_allocation(remainder, unpinned_weights)
         for index, lane_id in enumerate(unpinned_ids):
             lane_amounts[lane_id] = distributed[index]
@@ -352,8 +390,11 @@ def recompute_payload_from_workspace(
         next_payload["category_id"] = None
         next_payload["splits"] = next_splits
     else:
-        main_amount = _normalize_amount(lane_amounts.get(MAIN_LANE_ID, total_amount))
-        next_payload["total_amount"] = float(main_amount)
+        # FIX A: total_amount is owned by the twin/validation, not the workspace.
+        # Never overwrite it here; the main lane's computed amount is derived
+        # from the payload total and is only used for display / split population.
+        # Removing the write prevents a stale pinned main-lane amount from
+        # resurrecting an old total after a twin correction.
         next_payload["splits"] = []
         main_lane = lane_by_id.get(MAIN_LANE_ID)
         if main_lane is not None:

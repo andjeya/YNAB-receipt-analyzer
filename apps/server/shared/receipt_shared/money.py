@@ -5,6 +5,11 @@ from decimal import Decimal, ROUND_HALF_UP
 
 def dollars_to_milliunits(amount: float | int | str, outflow: bool = True) -> int:
     dec = Decimal(str(amount)).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+    if dec < 0:
+        raise ValueError(
+            f"dollars_to_milliunits requires a non-negative amount; "
+            f"direction is carried by the outflow flag (got {amount!r})"
+        )
     milliunits = int((dec * 1000).to_integral_value(rounding=ROUND_HALF_UP))
     if outflow and milliunits > 0:
         return -milliunits

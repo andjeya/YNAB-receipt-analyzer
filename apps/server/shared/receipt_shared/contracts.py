@@ -4,6 +4,8 @@ from datetime import date, datetime, time
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+TRANSACTION_KINDS = ("purchase", "refund")
+
 
 class GeminiSplit(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -45,6 +47,7 @@ class GeminiReceiptExtraction(BaseModel):
     transaction_time: time | None = None
     memo: str = ""
     total_amount: float
+    transaction_kind: str = Field(default="purchase")
     category_id: str | None = None
     splits: list[GeminiSplit] = Field(default_factory=list)
     category_ambiguity_flags: list[GeminiCategoryAmbiguityFlag] = Field(default_factory=list)
@@ -55,6 +58,16 @@ class GeminiReceiptExtraction(BaseModel):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("transaction_kind", mode="before")
+    @classmethod
+    def normalize_transaction_kind(cls, value: str | None) -> str:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return "purchase"
+        normalized = str(value).strip().lower()
+        if normalized not in TRANSACTION_KINDS:
+            raise ValueError(f"transaction_kind must be one of {TRANSACTION_KINDS}")
+        return normalized
 
     @model_validator(mode="after")
     def ensure_single_or_split_mode(self) -> "GeminiReceiptExtraction":
@@ -90,6 +103,7 @@ class UnifiedReceiptExtraction(BaseModel):
     payee_name: str = ""
     account_id: str = Field(min_length=1)
     memo: str = ""
+    transaction_kind: str = Field(default="purchase")
     category_id: str | None = None
     splits: list[GeminiSplit] = Field(default_factory=list)
     category_ambiguity_flags: list[GeminiCategoryAmbiguityFlag] = Field(default_factory=list)
@@ -100,6 +114,16 @@ class UnifiedReceiptExtraction(BaseModel):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("transaction_kind", mode="before")
+    @classmethod
+    def normalize_transaction_kind(cls, value: str | None) -> str:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return "purchase"
+        normalized = str(value).strip().lower()
+        if normalized not in TRANSACTION_KINDS:
+            raise ValueError(f"transaction_kind must be one of {TRANSACTION_KINDS}")
+        return normalized
 
     @model_validator(mode="after")
     def ensure_single_or_split_mode(self) -> "UnifiedReceiptExtraction":
@@ -180,7 +204,7 @@ class ValidationSplit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     category_id: str = Field(min_length=1)
-    amount: float
+    amount: float = Field(ge=0)
     memo: str = ""
 
 
@@ -193,6 +217,7 @@ class ValidationPayload(BaseModel):
     transaction_time: time | None = None
     memo: str = ""
     total_amount: float
+    transaction_kind: str = Field(default="purchase")
     category_id: str | None = None
     splits: list[ValidationSplit] = Field(default_factory=list)
 
@@ -202,6 +227,16 @@ class ValidationPayload(BaseModel):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("transaction_kind", mode="before")
+    @classmethod
+    def normalize_transaction_kind(cls, value: str | None) -> str:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return "purchase"
+        normalized = str(value).strip().lower()
+        if normalized not in TRANSACTION_KINDS:
+            raise ValueError(f"transaction_kind must be one of {TRANSACTION_KINDS}")
+        return normalized
 
     @model_validator(mode="after")
     def ensure_single_or_split_mode(self) -> "ValidationPayload":

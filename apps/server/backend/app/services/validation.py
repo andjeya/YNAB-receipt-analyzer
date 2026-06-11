@@ -6,12 +6,30 @@ from typing import Any
 from pydantic import ValidationError
 
 from receipt_shared.contracts import ValidationPayload
+from receipt_shared.money import dollars_to_milliunits
 
 UNKNOWN_ACCOUNT_ID = "__unknown__"
 
 
 def _to_decimal(value: float | int | str) -> Decimal:
     return Decimal(str(value))
+
+
+def _format_pydantic_errors(exc: ValidationError) -> list[str]:
+    """Format pydantic ValidationError messages, substituting friendly text for known fields."""
+    messages: list[str] = []
+    for err in exc.errors():
+        loc = err.get("loc", ())
+        msg = err["msg"]
+        # Provide a friendlier message when a split amount fails the ge=0 constraint.
+        if (
+            len(loc) >= 2
+            and loc[-1] == "amount"
+            and err.get("type") == "greater_than_equal"
+        ):
+            msg = "Split amounts must be zero or greater (direction is set by transaction kind)"
+        messages.append(msg)
+    return messages
 
 
 def validate_payload(
@@ -24,18 +42,28 @@ def validate_payload(
     try:
         parsed = ValidationPayload.model_validate(payload)
     except ValidationError as exc:
-        return payload, False, [err["msg"] for err in exc.errors()]
+        return payload, False, _format_pydantic_errors(exc)
 
     errors: list[str] = []
     total = _to_decimal(parsed.total_amount)
 
     if total <= 0:
-        errors.append("Total amount must be greater than zero")
+        errors.append("Total amount must be greater than zero (use transaction_kind='refund' for returns)")
 
     if parsed.splits:
         split_total = sum((_to_decimal(split.amount) for split in parsed.splits), Decimal("0"))
         if abs(total - split_total) > Decimal("0.01"):
             errors.append("Split amounts must sum to total amount")
+        else:
+            # Exact milliunit check: sub-cent drift that passes the $0.01 gross check
+            # must still be rejected to keep the YNAB payload builder invariant.
+            total_mu = dollars_to_milliunits(parsed.total_amount, outflow=False)
+            split_mu = sum(dollars_to_milliunits(s.amount, outflow=False) for s in parsed.splits)
+            if split_mu != total_mu:
+                errors.append(
+                    f"Split amounts must sum to total amount in milliunits "
+                    f"(splits sum to {split_mu} milliunits, total is {total_mu} milliunits)"
+                )
         if allowed_category_ids is not None:
             if not allowed_category_ids:
                 errors.append("No YNAB categories are currently cached")
@@ -87,6 +115,7 @@ def build_initial_validation_payload(parsed_extraction: dict[str, Any], default_
         "transaction_time": parsed_extraction.get("transaction_time"),
         "memo": memo or "Imported from receipt via Gemini",
         "total_amount": parsed_extraction.get("total_amount") or 0,
+        "transaction_kind": parsed_extraction.get("transaction_kind") or "purchase",
         "category_id": category_id or "",
         "splits": parsed_splits if len(parsed_splits) >= 2 else [],
     }

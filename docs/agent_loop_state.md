@@ -88,11 +88,12 @@ Local webapp must also be loaded and **visually inspected** via Playwright
 - [x] Fix Gemini `thinking_level`/`ThinkingConfig` extraction bug — **DONE 2026-06-10** (google-genai 1.30.0→1.75.0; thinking-config feature-detection + broadened fallback in `apps/server/shared/receipt_shared/ai/providers/gemini.py`; live integration test passed, 112/112).
 - [x] Commit `.devcontainer/devcontainer-lock.json` — **DONE 2026-06-10** (commit `61bca39`, with yolo aliases + bubblewrap persistence).
 
-### M1 — Money invariants
-- [ ] Single conversion path everywhere → `dollars_to_milliunits` (remove `int(float*1000)` at `api/receipts.py:236`, `reconciliation.py:219`).
-- [ ] Exact milliunit-sum invariant before any POST (`sum(splits) == total`, no $0.01 tolerance).
-- [ ] `ValidationSplit.amount` bounds + **refund path** (replace `total <= 0` rejection with designed inflow support; memo "Returning …").
-- [ ] Allocation pin fixes: stale-total revert, all-pinned shortfall warning, discount-weight handling.
+### M1 — Money invariants ✅ COMPLETE 2026-06-11 (checker: FINDINGS → all resolved)
+- [x] Single conversion path — float-truncation sites replaced; AST-based guard test (catches nested-paren/round()/1000.0 variants).
+- [x] Exact milliunit-sum invariant — enforced in `_build_sync_transaction_payload` (raises) AND mirrored in `validate_payload` (UI gate now agrees with builder; no $0.01 blessing).
+- [x] Refund/inflow support — `transaction_kind` purchase|refund on ValidationPayload + extraction contracts; amounts positive internally, sign only at YNAB boundary; deterministic "Return: " memo prefix; adopt-from-YNAB maps sign→kind, mixed-sign flags NEEDS_REVIEW (no abs() corruption); money.py rejects negatives; `ValidationSplit.amount ge=0`; minimal frontend kind selector. Purchase byte-identity verified by checker.
+- [x] Allocation pin fixes — recompute can NEVER mutate total_amount; stale main-lane pins cleared; all-pinned shortfall warns; discounts subtract from weights (floor 0).
+- Checker finding deferred to M4: same-timestamp purchase/refund collides on duplicate signature → show as near-match note (kind-differing), not duplicate-candidate.
 
 ### M2 — Sync idempotency
 - [ ] Set YNAB `import_id` on every create.

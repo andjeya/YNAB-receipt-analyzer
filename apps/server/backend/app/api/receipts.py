@@ -54,6 +54,7 @@ from app.services.storage import storage_path
 from app.services.validation import validate_payload
 from app.services.ynab import get_cached_reference_data
 from receipt_shared.contracts import ReceiptTwinExtraction
+from receipt_shared.money import dollars_to_milliunits
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 logger = logging.getLogger(__name__)
@@ -234,7 +235,7 @@ def _update_receipt_display_fields_from_payload(receipt: Receipt, payload: dict[
     normalized_payee = str(payload.get("payee_name") or "").strip()
     receipt.display_payee_name = normalized_payee or None
     if payload.get("total_amount") is not None:
-        receipt.display_total_milliunits = int(float(payload["total_amount"]) * 1000)
+        receipt.display_total_milliunits = dollars_to_milliunits(payload["total_amount"], outflow=False)
     if payload.get("transaction_date"):
         receipt.display_receipt_date = datetime.fromisoformat(str(payload["transaction_date"])).date()
 

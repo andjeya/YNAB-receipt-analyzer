@@ -71,6 +71,7 @@ def _valid_payload(*, category_id: str = "cat-1") -> dict[str, object]:
         "transaction_time": "10:30",
         "memo": "Imported",
         "total_amount": 12.5,
+        "transaction_kind": "purchase",
         "category_id": category_id,
         "splits": [],
     }

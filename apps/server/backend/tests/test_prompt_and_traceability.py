@@ -8,6 +8,11 @@ from receipt_shared.contracts import GeminiReceiptExtraction
 from receipt_shared.gemini import build_analysis_prompt, build_unified_prompt
 
 
+SAMPLE_CATEGORIES = [SimpleNamespace(id="cat-1", group_name="Essentials", name="Groceries")]
+SAMPLE_ACCOUNTS = [{"id": "acct-1", "name": "Checking"}]
+SAMPLE_PAYEES = ["Trader Joe's"]
+
+
 class TestGeminiPromptAndContracts:
     def test_prompt_uses_nullable_date_and_never_today_fallback(self):
         prompt = build_analysis_prompt(
@@ -90,6 +95,79 @@ class TestValidationPayloadDefaults:
         assert payload["transaction_date"] is None
         assert payload["transaction_time"] is None
         assert payload["memo"] == "Imported from receipt via Gemini"
+
+
+class TestTransactionKindPromptRule:
+    """Verify the transaction_kind rule appears in both prompts."""
+
+    def test_analysis_prompt_includes_transaction_kind_field(self):
+        prompt = build_analysis_prompt(
+            "Map categories.",
+            SAMPLE_CATEGORIES,
+            SAMPLE_ACCOUNTS,
+            SAMPLE_PAYEES,
+        )
+        assert '"transaction_kind": "purchase | refund"' in prompt
+
+    def test_analysis_prompt_includes_refund_rule(self):
+        prompt = build_analysis_prompt(
+            "Map categories.",
+            SAMPLE_CATEGORIES,
+            SAMPLE_ACCOUNTS,
+            SAMPLE_PAYEES,
+        )
+        assert "REFUND/RETURN/CREDIT" in prompt
+        assert "POSITIVE magnitudes" in prompt
+        assert "mixed receipts are not yet supported" in prompt
+
+    def test_unified_prompt_includes_transaction_kind_field(self):
+        prompt = build_unified_prompt(
+            "Map categories.",
+            SAMPLE_CATEGORIES,
+            SAMPLE_ACCOUNTS,
+            SAMPLE_PAYEES,
+        )
+        assert '"transaction_kind": "purchase | refund"' in prompt
+
+    def test_unified_prompt_includes_refund_rule(self):
+        prompt = build_unified_prompt(
+            "Map categories.",
+            SAMPLE_CATEGORIES,
+            SAMPLE_ACCOUNTS,
+            SAMPLE_PAYEES,
+        )
+        assert "REFUND/RETURN/CREDIT" in prompt
+        assert "POSITIVE magnitudes" in prompt
+        assert "mixed receipts are not yet supported" in prompt
+
+    def test_gemini_extraction_contract_accepts_transaction_kind_refund(self):
+        parsed = GeminiReceiptExtraction.model_validate(
+            {
+                "payee_name": "Store",
+                "account_id": "acct-1",
+                "transaction_date": "2026-01-01",
+                "transaction_time": None,
+                "memo": "Return jacket",
+                "total_amount": 45.00,
+                "transaction_kind": "refund",
+                "category_id": "cat-1",
+                "splits": [],
+                "category_ambiguity_flags": [],
+            }
+        )
+        assert parsed.transaction_kind == "refund"
+
+    def test_gemini_extraction_contract_defaults_to_purchase(self):
+        parsed = GeminiReceiptExtraction.model_validate(
+            {
+                "payee_name": "Store",
+                "account_id": "acct-1",
+                "total_amount": 45.00,
+                "category_id": "cat-1",
+                "splits": [],
+            }
+        )
+        assert parsed.transaction_kind == "purchase"
 
 
 class TestReceiptMemoMarker:

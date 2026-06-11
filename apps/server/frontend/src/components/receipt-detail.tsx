@@ -165,6 +165,7 @@ function toDraftFromPayload(payload: Record<string, unknown>, fallbackPayee: str
     transaction_time: transactionTime,
     memo: String(payload.memo ?? ""),
     total_amount: Number(payload.total_amount ?? 0),
+    transaction_kind: payload.transaction_kind === "refund" ? "refund" : "purchase",
     category_id: categoryId,
     splits,
   };
@@ -220,6 +221,7 @@ function toBlankDraft(): ValidationPayloadInput {
     transaction_time: "",
     memo: "",
     total_amount: 0,
+    transaction_kind: "purchase",
     category_id: "",
     splits: [],
   };
@@ -487,6 +489,19 @@ function MemoCard({ draft, setDraft, setDirty }: {
             setDirty(true);
           }}
         />
+      </div>
+      <div>
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Transaction type</label>
+        <Select
+          value={draft.transaction_kind}
+          onChange={(event) => {
+            setDraft({ ...draft, transaction_kind: event.target.value as "purchase" | "refund" });
+            setDirty(true);
+          }}
+        >
+          <option value="purchase">Purchase (outflow)</option>
+          <option value="refund">Refund / return (inflow)</option>
+        </Select>
       </div>
     </Card>
   );

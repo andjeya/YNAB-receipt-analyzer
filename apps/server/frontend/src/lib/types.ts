@@ -185,6 +185,7 @@ export interface ValidationPayloadInput {
   transaction_time?: string | null;
   memo: string;
   total_amount: number;
+  transaction_kind: "purchase" | "refund";
   category_id: string;
   splits: ValidationSplitInput[];
 }
