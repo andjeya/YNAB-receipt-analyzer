@@ -35,13 +35,16 @@ import {
 import { GameDisplayState, GameForestTile, GameIncident, ReceiptStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { formatSignedDollars, signedDollars } from "@/lib/money";
+import { deriveSnappyPose, isStreakMilestone } from "@/lib/snappy-pose";
 import { useToast } from "@/components/ui/toast";
 import { extractReceiptIdFromText } from "@/lib/receipt-id";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Dialog } from "@/components/ui/dialog";
 import { StatusBadge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { ReceiptStateIcon } from "@/components/receipt-state-icon";
+import { Snappy } from "@/components/snappy/snappy";
 
 const FILTERS: Array<{ label: string; value: "" | ReceiptStatus }> = [
   { label: "All", value: "" },
@@ -58,10 +61,6 @@ function formatWaitTime(value: number | null | undefined): string {
   if (value < 1) return `${Math.max(Math.round(value * 60), 1)}m`;
   if (value < 24) return `${Math.round(value)}h`;
   return `${(value / 24).toFixed(1)}d`;
-}
-
-function tokenHint(nextTokenIn: number): string {
-  return `${nextTokenIn} more green receipt${nextTokenIn === 1 ? "" : "s"} for next shred token`;
 }
 
 function deriveIconState(
@@ -144,7 +143,7 @@ function ActionMenu({
     <div ref={menuRef} className="absolute right-4 top-3 z-30">
       <button
         type="button"
-        className="rounded-full border border-ink/20 bg-white/90 p-2 text-ink shadow-float transition hover:bg-white"
+        className="rounded-full border border-ink/20 bg-white/90 p-2 text-ink shadow-float transition hover:bg-white focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
         onClick={() => setMenuOpen((current) => !current)}
         aria-label="Open actions menu"
       >
@@ -152,7 +151,7 @@ function ActionMenu({
       </button>
       {menuOpen ? (
         <Card className="absolute right-0 mt-2 w-[22rem] rounded-2xl p-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Actions</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Actions</p>
           <div className="mt-2 grid gap-2 sm:grid-cols-2">
             <Button variant="outline" size="sm" className="justify-start gap-1" onClick={onScan} disabled={isScanPending}>
               <ScanSearch className="h-3.5 w-3.5" />
@@ -181,7 +180,7 @@ function ActionMenu({
             ) : null}
           </div>
           <div className="mt-3 border-t border-ink/10 pt-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Open by ID</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Open by ID</p>
             <div className="mt-2 flex gap-2">
               <Input
                 value={receiptLookupInput}
@@ -203,28 +202,35 @@ function ActionMenu({
 }
 
 function ReceiptListHeader({
-  dashboardData, highlightedCount, maxWaterSpend, fireUnits, fireToBurn, isSpendWaterPending, onOpenWaterSpend,
+  dashboardData, highlightedCount, totalCount, maxWaterSpend, fireUnits, fireToBurn, isSpendWaterPending, onOpenWaterSpend,
+  celebratingStreak,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   dashboardData: any;
   highlightedCount: number;
+  totalCount: number;
   maxWaterSpend: number;
   fireUnits: number;
   fireToBurn: number;
   isSpendWaterPending: boolean;
   onOpenWaterSpend: () => void;
+  celebratingStreak: boolean;
 }) {
+  const derived = deriveSnappyPose({ needsReviewCount: highlightedCount, totalCount });
+  const pose = celebratingStreak ? "celebrating" : derived.pose;
+
   return (
     <Card className="animate-reveal space-y-3 bg-ink p-4 text-sand">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-mint">Receipt -&gt; YNAB</p>
-          <h1 className="mt-1 font-[var(--font-heading)] text-3xl font-bold">Snappy</h1>
-          <p className="mt-1 text-sm text-sand/80">
-            {dashboardData
-              ? tokenHint(dashboardData.momentum.next_token_in)
-              : `${highlightedCount} receipt${highlightedCount === 1 ? "" : "s"} waiting for review`}
-          </p>
+        <div className="flex items-center gap-3">
+          <Snappy pose={pose} size="h-16 w-16" />
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-mint">Receipt -&gt; YNAB</p>
+            <h1 className="mt-1 font-[var(--font-heading)] text-3xl font-bold">Snappy</h1>
+            <p className="mt-1 text-sm text-sand/80">
+              {derived.line}
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-1 rounded-2xl bg-white/10 px-3 py-2 text-xs">
           <Scissors className="h-3.5 w-3.5 text-amber-300" />
@@ -235,37 +241,38 @@ function ReceiptListHeader({
 
       <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
         <div className="rounded-xl bg-white/10 px-3 py-2">
-          <p className="text-sand/70">Streak</p>
+          <p className="text-sand/80">Streak</p>
           <p className="mt-1 text-base font-semibold">{dashboardData?.momentum.current_streak ?? 0}</p>
         </div>
         <div className="rounded-xl bg-white/10 px-3 py-2">
-          <p className="text-sand/70">Validation wait</p>
+          <p className="text-sand/80">Validation wait</p>
           <p className="mt-1 text-base font-semibold">{formatWaitTime(dashboardData?.summary.avg_validation_age_hours)}</p>
         </div>
         <button
           type="button"
           className={cn(
-            "rounded-xl bg-white/10 px-3 py-2 text-left transition",
+            "rounded-xl bg-white/10 px-3 py-2 text-left transition focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2",
             maxWaterSpend > 0 ? "hover:bg-white/20" : "cursor-not-allowed opacity-80",
             isSpendWaterPending ? "animate-water-pulse" : undefined,
           )}
           onClick={onOpenWaterSpend}
           disabled={maxWaterSpend <= 0 || isSpendWaterPending}
           title={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
+          aria-label={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
         >
-          <p className="text-sand/70">Water</p>
+          <p className="text-sand/80">Water</p>
           <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
             <Waves className="h-3.5 w-3.5 text-sky-300" />
             {dashboardData ? `${dashboardData.correctness.water_units}/${dashboardData.correctness.water_capacity}` : "0/0"}
           </p>
         </button>
         <div className="rounded-xl bg-white/10 px-3 py-2">
-          <p className="text-sand/70">Fire</p>
+          <p className="text-sand/80">Fire</p>
           <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
             <Flame className="h-3.5 w-3.5 text-rose-300" />
             {fireUnits}
           </p>
-          <p className="mt-1 text-[11px] text-sand/70">
+          <p className="mt-1 text-[11px] text-sand/80">
             {fireToBurn > 0 ? `${fireToBurn} to burn` : "Burn threshold reached"}
           </p>
         </div>
@@ -277,23 +284,28 @@ function ReceiptListHeader({
           <p>Weekly score = lowest non-shredded receipt</p>
         </div>
         <div className="grid grid-cols-9 gap-1.5 rounded-2xl bg-black/20 p-2">
-          {(dashboardData?.forest.weekly_slots ?? []).map((slot: { index: number; start_at: string; end_at: string; receipt_count: number; display_state: GameDisplayState | null }) => (
-            <div
-              key={`week-slot-${slot.index}`}
-              className="flex h-11 flex-col items-center justify-center rounded-lg bg-white/5"
-              title={`${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} | scored receipts: ${slot.receipt_count}`}
-            >
-              {slot.display_state ? (
-                <ReceiptStateIcon
-                  tone={slot.display_state === "shredded" ? "brown" : slot.display_state}
-                  shredded={slot.display_state === "shredded"}
-                  className="h-[18px] w-[18px]"
-                />
-              ) : (
-                <span className="h-[18px] w-[18px] rounded-full border border-sand/25" />
-              )}
-            </div>
-          ))}
+          {(dashboardData?.forest.weekly_slots ?? []).map((slot: { index: number; start_at: string; end_at: string; receipt_count: number; display_state: GameDisplayState | null }) => {
+            const slotLabel = `${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} | scored receipts: ${slot.receipt_count}`;
+            return (
+              <div
+                key={`week-slot-${slot.index}`}
+                className="flex h-11 flex-col items-center justify-center rounded-lg bg-white/5"
+                title={slotLabel}
+                role="img"
+                aria-label={slotLabel}
+              >
+                {slot.display_state ? (
+                  <ReceiptStateIcon
+                    tone={slot.display_state === "shredded" ? "brown" : slot.display_state}
+                    shredded={slot.display_state === "shredded"}
+                    className="h-[18px] w-[18px]"
+                  />
+                ) : (
+                  <span className="h-[18px] w-[18px] rounded-full border border-sand/25" aria-label="No scored receipts this week" />
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </Card>
@@ -316,7 +328,7 @@ function FilterBar({ statusFilter, setStatusFilter, statusCounts, sortOrder, set
             type="button"
             onClick={() => setStatusFilter(filter.value)}
             className={cn(
-              "rounded-full px-3 py-1 text-xs font-semibold transition",
+              "rounded-full px-3 py-1 text-xs font-semibold transition focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2",
               statusFilter === filter.value ? "bg-ink text-white" : "bg-ink/10 text-ink",
             )}
           >
@@ -327,7 +339,7 @@ function FilterBar({ statusFilter, setStatusFilter, statusCounts, sortOrder, set
         <button
           type="button"
           onClick={() => setSortOrder(sortOrder === "newest" ? "oldest" : "newest")}
-          className="ml-auto rounded-full bg-ink/10 px-3 py-1 text-xs font-semibold text-ink transition hover:bg-ink/15"
+          className="ml-auto rounded-full bg-ink/10 px-3 py-1 text-xs font-semibold text-ink transition hover:bg-ink/15 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
         >
           Sort: {sortOrder}
         </button>
@@ -360,6 +372,12 @@ function ReceiptListItem({
     spendableNow &&
     Boolean(tile && currentWeekSlot && isWithinSlot(tile.validated_at, currentWeekSlot.start_at, currentWeekSlot.end_at));
 
+  // Timeliness: sprout animation on first mount for green tiles (fallback approach —
+  // edge-detection is unreliable vs 10s polling, so we animate once on mount).
+  // The animation class collapses to static under prefers-reduced-motion.
+  const isGreen = tile?.display_state === "green";
+  const sproutClass = isGreen ? "animate-snappy-sprout" : undefined;
+
   return (
     <Card
       className={cn(
@@ -375,15 +393,16 @@ function ReceiptListItem({
       <div className="flex items-start gap-3">
         <div className="mt-1 flex shrink-0 items-center gap-1.5">
           {correctionVisible ? (
-            <span title="YNAB correction tracked">
+            <span title="YNAB correction tracked" aria-label="YNAB correction tracked">
               <Flame
                 className="h-4 w-4 animate-fire-fade"
                 style={{ color: correctionColor, opacity: Math.max(correctionOpacity, 0.12) }}
+                aria-hidden="true"
               />
             </span>
           ) : null}
           <div className="flex w-7 justify-center">
-            {tone ? <ReceiptStateIcon tone={tone} shredded={shredded} className="h-5 w-5" /> : null}
+            {tone ? <ReceiptStateIcon tone={tone} shredded={shredded} className={cn("h-5 w-5", sproutClass)} /> : null}
           </div>
         </div>
 
@@ -398,7 +417,7 @@ function ReceiptListItem({
               </p>
             </Link>
             <div className="text-right text-xs">
-              <p className="uppercase tracking-wide text-ink/55">Validation wait</p>
+              <p className="uppercase tracking-wide text-ink/70">Validation wait</p>
               <p className="mt-1 font-semibold">{formatWaitTime(tile?.age_hours_at_validation)}</p>
             </div>
           </div>
@@ -449,7 +468,8 @@ function ReceiptListItem({
   );
 }
 
-function WaterSpendModal({ waterSpendAmount, setWaterSpendAmount, maxWaterSpend, onSpend, isSpendPending, onClose }: {
+function WaterSpendModal({ open, waterSpendAmount, setWaterSpendAmount, maxWaterSpend, onSpend, isSpendPending, onClose }: {
+  open: boolean;
   waterSpendAmount: number;
   setWaterSpendAmount: (v: number) => void;
   maxWaterSpend: number;
@@ -458,13 +478,14 @@ function WaterSpendModal({ waterSpendAmount, setWaterSpendAmount, maxWaterSpend,
   onClose: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/45 px-4">
-      <Card className="w-full max-w-sm space-y-3 animate-incident-enter">
-        <h2 className="text-base font-semibold">Spend Water</h2>
+    <Dialog open={open} onClose={onClose} labelledById="water-spend-heading">
+      <Card className="w-full max-w-sm space-y-3 animate-incident-enter border-0 shadow-none">
+        <h2 id="water-spend-heading" className="text-base font-semibold">Spend Water</h2>
         <p className="text-sm text-ink/70">Choose how much water to spend to extinguish fire.</p>
         <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/60">Amount</label>
+          <label htmlFor="water-spend-amount" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Amount</label>
           <Input
+            id="water-spend-amount"
             type="number"
             min={1}
             max={Math.max(maxWaterSpend, 1)}
@@ -483,11 +504,12 @@ function WaterSpendModal({ waterSpendAmount, setWaterSpendAmount, maxWaterSpend,
           </Button>
         </div>
       </Card>
-    </div>
+    </Dialog>
   );
 }
 
-function DebugPanel({ debugForm, setDebugForm, debugResetFloors, setDebugResetFloors, isSeedLoading, isSeedError, isSaving, onSave, onClose }: {
+function DebugPanel({ open, debugForm, setDebugForm, debugResetFloors, setDebugResetFloors, isSeedLoading, isSeedError, isSaving, onSave, onClose }: {
+  open: boolean;
   debugForm: DebugSeedForm;
   setDebugForm: (v: DebugSeedForm) => void;
   debugResetFloors: boolean;
@@ -510,10 +532,10 @@ function DebugPanel({ debugForm, setDebugForm, debugResetFloors, setDebugResetFl
   );
 
   return (
-    <div className="fixed inset-0 z-[66] flex items-center justify-center bg-black/55 px-4">
-      <Card className="w-full max-w-lg space-y-3 animate-incident-enter">
+    <Dialog open={open} onClose={onClose} labelledById="debug-seed-heading" data-testid="debug-panel">
+      <Card className="w-full max-w-lg space-y-3 animate-incident-enter border-0 shadow-none">
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold">Debug Seed Panel</h2>
+          <h2 id="debug-seed-heading" className="text-base font-semibold">Debug Seed Panel</h2>
           <span className="text-xs text-ink/60">Enabled via terminal toggle</span>
         </div>
         {isSeedLoading ? <p className="text-sm text-ink/70">Loading seed...</p> : null}
@@ -568,7 +590,7 @@ function DebugPanel({ debugForm, setDebugForm, debugResetFloors, setDebugResetFl
           </Button>
         </div>
       </Card>
-    </div>
+    </Dialog>
   );
 }
 
@@ -580,13 +602,11 @@ function GameIncidentModal({ incident, incidentWatersSpent, incidentBurnsTrigger
   onAcknowledge: (id: number) => void;
   isAcknowledging: boolean;
 }) {
+  // onClose is intentionally a no-op: Escape and backdrop clicks are disabled so
+  // the incident MUST be acknowledged via the Acknowledge button. This is by design —
+  // incidents require explicit user acknowledgement before the user can continue.
   return (
-    <div
-      className={cn(
-        "fixed inset-0 z-[70] flex items-center justify-center px-4",
-        incident.severity === "critical" ? "bg-red-950/70 animate-burn-flash" : "bg-black/45",
-      )}
-    >
+    <Dialog open onClose={() => {}} labelledById="game-incident-heading" describedById="game-incident-desc">
       <Card className={cn("relative w-full max-w-lg overflow-hidden border-2 animate-incident-enter", severityClass(incident))}>
         {incidentWatersSpent > 0 || incidentWaterEarned > 0 ? (
           <div className="pointer-events-none absolute inset-0">
@@ -606,17 +626,17 @@ function GameIncidentModal({ incident, incidentWatersSpent, incidentBurnsTrigger
         <div className="relative space-y-3">
           <div className="flex items-start gap-2">
             {incident.severity === "critical" ? (
-              <AlertTriangle className="mt-0.5 h-5 w-5 text-red-700 animate-fire-fade" />
+              <AlertTriangle className="mt-0.5 h-5 w-5 text-red-700 animate-fire-fade" aria-hidden="true" />
             ) : (
-              <Flame className="mt-0.5 h-5 w-5 text-amber-700 animate-fire-fade" />
+              <Flame className="mt-0.5 h-5 w-5 text-amber-700 animate-fire-fade" aria-hidden="true" />
             )}
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Game Event</p>
-              <h2 className="text-lg font-bold text-ink">{incident.title}</h2>
+              <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Game Event</p>
+              <h2 id="game-incident-heading" className="text-lg font-bold text-ink">{incident.title}</h2>
             </div>
           </div>
 
-          <p className="text-sm text-ink/80">{incident.message}</p>
+          <p id="game-incident-desc" className="text-sm text-ink/80">{incident.message}</p>
 
           {incidentBurnsTriggered > 0 ? (
             <p className="rounded-xl bg-red-100 px-3 py-2 text-xs font-semibold text-red-800">
@@ -655,7 +675,7 @@ function GameIncidentModal({ incident, incidentWatersSpent, incidentBurnsTrigger
           </div>
         </div>
       </Card>
-    </div>
+    </Dialog>
   );
 }
 
@@ -670,6 +690,9 @@ export function ReceiptList() {
   const [waterSpendAmount, setWaterSpendAmount] = useState(1);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
   const [debugResetFloors, setDebugResetFloors] = useState(true);
+  // Streak milestone celebration (consistency incentive)
+  const prevStreakRef = useRef<number | null>(null);
+  const [celebratingStreak, setCelebratingStreak] = useState(false);
   const [debugForm, setDebugForm] = useState<DebugSeedForm>({
     enabled: false,
     water_units: 0,
@@ -897,6 +920,27 @@ export function ReceiptList() {
     ).length ?? 0;
   }, [receiptsQuery.data]);
 
+  const totalCount = receiptsQuery.data?.length ?? 0;
+
+  // Streak milestone: fire once when streak crosses a milestone threshold (every 5)
+  const STREAK_MILESTONE_THRESHOLD = 5;
+  useEffect(() => {
+    const currentStreak = dashboardQuery.data?.momentum.current_streak ?? 0;
+    const prevStreak = prevStreakRef.current;
+    if (prevStreak !== null && prevStreak !== currentStreak) {
+      if (isStreakMilestone(currentStreak, STREAK_MILESTONE_THRESHOLD)) {
+        setCelebratingStreak(true);
+        toast({
+          variant: "success",
+          title: "Streak milestone!",
+          message: `${currentStreak} in a row — shred pass earned.`,
+        });
+        setTimeout(() => setCelebratingStreak(false), 1600);
+      }
+    }
+    prevStreakRef.current = currentStreak;
+  }, [dashboardQuery.data?.momentum.current_streak, toast]);
+
   const tileByReceiptId = useMemo(() => {
     const map = new Map<string, GameForestTile>();
     for (const tile of dashboardQuery.data?.forest.receipts ?? []) {
@@ -935,6 +979,7 @@ export function ReceiptList() {
       <ReceiptListHeader
         dashboardData={dashboardQuery.data}
         highlightedCount={highlightedCount}
+        totalCount={totalCount}
         maxWaterSpend={maxWaterSpend}
         fireUnits={fireUnits}
         fireToBurn={fireToBurn}
@@ -944,6 +989,7 @@ export function ReceiptList() {
           setWaterSpendAmount(Math.min(1, maxWaterSpend) || 1);
           setWaterSpendOpen(true);
         }}
+        celebratingStreak={celebratingStreak}
       />
 
       <FilterBar
@@ -957,8 +1003,10 @@ export function ReceiptList() {
       <section className="space-y-3">
         {receiptsQuery.isLoading ? <p className="text-sm text-ink/70">Loading transactions...</p> : null}
         {receiptsQuery.data?.length === 0 ? (
-          <Card>
-            <p className="text-sm text-ink/70">No receipts found yet. Drop files into your ingest folder.</p>
+          <Card className="flex flex-col items-center gap-3 py-8 text-center">
+            <Snappy pose="asleep" size="h-20 w-20" />
+            <p className="text-base font-semibold text-ink/80">All caught up!</p>
+            <p className="text-sm text-ink/60">No receipts found yet. Drop files into your ingest folder.</p>
           </Card>
         ) : null}
         {receiptsQuery.data?.map((receipt, index) => (
@@ -975,31 +1023,32 @@ export function ReceiptList() {
         ))}
       </section>
 
-      {waterSpendOpen ? (
-        <WaterSpendModal
-          waterSpendAmount={waterSpendAmount}
-          setWaterSpendAmount={setWaterSpendAmount}
-          maxWaterSpend={maxWaterSpend}
-          onSpend={(units) => spendWaterMutation.mutate(units)}
-          isSpendPending={spendWaterMutation.isPending}
-          onClose={() => setWaterSpendOpen(false)}
-        />
-      ) : null}
+      {/* WaterSpendModal — rendered unconditionally; Dialog handles mount + restore-focus */}
+      <WaterSpendModal
+        open={waterSpendOpen}
+        waterSpendAmount={waterSpendAmount}
+        setWaterSpendAmount={setWaterSpendAmount}
+        maxWaterSpend={maxWaterSpend}
+        onSpend={(units) => spendWaterMutation.mutate(units)}
+        isSpendPending={spendWaterMutation.isPending}
+        onClose={() => setWaterSpendOpen(false)}
+      />
 
-      {debugToolsEnabled && debugPanelOpen ? (
-        <DebugPanel
-          debugForm={debugForm}
-          setDebugForm={setDebugForm}
-          debugResetFloors={debugResetFloors}
-          setDebugResetFloors={setDebugResetFloors}
-          isSeedLoading={debugSeedQuery.isLoading}
-          isSeedError={debugSeedQuery.isError}
-          isSaving={saveDebugSeedMutation.isPending}
-          onSave={() => saveDebugSeedMutation.mutate()}
-          onClose={() => setDebugPanelOpen(false)}
-        />
-      ) : null}
+      {/* DebugPanel — rendered unconditionally; Dialog handles mount + restore-focus */}
+      <DebugPanel
+        open={debugToolsEnabled && debugPanelOpen}
+        debugForm={debugForm}
+        setDebugForm={setDebugForm}
+        debugResetFloors={debugResetFloors}
+        setDebugResetFloors={setDebugResetFloors}
+        isSeedLoading={debugSeedQuery.isLoading}
+        isSeedError={debugSeedQuery.isError}
+        isSaving={saveDebugSeedMutation.isPending}
+        onSave={() => saveDebugSeedMutation.mutate()}
+        onClose={() => setDebugPanelOpen(false)}
+      />
 
+      {/* GameIncidentModal — conditionally mount; blocking: onClose is a no-op */}
       {activeIncident ? (
         <GameIncidentModal
           incident={activeIncident}

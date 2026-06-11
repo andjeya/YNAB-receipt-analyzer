@@ -134,7 +134,14 @@ Trader Joe's receipt (`2026-06-10 19.43.06.pdf`, ground truth $25.62 / 2026-06-0
 ### Live E2E baseline (2026-06-10, passed)
 Full pipeline validated against the real test budget: receipt `2026_02_23_13_09_21.pdf` → ingest (GUI scan button) → Gemini extraction (all 6 line items + total exact vs human-read ground truth) → GUI sync click → YNAB transaction `16b484ec` (−119190 milliunits, Groceries, Anna Venture X, approved=false, blue flag, memo marker). Confirms: money path exact ×1000 with correct sign; `import_id` absent (M2 gap live-confirmed). Two fresh June scans (`receipt_examples/2026-06-10 19.43.*.pdf`) are reserved as the next live-validation inputs.
 
-### M6 — Delight pass
+### M6 — Delight pass ✅ COMPLETE 2026-06-11 (checker: FINDINGS, all MINOR → resolved)
+- [x] Snappy mascot — 5-pose inline SVG (idle/happy/concerned/celebrating/asleep), cute receipt character w/ catchlit eyes + cheeks + feet (Fable-reviewed + refined); `deriveSnappyPose` pure logic; header + empty-state placement.
+- [x] Celebrations tied 1:1 to incentives, firing on VERIFIED state edges (ref-guarded against 6s-poll re-fire — checker confirmed no spurious fire on opening an already-synced receipt): accuracy = sync→synced edge (Snappy celebrate + "Clean sync" toast); timeliness = green-tile sprout; consistency = streak-milestone pose swap. Empty queue = asleep Snappy "All caught up!". No celebration on the bank-register confirm dialog.
+- [x] Deleted orphan gamification-dashboard.tsx + dead GameChallenge types (kept GameWindow; backend `challenges` JSON harmlessly ignored).
+- [x] Migrated WaterSpendModal/DebugPanel/GameIncidentModal to the accessible Dialog primitive (incident stays blocking via no-op onClose; Acknowledge reachable in focus trap).
+- [x] A11y sweep: focus-visible on all buttons, contrast bumps, tooltip→aria-label, label htmlFor/id, combobox ARIA (useId-unique listbox ids, aria-controls gated on open). Arrow-key combobox nav noted as follow-up.
+
+### M6 — Delight pass (original checklist)
 - [ ] Completion celebrations, batch review flow.
 - [ ] `gamification-dashboard.tsx` decision (wire or delete).
 - [ ] a11y: dialog semantics, focus traps, contrast.

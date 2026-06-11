@@ -294,7 +294,6 @@ export interface StatsSummary {
 
 export type GameWindow = "week" | "month";
 export type GameDisplayState = "green" | "yellow" | "brown" | "shredded";
-export type GameChallengeStatus = "completed" | "in_progress";
 
 export interface GameRules {
   green_hours_threshold: number;
@@ -360,17 +359,6 @@ export interface GameSummary {
   avg_validation_age_hours: number | null;
 }
 
-export interface GameChallenge {
-  key: string;
-  title: string;
-  description: string;
-  status: GameChallengeStatus;
-  target: number;
-  current: number;
-  unit: string;
-  progress: number;
-}
-
 export interface GameCorrectness {
   water_units: number;
   water_capacity: number;
@@ -395,7 +383,6 @@ export interface GameDashboard {
   forest: GameForest;
   correctness: GameCorrectness;
   summary: GameSummary;
-  challenges: GameChallenge[];
 }
 
 export interface GameShredResponse {

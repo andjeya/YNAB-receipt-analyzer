@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Droplets, Flame, Plus, Trash2 } from "lucide-react";
 
@@ -39,6 +39,7 @@ import { StatusBadge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { ReceiptTwinViewer } from "@/components/receipt-twin-viewer";
 import { AllocationBoard } from "@/components/allocation-board";
+import { SnappyCelebration } from "@/components/snappy/celebration";
 
 const UNKNOWN_ACCOUNT_ID = "__unknown__";
 const PAYEE_SUGGESTION_LIMIT = 12;
@@ -89,11 +90,18 @@ function CategorySearchSelect({
 
   const inputValue = open ? searchTerm : selectedCategory ? formatCategoryLabel(selectedCategory) : "";
 
+  // useId guarantees a unique listbox id per instance (split rows reuse the same placeholder).
+  const listboxId = `category-listbox-${useId()}`;
+
   return (
     <div className="relative">
       <Input
         value={inputValue}
         placeholder={placeholder}
+        role="combobox"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        aria-autocomplete="list"
         onFocus={() => {
           setOpen(true);
           setSearchTerm("");
@@ -113,13 +121,15 @@ function CategorySearchSelect({
         }}
       />
       {open ? (
-        <div className="absolute z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
+        <div id={listboxId} role="listbox" className="absolute z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
           {filteredCategories.length ? (
             filteredCategories.map((category) => (
               <button
                 key={category.entity_id}
                 type="button"
-                className="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-sand/70"
+                role="option"
+                aria-selected={category.entity_id === value}
+                className="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-sand/70 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
                   onChange(category.entity_id);
@@ -436,14 +446,14 @@ function TwinAndScanSection({ receiptId, receipt, mobileView, setMobileView, mob
         <div className="inline-flex rounded-xl border border-ink/15 bg-white p-1 text-xs">
           <button
             type="button"
-            className={`rounded-lg px-3 py-1 ${mobileView === "twin" ? "bg-ink text-white" : "text-ink/70"}`}
+            className={`rounded-lg px-3 py-1 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 ${mobileView === "twin" ? "bg-ink text-white" : "text-ink/70"}`}
             onClick={() => setMobileView("twin")}
           >
             Receipt Details
           </button>
           <button
             type="button"
-            className={`rounded-lg px-3 py-1 ${mobileView === "scan" ? "bg-ink text-white" : "text-ink/70"}`}
+            className={`rounded-lg px-3 py-1 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 ${mobileView === "scan" ? "bg-ink text-white" : "text-ink/70"}`}
             onClick={() => setMobileView("scan")}
           >
             Original Scan
@@ -476,9 +486,14 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
       <h2 className="font-semibold">Payee + Account</h2>
       <div className="grid gap-3">
         <div className="relative">
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Payee</label>
+          <label htmlFor="payee-input" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Payee</label>
           <Input
+            id="payee-input"
             value={draft.payee_name}
+            role="combobox"
+            aria-expanded={payeeMenuOpen && payeeSuggestions.length > 0}
+            aria-controls={payeeMenuOpen && payeeSuggestions.length > 0 ? "payee-suggestions-listbox" : undefined}
+            aria-autocomplete="list"
             onFocus={() => setPayeeMenuOpen(true)}
             onBlur={() => { setTimeout(() => setPayeeMenuOpen(false), 120); }}
             onChange={(event) => {
@@ -488,12 +503,14 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
             }}
           />
           {payeeMenuOpen && payeeSuggestions.length > 0 ? (
-            <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
+            <div id="payee-suggestions-listbox" role="listbox" className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
               {payeeSuggestions.map((payee) => (
                 <button
                   key={payee.entity_id}
                   type="button"
-                  className="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-sand/70"
+                  role="option"
+                  aria-selected={draft.payee_name === payee.name}
+                  className="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-sand/70 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => {
                     setDraft({ ...draft, payee_name: payee.name });
@@ -508,8 +525,9 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
           ) : null}
         </div>
         <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Account</label>
+          <label htmlFor="account-select-input" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Account</label>
           <Select
+            id="account-select-input"
             value={draft.account_id}
             data-testid="account-select"
             className={accountNeedsAttention ? "border-amber-500 bg-amber-50 text-amber-900 focus:ring-amber-300" : undefined}
@@ -542,8 +560,9 @@ function MemoCard({ draft, setDraft, setDirty }: {
     <Card className="animate-reveal space-y-3" style={{ animationDelay: "120ms" }}>
       <h2 className="font-semibold">Memo</h2>
       <div>
-        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Transaction memo</label>
+        <label htmlFor="memo-input" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Transaction memo</label>
         <Textarea
+          id="memo-input"
           rows={2}
           value={draft.memo}
           onChange={(event) => {
@@ -634,10 +653,10 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
           {draft.splits.map((split, index) => (
             <div key={`${index}-${split.category_id}`} className="rounded-2xl border border-ink/10 bg-sand/70 p-3">
               <div className="mb-2 flex items-center justify-between">
-                <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Split {index + 1}</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Split {index + 1}</p>
                 <button
                   type="button"
-                  className="inline-flex items-center text-red-600"
+                  className="inline-flex items-center text-red-600 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
                   onClick={() => {
                     const nextSplits = draft.splits.filter((_, splitIndex) => splitIndex !== index);
                     if (nextSplits.length === 0) {
@@ -758,7 +777,7 @@ function DuplicateReviewSection({
 
       <div className="grid gap-3 md:grid-cols-2">
         <Card className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Incoming Receipt</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Incoming Receipt</p>
           <p className="text-sm font-semibold">{receipt.display_payee_name ?? receipt.original_filename}</p>
           <p className="text-xs text-ink/70">Date {receipt.display_receipt_date ?? "--"}</p>
           <p className="text-xs text-ink/70">Total {formatDollarsMagnitude(receipt.display_total_milliunits)}</p>
@@ -772,7 +791,7 @@ function DuplicateReviewSection({
         </Card>
 
         <Card className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">Existing Receipt</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Existing Receipt</p>
           {isLoadingMatch ? <p className="text-sm text-ink/70">Loading matched receipt...</p> : null}
           {!isLoadingMatch && matchedReceipt ? (
             <>
@@ -855,6 +874,9 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const [mobileView, setMobileView] = useState<"twin" | "scan">("twin");
   const [previewOpen, setPreviewOpen] = useState(false);
   const mobilePanelRef = useRef<HTMLDivElement | null>(null);
+  // Accuracy celebration: track previous status to fire only on edge synced transition
+  const prevStatusRef = useRef<string | null>(null);
+  const [showSyncCelebration, setShowSyncCelebration] = useState(false);
 
   const receiptQuery = useQuery({
     queryKey: ["receipt", receiptId],
@@ -1022,6 +1044,22 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     if (!allocationWorkspace) return;
     setAllocationWarnings(allocationWorkspace.warnings ?? []);
   }, [allocationWorkspace]);
+
+  // Accuracy celebration: detect status transition to "synced" (fires once per edge, never every poll)
+  useEffect(() => {
+    const nextStatus = receiptQuery.data?.status ?? null;
+    const prevStatus = prevStatusRef.current;
+    if (prevStatus !== null && prevStatus !== "synced" && nextStatus === "synced") {
+      setShowSyncCelebration(true);
+      toast({
+        variant: "success",
+        title: "Synced to YNAB",
+        message: "Clean sync — no corrections needed.",
+      });
+      setTimeout(() => setShowSyncCelebration(false), 1700);
+    }
+    prevStatusRef.current = nextStatus;
+  }, [receiptQuery.data?.status, toast]);
 
   const categories = useMemo(
     () =>
@@ -1405,6 +1443,13 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
           />
 
           <SyncStatusStrip reasons={stripReasons} />
+
+          {/* Accuracy celebration — fires on synced state edge, never on button press */}
+          {showSyncCelebration ? (
+            <div className="flex justify-center py-1">
+              <SnappyCelebration />
+            </div>
+          ) : null}
 
           <ActionButtonBar
             isSyncing={isSyncing}

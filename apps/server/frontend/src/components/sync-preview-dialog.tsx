@@ -198,19 +198,19 @@ export function SyncPreviewDialog({
         <table className="w-full border-collapse text-xs">
           <tbody>
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/60 w-28 align-top">Payee</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 w-28 align-top">Payee</td>
               <td className="py-1.5 text-ink">{draft.payee_name || "—"}</td>
             </tr>
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/60 align-top">Account</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Account</td>
               <td className="py-1.5 text-ink">{accountName}</td>
             </tr>
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/60 align-top">Date</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Date</td>
               <td className="py-1.5 text-ink">{draft.transaction_date || "—"}</td>
             </tr>
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/60 align-top">Total</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Total</td>
               <td className="py-1.5 text-ink">
                 {formatSignedDollarsWithDirection(signed, kind)}
               </td>
@@ -219,7 +219,7 @@ export function SyncPreviewDialog({
             {/* Category / splits */}
             {draft.splits.length > 0 ? (
               <tr className="border-b border-ink/8">
-                <td className="py-1.5 pr-3 font-semibold text-ink/60 align-top">Categories</td>
+                <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Categories</td>
                 <td className="py-1.5">
                   <table className="w-full">
                     <tbody>
@@ -248,19 +248,19 @@ export function SyncPreviewDialog({
               </tr>
             ) : (
               <tr className="border-b border-ink/8">
-                <td className="py-1.5 pr-3 font-semibold text-ink/60 align-top">Category</td>
+                <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Category</td>
                 <td className="py-1.5 text-ink">{categoryLabel(draft.category_id)}</td>
               </tr>
             )}
 
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/60 align-top">Memo</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Memo</td>
               <td className="py-1.5 text-ink">{displayMemo || "—"}</td>
             </tr>
 
             {/* Twin confirmation */}
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/60 align-top">Twin checks</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Twin checks</td>
               <td className="py-1.5 space-y-0.5">
                 <p className={dateTimeConfirmed ? "text-emerald-700" : "text-amber-700"}>
                   {dateTimeConfirmed ? "✓" : "✗"} Date + time
@@ -273,7 +273,7 @@ export function SyncPreviewDialog({
 
             {/* Flag color */}
             <tr>
-              <td className="py-1.5 pr-3 font-semibold text-ink/60 align-top">Flag color</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Flag color</td>
               <td className="py-1.5">
                 <span className="inline-flex items-center gap-1.5">
                   <span
