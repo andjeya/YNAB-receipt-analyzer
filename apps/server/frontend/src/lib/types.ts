@@ -453,6 +453,22 @@ export interface GameDebugSeed {
   sync_floor_unix_ms: number;
 }
 
+export interface CardMapping {
+  id: number;
+  card_last_four: string;
+  account_id: string;
+  account_name: string | null;
+}
+
+export interface CardMappingListResponse {
+  items: CardMapping[];
+}
+
+export interface CardMappingUpsertRequest {
+  card_last_four: string;
+  account_id: string;
+}
+
 export interface GameDebugSeedUpdateRequest {
   enabled?: boolean;
   water_units?: number;

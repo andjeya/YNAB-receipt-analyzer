@@ -1,5 +1,8 @@
 import {
   AppConfig,
+  CardMapping,
+  CardMappingListResponse,
+  CardMappingUpsertRequest,
   CacheEntity,
   FetchYnabUpdatesResponse,
   GameDebugSeed,
@@ -240,4 +243,21 @@ export function updateGameDebugSeed(payload: GameDebugSeedUpdateRequest) {
 
 export function getAppConfig() {
   return request<AppConfig>("/config");
+}
+
+export function listCardMappings() {
+  return request<CardMappingListResponse>("/debug/card-mappings");
+}
+
+export function upsertCardMapping(payload: CardMappingUpsertRequest) {
+  return request<CardMapping>("/debug/card-mappings", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteCardMapping(id: number) {
+  return request<void>("/debug/card-mappings/" + id, {
+    method: "DELETE",
+  });
 }

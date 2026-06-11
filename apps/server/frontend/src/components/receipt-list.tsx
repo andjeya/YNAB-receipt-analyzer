@@ -45,6 +45,7 @@ import { StatusBadge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { ReceiptStateIcon } from "@/components/receipt-state-icon";
 import { Snappy } from "@/components/snappy/snappy";
+import { CardMappingPanel } from "@/components/card-mapping-panel";
 
 const FILTERS: Array<{ label: string; value: "" | ReceiptStatus }> = [
   { label: "All", value: "" },
@@ -111,7 +112,7 @@ function ActionMenu({
   onFetchUpdates, isFetchUpdatesPending,
   onRebuild, isRebuildPending,
   onRecompute, isRecomputePending,
-  debugToolsEnabled, onOpenDebugPanel,
+  debugToolsEnabled, onOpenDebugPanel, onOpenCardMappingPanel,
   onNavigate,
 }: {
   menuRef: { current: HTMLDivElement | null };
@@ -123,6 +124,7 @@ function ActionMenu({
   onRecompute: () => void; isRecomputePending: boolean;
   debugToolsEnabled: boolean;
   onOpenDebugPanel: () => void;
+  onOpenCardMappingPanel: () => void;
   onNavigate: (path: string) => void;
 }) {
   const [receiptLookupInput, setReceiptLookupInput] = useState("");
@@ -176,6 +178,16 @@ function ActionMenu({
                 onClick={() => { setMenuOpen(false); onOpenDebugPanel(); }}
               >
                 Debug panel
+              </Button>
+            ) : null}
+            {debugToolsEnabled ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="justify-start gap-1 sm:col-span-2"
+                onClick={() => { setMenuOpen(false); onOpenCardMappingPanel(); }}
+              >
+                Card mappings
               </Button>
             ) : null}
           </div>
@@ -689,6 +701,7 @@ export function ReceiptList() {
   const [waterSpendOpen, setWaterSpendOpen] = useState(false);
   const [waterSpendAmount, setWaterSpendAmount] = useState(1);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
+  const [cardMappingPanelOpen, setCardMappingPanelOpen] = useState(false);
   const [debugResetFloors, setDebugResetFloors] = useState(true);
   // Streak milestone celebration (consistency incentive)
   const prevStreakRef = useRef<number | null>(null);
@@ -767,6 +780,7 @@ export function ReceiptList() {
   useEffect(() => {
     if (!debugToolsEnabled) {
       setDebugPanelOpen(false);
+      setCardMappingPanelOpen(false);
     }
   }, [debugToolsEnabled]);
 
@@ -973,6 +987,7 @@ export function ReceiptList() {
         onRecompute={() => recomputeMutation.mutate()} isRecomputePending={recomputeMutation.isPending}
         debugToolsEnabled={debugToolsEnabled}
         onOpenDebugPanel={() => setDebugPanelOpen(true)}
+        onOpenCardMappingPanel={() => setCardMappingPanelOpen(true)}
         onNavigate={(path) => router.push(path)}
       />
 
@@ -1046,6 +1061,13 @@ export function ReceiptList() {
         isSaving={saveDebugSeedMutation.isPending}
         onSave={() => saveDebugSeedMutation.mutate()}
         onClose={() => setDebugPanelOpen(false)}
+      />
+
+      {/* CardMappingPanel — rendered unconditionally; Dialog handles mount + restore-focus */}
+      <CardMappingPanel
+        open={debugToolsEnabled && cardMappingPanelOpen}
+        onClose={() => setCardMappingPanelOpen(false)}
+        debugToolsEnabled={debugToolsEnabled}
       />
 
       {/* GameIncidentModal — conditionally mount; blocking: onClose is a no-op */}
