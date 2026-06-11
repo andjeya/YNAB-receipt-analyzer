@@ -22,7 +22,6 @@ import {
   fetchYnabUpdates,
   getGameDebugSeed,
   getGameDashboard,
-  getStatsSummary,
   listGameIncidents,
   listReceipts,
   rebuildGameState,
@@ -32,12 +31,13 @@ import {
   triggerScan,
   updateGameDebugSeed,
 } from "@/lib/api";
-import { GameDisplayState, GameForestTile, GameIncident, ReceiptStatus } from "@/lib/types";
+import { GameDisplayState, GameForestTile, GameIncident } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { formatSignedDollars, signedDollars } from "@/lib/money";
 import { deriveSnappyPose, isStreakMilestone } from "@/lib/snappy-pose";
 import { useToast } from "@/components/ui/toast";
 import { extractReceiptIdFromText } from "@/lib/receipt-id";
+import { partitionReceipts, type ReceiptBucket } from "@/lib/receipt-buckets";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
@@ -47,14 +47,11 @@ import { ReceiptStateIcon } from "@/components/receipt-state-icon";
 import { Snappy } from "@/components/snappy/snappy";
 import { CardMappingPanel } from "@/components/card-mapping-panel";
 
-const FILTERS: Array<{ label: string; value: "" | ReceiptStatus }> = [
-  { label: "All", value: "" },
-  { label: "Needs review", value: "needs_review" },
-  { label: "Duplicates", value: "duplicate_review" },
-  { label: "Extracting", value: "extracting" },
-  { label: "Syncing", value: "syncing" },
-  { label: "Errors", value: "error_extract" },
-  { label: "Synced", value: "synced" },
+// Tab definitions — each maps to a ReceiptBucket (see src/lib/receipt-buckets.ts)
+const TABS: Array<{ label: string; bucket: ReceiptBucket; testid: string }> = [
+  { label: "To Review", bucket: "review",     testid: "tab-review"     },
+  { label: "Processing", bucket: "processing", testid: "tab-processing" },
+  { label: "History",    bucket: "history",    testid: "tab-history"    },
 ];
 
 function formatWaitTime(value: number | null | undefined): string {
@@ -62,6 +59,19 @@ function formatWaitTime(value: number | null | undefined): string {
   if (value < 1) return `${Math.max(Math.round(value * 60), 1)}m`;
   if (value < 24) return `${Math.round(value)}h`;
   return `${(value / 24).toFixed(1)}d`;
+}
+
+/**
+ * Formats the wall-clock time since a receipt was ingested as a short
+ * "waiting" string (e.g. "3d", "5h", "12m") for the To Review tab.
+ */
+function formatWallWait(ingestedAt: string): string {
+  const elapsedMs = Date.now() - new Date(ingestedAt).getTime();
+  const totalMinutes = Math.max(Math.round(elapsedMs / 60_000), 1);
+  const totalHours = elapsedMs / (1000 * 60 * 60);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  if (totalHours < 24) return `${Math.round(totalHours)}h`;
+  return `${(totalHours / 24).toFixed(1)}d`;
 }
 
 function deriveIconState(
@@ -324,44 +334,73 @@ function ReceiptListHeader({
   );
 }
 
-function FilterBar({ statusFilter, setStatusFilter, statusCounts, sortOrder, setSortOrder }: {
-  statusFilter: "" | ReceiptStatus;
-  setStatusFilter: (v: "" | ReceiptStatus) => void;
-  statusCounts: Record<string, number>;
-  sortOrder: "newest" | "oldest";
-  setSortOrder: (v: "newest" | "oldest") => void;
+/**
+ * TabBar — replaces the old flat filter chip row.
+ *
+ * Three primary tabs (To Review / Processing / History) with live count badges.
+ * Tabs are accessible: role="tablist" wrapper, role="tab" buttons, aria-selected
+ * on the active tab, and focus-visible rings.
+ */
+function TabBar({
+  activeTab,
+  setActiveTab,
+  reviewCount,
+  processingCount,
+  historyCount,
+}: {
+  activeTab: ReceiptBucket;
+  setActiveTab: (tab: ReceiptBucket) => void;
+  reviewCount: number;
+  processingCount: number;
+  historyCount: number;
 }) {
+  const counts: Record<ReceiptBucket, number> = {
+    review:     reviewCount,
+    processing: processingCount,
+    history:    historyCount,
+  };
+
   return (
     <section className="animate-reveal rounded-3xl bg-white/85 p-3 shadow-float" style={{ animationDelay: "90ms" }}>
-      <div className="flex flex-wrap gap-2">
-        {FILTERS.map((filter) => (
-          <button
-            key={filter.label}
-            type="button"
-            onClick={() => setStatusFilter(filter.value)}
-            className={cn(
-              "rounded-full px-3 py-1 text-xs font-semibold transition focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2",
-              statusFilter === filter.value ? "bg-ink text-white" : "bg-ink/10 text-ink",
-            )}
-          >
-            {filter.label}
-            {filter.value ? ` (${statusCounts[filter.value] ?? 0})` : ""}
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={() => setSortOrder(sortOrder === "newest" ? "oldest" : "newest")}
-          className="ml-auto rounded-full bg-ink/10 px-3 py-1 text-xs font-semibold text-ink transition hover:bg-ink/15 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
-        >
-          Sort: {sortOrder}
-        </button>
+      <div role="tablist" aria-label="Receipt queue tabs" className="flex gap-2">
+        {TABS.map((tab) => {
+          const isActive = activeTab === tab.bucket;
+          const count = counts[tab.bucket];
+          return (
+            <button
+              key={tab.bucket}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              data-testid={tab.testid}
+              onClick={() => setActiveTab(tab.bucket)}
+              className={cn(
+                "rounded-full px-4 py-1.5 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2",
+                isActive
+                  ? "bg-ink text-white shadow-sm"
+                  : "bg-ink/10 text-ink hover:bg-ink/15",
+              )}
+            >
+              {tab.label}
+              {" "}
+              <span
+                className={cn(
+                  "inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold",
+                  isActive ? "bg-white/20" : "bg-ink/10",
+                )}
+              >
+                {count}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </section>
   );
 }
 
 function ReceiptListItem({
-  receipt, tile, currentWeekSlot, spendableNow, onShred, isShredPending, index,
+  receipt, tile, currentWeekSlot, spendableNow, onShred, isShredPending, index, showWaiting,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   receipt: any;
@@ -372,6 +411,8 @@ function ReceiptListItem({
   onShred: (receiptId: string) => void;
   isShredPending: boolean;
   index: number;
+  /** When true (To Review tab), show a prominent "Xd waiting" label. */
+  showWaiting?: boolean;
 }) {
   const { tone, shredded } = deriveIconState(tile);
   const correctionOpacity = receipt.correction_shade_opacity ?? 0;
@@ -424,9 +465,15 @@ function ReceiptListItem({
               <p className="truncate text-sm font-semibold">
                 {receipt.display_payee_name ?? receipt.original_filename}
               </p>
-              <p className="mt-1 text-xs text-ink/65">
-                {formatDistanceToNow(new Date(receipt.ingested_at), { addSuffix: true })}
-              </p>
+              {showWaiting ? (
+                <p className="mt-1 text-xs font-semibold text-amber-700">
+                  {formatWallWait(receipt.ingested_at)} waiting
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-ink/65">
+                  {formatDistanceToNow(new Date(receipt.ingested_at), { addSuffix: true })}
+                </p>
+              )}
             </Link>
             <div className="text-right text-xs">
               <p className="uppercase tracking-wide text-ink/70">Validation wait</p>
@@ -696,8 +743,8 @@ export function ReceiptList() {
   const { toast } = useToast();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<"" | ReceiptStatus>("");
-  const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
+  // Active queue tab — defaults to "review" so unreviewed receipts are shown first
+  const [activeTab, setActiveTab] = useState<ReceiptBucket>("review");
   const [waterSpendOpen, setWaterSpendOpen] = useState(false);
   const [waterSpendAmount, setWaterSpendAmount] = useState(1);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
@@ -720,17 +767,18 @@ export function ReceiptList() {
   });
   const queryClient = useQueryClient();
 
+  // Fetch ALL receipts — no status filter, no sort param.
+  // Bucketing, sorting, and counting are done client-side via partitionReceipts.
+  // The API returns all receipts with no pagination cap (see audit note: no cursor/offset).
   const receiptsQuery = useQuery({
-    queryKey: ["receipts", statusFilter, sortOrder],
-    queryFn: () => listReceipts(statusFilter || undefined, sortOrder),
+    queryKey: ["receipts"],
+    queryFn: () => listReceipts(undefined, "newest"),
     refetchInterval: 7000,
   });
 
-  const statsQuery = useQuery({
-    queryKey: ["stats"],
-    queryFn: getStatsSummary,
-    refetchInterval: 12000,
-  });
+  // NOTE: /stats/summary is no longer queried here — tab counts come from
+  // the client-side partition of the single receipts fetch.
+  // The scanMutation still invalidates ["stats"] for downstream consumers.
 
   const dashboardQuery = useQuery({
     queryKey: ["game-dashboard", "week", 400],
@@ -926,13 +974,21 @@ export function ReceiptList() {
     },
   });
 
-  const statusCounts = statsQuery.data?.status_counts ?? {};
+  // Client-side partition: bucket + sort in one pass.
+  // Counts come from the partition (not from /stats/summary), so they stay
+  // in sync with the displayed list without a second fetch.
+  const { review: reviewReceipts, processing: processingReceipts, history: historyReceipts } = useMemo(
+    () => partitionReceipts(receiptsQuery.data ?? []),
+    [receiptsQuery.data],
+  );
 
-  const highlightedCount = useMemo(() => {
-    return receiptsQuery.data?.filter(
-      (receipt) => receipt.status === "needs_review" || receipt.status === "duplicate_review",
-    ).length ?? 0;
-  }, [receiptsQuery.data]);
+  // highlightedCount drives Snappy's pose (needs_review + duplicate_review)
+  const highlightedCount = useMemo(
+    () => reviewReceipts.filter(
+      (r) => r.status === "needs_review" || r.status === "duplicate_review",
+    ).length,
+    [reviewReceipts],
+  );
 
   const totalCount = receiptsQuery.data?.length ?? 0;
 
@@ -1007,35 +1063,48 @@ export function ReceiptList() {
         celebratingStreak={celebratingStreak}
       />
 
-      <FilterBar
-        statusFilter={statusFilter}
-        setStatusFilter={setStatusFilter}
-        statusCounts={statusCounts}
-        sortOrder={sortOrder}
-        setSortOrder={setSortOrder}
+      <TabBar
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        reviewCount={reviewReceipts.length}
+        processingCount={processingReceipts.length}
+        historyCount={historyReceipts.length}
       />
 
-      <section className="space-y-3">
+      <section className="space-y-3" role="tabpanel" aria-label={TABS.find((t) => t.bucket === activeTab)?.label}>
         {receiptsQuery.isLoading ? <p className="text-sm text-ink/70">Loading transactions...</p> : null}
-        {receiptsQuery.data?.length === 0 ? (
+
+        {/* Per-tab empty states */}
+        {!receiptsQuery.isLoading && activeTab === "review" && reviewReceipts.length === 0 ? (
           <Card className="flex flex-col items-center gap-3 py-8 text-center">
             <Snappy pose="asleep" size="h-20 w-20" />
             <p className="text-base font-semibold text-ink/80">All caught up!</p>
-            <p className="text-sm text-ink/60">No receipts found yet. Drop files into your ingest folder.</p>
+            <p className="text-sm text-ink/60">No receipts need review right now.</p>
           </Card>
         ) : null}
-        {receiptsQuery.data?.map((receipt, index) => (
-          <ReceiptListItem
-            key={receipt.id}
-            receipt={receipt}
-            tile={tileByReceiptId.get(receipt.id)}
-            currentWeekSlot={currentWeekSlot}
-            spendableNow={Boolean(dashboardQuery.data?.momentum.spendable_now)}
-            onShred={(receiptId) => shredMutation.mutate(receiptId)}
-            isShredPending={shredMutation.isPending}
-            index={index}
-          />
-        ))}
+        {!receiptsQuery.isLoading && activeTab === "processing" && processingReceipts.length === 0 ? (
+          <p className="py-4 text-center text-sm text-ink/60">Nothing processing.</p>
+        ) : null}
+        {!receiptsQuery.isLoading && activeTab === "history" && historyReceipts.length === 0 ? (
+          <p className="py-4 text-center text-sm text-ink/60">No synced receipts yet.</p>
+        ) : null}
+
+        {/* Active tab receipts */}
+        {(activeTab === "review" ? reviewReceipts : activeTab === "processing" ? processingReceipts : historyReceipts).map(
+          (receipt, index) => (
+            <ReceiptListItem
+              key={receipt.id}
+              receipt={receipt}
+              tile={tileByReceiptId.get(receipt.id)}
+              currentWeekSlot={currentWeekSlot}
+              spendableNow={Boolean(dashboardQuery.data?.momentum.spendable_now)}
+              onShred={(receiptId) => shredMutation.mutate(receiptId)}
+              isShredPending={shredMutation.isPending}
+              index={index}
+              showWaiting={activeTab === "review"}
+            />
+          ),
+        )}
       </section>
 
       {/* WaterSpendModal — rendered unconditionally; Dialog handles mount + restore-focus */}
