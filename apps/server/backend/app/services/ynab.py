@@ -22,10 +22,20 @@ from app.services.game import apply_sync_gamification
 from app.services.incidents import record_incident
 from app.services.validation import UNKNOWN_ACCOUNT_ID
 from receipt_shared.money import dollars_to_milliunits, milliunits_to_dollars
-from receipt_shared.ynab_client import YNABClient
+from receipt_shared.ynab_client import YNABClient, YNABConflictError
 
 logger = logging.getLogger(__name__)
 RECEIPT_ID_MARKER_PREFIX = "[receipt_id:"
+IMPORT_ID_PREFIX = "RA:1:"
+
+
+def _build_import_id(receipt_id: str) -> str:
+    """Build a deterministic YNAB import_id from a receipt UUID.
+
+    Format: RA:1:<receipt_id_no_dashes_truncated>
+    Result is always ≤36 characters.
+    """
+    return f"{IMPORT_ID_PREFIX}{receipt_id.replace('-', '')[:31]}"
 
 
 class YNABSyncDisabledError(RuntimeError):
@@ -420,7 +430,8 @@ def _build_update_transaction_payload(
     transaction_payload: dict[str, Any],
     existing_transaction: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    update_payload: dict[str, Any] = dict(transaction_payload)
+    # YNAB's PUT /transactions/{id} schema does not include import_id — strip it.
+    update_payload: dict[str, Any] = {k: v for k, v in transaction_payload.items() if k != "import_id"}
     desired_subtransactions = transaction_payload.get("subtransactions")
     existing_subtransactions = [
         sub
@@ -471,29 +482,33 @@ def _update_or_replace_transaction(
     target_transaction_id: str,
     transaction_payload: dict[str, Any],
     existing_transaction: dict[str, Any] | None,
-) -> tuple[dict[str, Any], str, str]:
-    """Try PUT update; if YNAB ignores split/category changes, delete + create.
+) -> tuple[dict[str, Any], str, str, bool]:
+    """Try PUT update.  Delete+recreate is PROHIBITED (TASK 5a).
 
-    Returns (ynab_response, final_transaction_id, sync_status).
+    If YNAB ignores split/category structure changes, we flag it for manual
+    review instead of destroying and recreating the transaction.  Bank-imported
+    transactions are locked in YNAB and cannot have their structure changed via
+    the API; the user must fix the split structure manually in YNAB.
+
+    Returns (ynab_response, target_transaction_id, sync_status, structure_applied).
+    structure_applied=True  → YNAB applied the structure change (normal case).
+    structure_applied=False → YNAB ignored the change; callers must set NEEDS_REVIEW.
     """
     update_payload = _build_update_transaction_payload(transaction_payload, existing_transaction)
     ynab_response = client.update_transaction(budget_id, target_transaction_id, update_payload)
 
     if _transaction_structure_matches_payload(ynab_response, transaction_payload):
-        return ynab_response, target_transaction_id, YNABSyncStatus.MATCHED_UPDATED.value
+        return ynab_response, target_transaction_id, YNABSyncStatus.MATCHED_UPDATED.value, True
 
-    # YNAB silently ignored split/category structure changes.
-    # The YNAB API does not support updating subtransactions on existing split
-    # transactions, nor converting a split back to single-category.
-    # Workaround: delete the old transaction and create a fresh one.
-    logger.info(
-        "YNAB ignored split/category changes on transaction %s; deleting and recreating",
+    # YNAB silently ignored split/category structure changes (likely a bank-imported
+    # transaction).  We do NOT delete-and-recreate — that window risks data loss.
+    # Return structure_applied=False; callers will mark the receipt NEEDS_REVIEW.
+    logger.warning(
+        "YNAB ignored split/category structure change on transaction %s; "
+        "flagging receipt for manual review (delete+recreate prohibited)",
         target_transaction_id,
     )
-    client.delete_transaction(budget_id, target_transaction_id)
-    ynab_response = client.create_transaction(budget_id, transaction_payload)
-    new_id = ynab_response.get("id", "")
-    return ynab_response, new_id, YNABSyncStatus.CREATED.value
+    return ynab_response, target_transaction_id, YNABSyncStatus.MATCHED_UPDATED.value, False
 
 
 def _build_sync_transaction_payload(
@@ -565,6 +580,7 @@ def _build_sync_transaction_payload(
         "amount": total_milliunits,
         "payee_name": payload["payee_name"],
         "memo": _append_receipt_id_marker(base_memo, receipt.id),
+        "import_id": _build_import_id(receipt.id),
     }
     if has_splits:
         transaction_payload["subtransactions"] = [
@@ -580,6 +596,67 @@ def _build_sync_transaction_payload(
     return transaction_payload
 
 
+_STRUCTURE_IGNORED_REASON = (
+    "YNAB ignored the split-structure update (likely a bank-imported transaction). "
+    "The YNAB transaction was left unchanged; fix the split structure manually in YNAB."
+)
+
+
+def _create_transaction_idempotent(
+    client: YNABClient,
+    budget_id: str,
+    transaction_payload: dict[str, Any],
+    *,
+    receipt_id: str,
+) -> dict[str, Any]:
+    """Call client.create_transaction and resolve HTTP 409 idempotently.
+
+    YNAB returns 409 (not an echo) when a transaction with the same import_id
+    already exists on that account.  Resolution:
+    1. Call list_transactions_since(budget_id, since_date=payload["date"]) to fetch
+       all transactions from the receipt date onward.
+    2. Match the transaction whose import_id == _build_import_id(receipt_id).
+       Fall back to matching the [receipt_id:...] memo marker if import_id is absent
+       from the list response (some endpoints omit it).
+    3. If found: return it as if the create succeeded (idempotent success).
+    4. If not found: re-raise (genuine conflict — should not happen with deterministic
+       per-receipt import_ids, but avoids silent data loss if YNAB behavior changes).
+    """
+    try:
+        return client.create_transaction(budget_id, transaction_payload)
+    except YNABConflictError:
+        expected_import_id = _build_import_id(receipt_id)
+        since_date = str(transaction_payload.get("date", ""))
+        candidates = client.list_transactions_since(budget_id, since_date)
+        memo_marker = _receipt_id_marker(receipt_id)
+        for txn in candidates:
+            if txn.get("deleted"):
+                continue
+            # Primary match: import_id (most reliable)
+            if txn.get("import_id") == expected_import_id:
+                logger.info(
+                    "409 resolved via import_id match: receipt_id=%s txn_id=%s",
+                    receipt_id,
+                    txn.get("id"),
+                )
+                return txn
+            # Fallback match: [receipt_id:...] memo marker
+            if memo_marker in str(txn.get("memo") or ""):
+                logger.info(
+                    "409 resolved via memo marker fallback: receipt_id=%s txn_id=%s",
+                    receipt_id,
+                    txn.get("id"),
+                )
+                return txn
+        # No matching transaction found — genuine (unexpected) conflict; re-raise.
+        logger.error(
+            "409 conflict but no matching transaction found for receipt_id=%s import_id=%s",
+            receipt_id,
+            expected_import_id,
+        )
+        raise
+
+
 def _sync_update_existing(
     client: YNABClient,
     budget_id: str,
@@ -588,8 +665,14 @@ def _sync_update_existing(
     transaction_payload: dict[str, Any],
     prior_success_sync: YNABSync,
     validation_payload: dict[str, Any],
-) -> None:
-    """Update the YNAB transaction from a previous successful sync."""
+    *,
+    receipt: Receipt,
+) -> bool:
+    """Update the YNAB transaction from a previous successful sync.
+
+    Returns structure_applied (True = YNAB applied the change; False = YNAB ignored
+    the split/category structure change, caller must write NEEDS_REVIEW status).
+    """
     target_transaction_id = (
         prior_success_sync.created_transaction_id
         or prior_success_sync.matched_transaction_id
@@ -627,19 +710,18 @@ def _sync_update_existing(
         if updated_flag_color:
             update_payload_with_flags["flag_color"] = updated_flag_color
         sync_row.raw_request = {"transaction": update_payload_with_flags}
-        ynab_response, final_id, sync_status = _update_or_replace_transaction(
+        ynab_response, final_id, sync_status, structure_applied = _update_or_replace_transaction(
             client, budget_id, target_transaction_id, update_payload_with_flags, existing_target_transaction
         )
+        # Always record the matched id (delete-recreate is prohibited; final_id == target_transaction_id).
         sync_row.status = sync_status
-        if sync_status == YNABSyncStatus.CREATED.value:
-            sync_row.created_transaction_id = final_id
-        else:
-            sync_row.matched_transaction_id = final_id
+        sync_row.matched_transaction_id = final_id
         sync_row.raw_response = ynab_response
+
+        return structure_applied
     else:
-        # Previously-synced transaction was deleted from YNAB (manually
-        # or by a prior failed delete+recreate).  Create a fresh one
-        # instead of leaving the user stuck in an error loop.
+        # Previously-synced transaction was deleted from YNAB (manually).
+        # Create a fresh one instead of leaving the user stuck in an error loop.
         logger.warning(
             "Cannot find previous YNAB transaction for receipt_id=%s; creating new",
             sync_row.receipt_id,
@@ -649,10 +731,13 @@ def _sync_update_existing(
         if new_flag_color:
             new_transaction_payload["flag_color"] = new_flag_color
         sync_row.raw_request = {"transaction": new_transaction_payload}
-        ynab_response = client.create_transaction(budget_id, new_transaction_payload)
+        ynab_response = _create_transaction_idempotent(
+            client, budget_id, new_transaction_payload, receipt_id=sync_row.receipt_id
+        )
         sync_row.status = YNABSyncStatus.CREATED.value
         sync_row.created_transaction_id = ynab_response.get("id")
         sync_row.raw_response = ynab_response
+        return True
 
 
 def _sync_match_or_create(
@@ -667,8 +752,11 @@ def _sync_match_or_create(
     force_create: bool,
     *,
     receipt: Receipt,
-) -> None:
-    """Match an existing YNAB transaction or create a new one."""
+) -> bool:
+    """Match an existing YNAB transaction or create a new one.
+
+    Returns structure_applied (False → caller must write NEEDS_REVIEW status directly).
+    """
     receipt_date = date.fromisoformat(transaction_payload["date"])
     total_milliunits = transaction_payload["amount"]
     validation_payload = validation.payload
@@ -724,9 +812,11 @@ def _sync_match_or_create(
                 has_negative = any(a < 0 for a in sub_amounts)
                 if has_positive and has_negative:
                     # Mixed inflow/outflow splits — flag for manual review, do NOT overwrite splits.
+                    # Return False so the caller writes NEEDS_REVIEW directly (no transient SYNCED).
                     receipt.status = ReceiptStatus.NEEDS_REVIEW.value
                     receipt.status_reason = "YNAB transaction has mixed inflow/outflow splits; manual review required."
                     # Do not update the payload — leave as-is.
+                    return False
                 else:
                     total_amount_mu = int(matched.get("amount", 0))
                     ynab_kind = "refund" if total_amount_mu > 0 else "purchase"
@@ -750,6 +840,7 @@ def _sync_match_or_create(
                 updated_payload["splits"] = []
                 validation.payload = updated_payload
                 flag_modified(validation, "payload")
+            return True
         else:
             # No user data in YNAB — receipt is source of truth (existing behavior).
             update_payload_with_flags = dict(transaction_payload)
@@ -757,15 +848,14 @@ def _sync_match_or_create(
             if updated_flag_color:
                 update_payload_with_flags["flag_color"] = updated_flag_color
             sync_row.raw_request = {"transaction": update_payload_with_flags}
-            ynab_response, final_id, sync_status = _update_or_replace_transaction(
+            ynab_response, final_id, sync_status, structure_applied = _update_or_replace_transaction(
                 client, budget_id, matched["id"], update_payload_with_flags, matched
             )
+            # Always record matched id (delete-recreate is prohibited).
             sync_row.status = sync_status
-            if sync_status == YNABSyncStatus.CREATED.value:
-                sync_row.created_transaction_id = final_id
-            else:
-                sync_row.matched_transaction_id = final_id
+            sync_row.matched_transaction_id = final_id
             sync_row.raw_response = ynab_response
+            return structure_applied
     else:
         new_flag_color = settings.ynab_new_transaction_flag_color
         new_transaction_payload = dict(transaction_payload)
@@ -773,10 +863,13 @@ def _sync_match_or_create(
         if new_flag_color:
             new_transaction_payload["flag_color"] = new_flag_color
         sync_row.raw_request = {"transaction": new_transaction_payload}
-        ynab_response = client.create_transaction(budget_id, new_transaction_payload)
+        ynab_response = _create_transaction_idempotent(
+            client, budget_id, new_transaction_payload, receipt_id=receipt_id
+        )
         sync_row.status = YNABSyncStatus.CREATED.value
         sync_row.created_transaction_id = ynab_response.get("id")
         sync_row.raw_response = ynab_response
+        return True
 
 
 def _apply_dry_run(
@@ -836,48 +929,37 @@ def _apply_post_sync(
     settings: Settings,
     idempotency_key: str,
     started_perf: float,
+    *,
+    structure_applied: bool = True,
 ) -> dict[str, Any]:
-    """Record timing, run gamification, mark corrections resolved, commit, and return result."""
+    """Persist YNAB write result, then run bookkeeping (gamification + corrections).
+
+    TASK 4 — isolation guarantee:
+    1. The YNAB write result (sync_row status/timing, receipt final status) is committed
+       immediately in the FIRST commit below.  This is durable before any bookkeeping
+       runs.  When structure_applied=False the final status is written as NEEDS_REVIEW
+       directly in commit-1 — there is no transient SYNCED window.
+    2. Gamification and corrections-resolution are wrapped in a single try/except.
+       Failures are logged and recorded as incidents WITHOUT re-raising — they do NOT
+       fail the sync.  bookkeeping_ok=False is included in the returned dict.
+    3. The outer exception handler in sync_receipt_to_ynab handles only genuine YNAB
+       write failures, not bookkeeping failures (those are fully caught here).
+    """
     duration_ms = int((time.perf_counter() - started_perf) * 1000)
     finished_at = utcnow()
 
+    # --- Commit 1: YNAB write result (durable before bookkeeping) ---
     sync_row.duration_ms = duration_ms
     sync_row.completed_at = finished_at
-    receipt.status = ReceiptStatus.SYNCED.value
-    receipt.status_reason = None
     receipt.sync_completed_at = finished_at
-
-    try:
-        apply_sync_gamification(
-            db,
-            receipt=receipt,
-            validation=validation,
-            synced_at=finished_at,
-            settings=settings,
-        )
-    except Exception:
-        logger.exception("Gamification sync classification failed for receipt %s", receipt.id)
-        record_incident(
-            db,
-            incident_type="gamification_sync_failure",
-            severity="warning",
-            title="Gamification sync classification failed",
-            message=f"Failed to apply gamification for receipt {receipt.id} after sync",
-            details={"receipt_id": receipt.id},
-            idempotency_key=f"gamification_sync_failure:{receipt.id}:{idempotency_key}",
-        )
-        raise
-
-    unresolved_corrections = list(
-        db.scalars(
-            select(ReceiptCorrection).where(
-                ReceiptCorrection.receipt_id == receipt.id,
-                ReceiptCorrection.resynced_at.is_(None),
-            )
-        )
-    )
-    for correction in unresolved_corrections:
-        correction.resynced_at = finished_at
+    if not structure_applied:
+        # YNAB ignored split/category structure changes — write NEEDS_REVIEW directly.
+        # This avoids the previous transient SYNCED → NEEDS_REVIEW two-commit pattern.
+        receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+        receipt.status_reason = _STRUCTURE_IGNORED_REASON
+    else:
+        receipt.status = ReceiptStatus.SYNCED.value
+        receipt.status_reason = None
 
     db.add(
         TimingMetric(
@@ -895,11 +977,59 @@ def _apply_post_sync(
         sync_row.raw_response,
     )
     db.commit()
+
+    # --- Bookkeeping: gamification + corrections (non-fatal) ---
+    bookkeeping_ok = True
+    try:
+        apply_sync_gamification(
+            db,
+            receipt=receipt,
+            validation=validation,
+            synced_at=finished_at,
+            settings=settings,
+        )
+
+        unresolved_corrections = list(
+            db.scalars(
+                select(ReceiptCorrection).where(
+                    ReceiptCorrection.receipt_id == receipt.id,
+                    ReceiptCorrection.resynced_at.is_(None),
+                )
+            )
+        )
+        for correction in unresolved_corrections:
+            correction.resynced_at = finished_at
+
+        db.commit()
+    except Exception:
+        logger.exception("Post-sync bookkeeping failed for receipt %s (sync is already committed)", receipt.id)
+        bookkeeping_ok = False
+        # Record a non-fatal incident (mirror existing incident idiom; do NOT re-raise).
+        try:
+            record_incident(
+                db,
+                incident_type="bookkeeping_sync_failure",
+                severity="warning",
+                title="Post-sync bookkeeping failed",
+                message=f"Gamification or corrections update failed for receipt {receipt.id} after sync. Sync is committed.",
+                details={"receipt_id": receipt.id},
+                idempotency_key=f"bookkeeping_sync_failure:{receipt.id}:{idempotency_key}",
+            )
+            receipt.status_reason = "Sync committed; post-sync bookkeeping failed (non-fatal)."
+            db.commit()
+        except Exception:
+            logger.exception("Failed to record bookkeeping incident for receipt %s", receipt.id)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
     return {
         "status": sync_row.status,
         "idempotency_key": idempotency_key,
         "transaction_id": sync_row.created_transaction_id or sync_row.matched_transaction_id,
         "already_synced": False,
+        "bookkeeping_ok": bookkeeping_ok,
     }
 
 
@@ -936,29 +1066,75 @@ def sync_receipt_to_ynab(
     started_at = utcnow()
     started_perf = time.perf_counter()
 
-    receipt.status = ReceiptStatus.SYNCING.value
-    receipt.status_reason = None
-    receipt.sync_started_at = started_at
+    # --- Atomic claim on the YNABSync row ---
+    # If a row with this idempotency_key already exists, inspect its status
+    # before deciding whether to proceed.
+    stuck_cutoff = started_at - timedelta(minutes=settings.stuck_job_timeout_minutes)
+    row_was_preexisting = sync_row is not None
 
-    if sync_row is None:
-        sync_row = YNABSync(
+    if not row_was_preexisting:
+        # INSERT a new row; guard against a concurrent INSERT with the same key
+        # (race between two workers) by catching IntegrityError.
+        from sqlalchemy.exc import IntegrityError
+        new_row = YNABSync(
             receipt_id=receipt.id,
             validation_id=validation.id,
             idempotency_key=idempotency_key,
-            status=YNABSyncStatus.QUEUED.value,
+            status=YNABSyncStatus.RUNNING.value,
             match_mode="force_create" if force_create else ("update_existing" if prior_success_sync is not None else "match_or_create"),
             started_at=started_at,
         )
-        db.add(sync_row)
+        db.add(new_row)
+        try:
+            db.commit()
+            sync_row = new_row
+        except IntegrityError:
+            db.rollback()
+            # Another worker inserted first; re-select and treat as preexisting.
+            sync_row = db.scalar(select(YNABSync).where(YNABSync.idempotency_key == idempotency_key))
+            row_was_preexisting = True
+
+    # Deduplication guard: only applies to rows that existed before this
+    # invocation (row_was_preexisting==True) and are currently RUNNING.
+    if row_was_preexisting and sync_row is not None and sync_row.status == YNABSyncStatus.RUNNING.value:
+        row_started_at = sync_row.started_at
+        if row_started_at is not None:
+            # Make comparable regardless of timezone-awareness.
+            row_started_naive = row_started_at.replace(tzinfo=None) if row_started_at.tzinfo is not None else row_started_at
+            stuck_cutoff_naive = stuck_cutoff.replace(tzinfo=None) if stuck_cutoff.tzinfo is not None else stuck_cutoff
+            if row_started_naive > stuck_cutoff_naive:
+                # Row is fresh — another worker is genuinely still running.
+                logger.info(
+                    "Skipping duplicate worker invocation for receipt_id=%s idempotency_key=%s",
+                    receipt_id,
+                    idempotency_key,
+                )
+                return {
+                    "status": YNABSyncStatus.RUNNING.value,
+                    "idempotency_key": idempotency_key,
+                    "transaction_id": None,
+                    "already_synced": False,
+                    "skipped_duplicate": True,
+                }
+            # Row is stale (started_at older than timeout) — reclaim it and proceed.
+            logger.warning(
+                "Reclaiming stale RUNNING sync row for receipt_id=%s idempotency_key=%s",
+                receipt_id,
+                idempotency_key,
+            )
+
+    # Claim/reclaim the row: update status to RUNNING and refresh started_at.
+    # For a newly-inserted row (status already RUNNING), this refreshes metadata.
+    receipt.status = ReceiptStatus.SYNCING.value
+    receipt.status_reason = None
+    receipt.sync_started_at = started_at
 
     sync_row.match_mode = "force_create" if force_create else ("update_existing" if prior_success_sync is not None else "match_or_create")
     sync_row.validation_id = validation.id
     sync_row.status = YNABSyncStatus.RUNNING.value
     sync_row.started_at = started_at
-    sync_row.matched_transaction_id = None
-    sync_row.created_transaction_id = None
-    sync_row.raw_request = None
-    sync_row.raw_response = None
+    # Evidence preservation: do NOT blank matched/created IDs or raw evidence.
+    # Only clear the error from the previous attempt.
     sync_row.error_text = None
     db.commit()
 
@@ -998,20 +1174,57 @@ def sync_receipt_to_ynab(
             {"transaction": transaction_payload},
         )
 
-        # Note: dry_run→live reuses the same sync_row; the field resets above clear stale dry-run fields.
+        # --- Task 3: verify-before-create ---
+        # If a prior attempt left a created_transaction_id on this row, check
+        # whether that transaction still exists in YNAB.  If it does, we can
+        # treat this as an idempotent success without a second create call.
+        if sync_row.created_transaction_id:
+            budget_id = settings.ynab_budget_id
+            live_txn = _get_transaction_by_id(client, budget_id, sync_row.created_transaction_id)
+            if live_txn is not None:
+                logger.info(
+                    "Idempotent: transaction %s still exists in YNAB for receipt_id=%s; skipping create",
+                    sync_row.created_transaction_id,
+                    receipt.id,
+                )
+                sync_row.status = YNABSyncStatus.CREATED.value
+                sync_row.raw_response = live_txn
+                return _apply_post_sync(db, receipt, validation, sync_row, settings, idempotency_key, started_perf)
+            # Transaction was deleted — fall through to normal flow (fresh create).
+            logger.info(
+                "Previously created transaction %s no longer in YNAB for receipt_id=%s; proceeding with fresh create",
+                sync_row.created_transaction_id,
+                receipt.id,
+            )
+            # Clear stale evidence so the new create result overwrites cleanly.
+            sync_row.created_transaction_id = None
+            sync_row.raw_response = None
+
+        # Note: dry_run→live reuses the same sync_row; only error_text is cleared above.
         if prior_success_sync is not None and not force_create:
-            _sync_update_existing(
+            structure_applied = _sync_update_existing(
                 client, settings.ynab_budget_id, settings, sync_row,
                 transaction_payload, prior_success_sync, validation.payload,
+                receipt=receipt,
             )
         else:
-            _sync_match_or_create(
+            # force_create semantics: with deterministic per-receipt import_id,
+            # force_create bypasses the match-existing step and always calls create.
+            # After Finding 1's fix, a 409 response is resolved idempotently by
+            # _create_transaction_idempotent — so force_create can never double-create
+            # a receipt; it simply resolves to the already-existing transaction.
+            structure_applied = _sync_match_or_create(
                 client, settings.ynab_budget_id, settings, sync_row,
                 transaction_payload, validation, allow_update_match, receipt.id, force_create,
                 receipt=receipt,
             )
 
-        return _apply_post_sync(db, receipt, validation, sync_row, settings, idempotency_key, started_perf)
+        result = _apply_post_sync(
+            db, receipt, validation, sync_row, settings, idempotency_key, started_perf,
+            structure_applied=structure_applied,
+        )
+        result["structure_applied"] = structure_applied
+        return result
 
     except Exception as exc:
         duration_ms = int((time.perf_counter() - started_perf) * 1000)

@@ -181,13 +181,29 @@ def _latest_validation(db: Session, receipt_id: str) -> Validation | None:
     )
 
 
+_AMOUNT_DRIFT_REASON = (
+    "Reconciliation detected a YNAB amount that differs from the synced payload. "
+    "The local validation has been pulled to match the YNAB amount (YNAB is source of truth); "
+    "the YNAB transaction was not modified. Review and re-sync if the amount is incorrect."
+)
+
+
 def _apply_corrected_validation(
     db: Session,
     *,
     receipt: Receipt,
     ynab_transaction: dict[str, Any],
     settings: Settings,
+    amount_drifted: bool = False,
 ) -> None:
+    """Build and persist a corrected validation pulled from the current YNAB transaction.
+
+    TASK 5b — amount_drifted flag:
+    When amount_drifted=True the YNAB amount differs from the payload that was synced.
+    We pull the corrected validation (YNAB is source of truth) and set receipt status to
+    NEEDS_REVIEW so the user is prompted to review the amount discrepancy.  We do NOT push
+    the synced amount back to YNAB — the amount update path would be a separate sync.
+    """
     latest_validation = _latest_validation(db, receipt.id)
     if latest_validation is None:
         return
@@ -238,10 +254,17 @@ def _apply_corrected_validation(
     receipt.display_total_milliunits = dollars_to_milliunits(normalized_payload.get("total_amount", 0), outflow=False)
     if normalized_payload.get("transaction_date"):
         receipt.display_receipt_date = datetime.fromisoformat(str(normalized_payload["transaction_date"])).date()
-    # Keep receipts synced after reconciliation updates; correction metadata and
-    # iconography communicate what changed without forcing a review loop.
-    receipt.status = ReceiptStatus.SYNCED.value
-    receipt.status_reason = None
+
+    if amount_drifted:
+        # TASK 5b: amount drift — YNAB amount differs; pulled to YNAB value.
+        # Set NEEDS_REVIEW so the user is prompted; do NOT push the old amount back.
+        receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+        receipt.status_reason = _AMOUNT_DRIFT_REASON
+    else:
+        # Category/split change only — keep receipts synced; correction metadata and
+        # iconography communicate what changed without forcing a review loop.
+        receipt.status = ReceiptStatus.SYNCED.value
+        receipt.status_reason = None
 
 
 def _split_note(subtransactions: list[dict[str, Any]]) -> str:
@@ -374,7 +397,13 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
 
         synced_signature = _sync_payload_signature(transaction_payload)
         current_signature = _ynab_transaction_signature(ynab_transaction)
-        if synced_signature == current_signature:
+
+        # TASK 5b: detect top-level amount drift independently of category/split changes.
+        # _split_signature is intentionally amount-blind (it only tracks category_id per sub).
+        # Amount drift means the synced transaction amount differs from what YNAB now reports.
+        amount_drifted = int(transaction_payload.get("amount", 0)) != int(ynab_transaction.get("amount", 0))
+
+        if synced_signature == current_signature and not amount_drifted:
             continue
 
         signature_hash = _correction_signature(transaction_payload, ynab_transaction)
@@ -384,11 +413,12 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
         detected_at = utcnow()
         note = f"{_category_note(transaction_payload, ynab_transaction)} | sig={signature_hash}"
         logger.info(
-            "Reconciliation mismatch receipt_id=%s transaction_id=%s synced_sig=%s current_sig=%s",
+            "Reconciliation mismatch receipt_id=%s transaction_id=%s synced_sig=%s current_sig=%s amount_drifted=%s",
             receipt.id,
             transaction_id,
             synced_signature,
             current_signature,
+            amount_drifted,
         )
 
         db.add(
@@ -412,6 +442,7 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
                     "signature": signature_hash,
                     "synced_category_id": str(transaction_payload.get("category_id") or "") or None,
                     "corrected_category_id": str(ynab_transaction.get("category_id") or "") or None,
+                    "amount_drifted": amount_drifted,
                 },
                 idempotency_key=f"correction_detected:{receipt.id}:{signature_hash}",
                 created_at=detected_at,
@@ -424,7 +455,7 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
             units=1,
             receipt_id=receipt.id,
             idempotency_key=f"fire:reconciliation:{receipt.id}:{signature_hash}",
-            reason="ynab_category_or_split_changed",
+            reason="ynab_amount_drifted" if amount_drifted else "ynab_category_or_split_changed",
             created_at=detected_at,
         )
         fires_added_total += int(fire_result.get("fires_added", 0))
@@ -436,6 +467,7 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
             receipt=receipt,
             ynab_transaction=ynab_transaction,
             settings=settings,
+            amount_drifted=amount_drifted,
         )
 
         detected_mistakes += 1

@@ -1,8 +1,11 @@
 """Regression tests for YNAB split transaction sync.
 
-Covers the scenarios where the YNAB API silently ignores subtransaction
-updates on existing split transactions, requiring a delete + recreate
-workaround.
+M2 increment 2 rewrite (TASK 17):
+- Delete+recreate is PROHIBITED.  _update_or_replace_transaction now returns a
+  4-tuple (ynab_response, transaction_id, sync_status, structure_applied).
+- When YNAB ignores a split/category structure change, structure_applied=False is
+  returned and the caller is responsible for flagging NEEDS_REVIEW.
+- delete_transaction must NEVER be called in any sync flow.
 """
 
 from __future__ import annotations
@@ -207,6 +210,14 @@ class TestBuildUpdateTransactionPayload:
         assert result["subtransactions"] == []
         assert result["category_id"] == CATEGORY_A
 
+    def test_update_payload_strips_import_id(self):
+        """YNAB PUT schema does not include import_id — it must be stripped."""
+        desired = _make_single_payload()
+        desired["import_id"] = "RA:1:aabbccdd1122433384445566778899"  # present in create payload
+        existing = {"id": TXN_ID, "subtransactions": [], "category_id": CATEGORY_A}
+        result = _build_update_transaction_payload(desired, existing)
+        assert "import_id" not in result
+
 
 # ---------------------------------------------------------------------------
 # Tests: _transaction_structure_matches_payload
@@ -262,18 +273,26 @@ class TestTransactionStructureMatchesPayload:
 
 
 # ---------------------------------------------------------------------------
-# Tests: _update_or_replace_transaction  (the core fix)
+# Tests: _update_or_replace_transaction  (TASK 17 rewrite — flag-not-recreate)
+#
+# M2 increment 2: delete+recreate is PROHIBITED.  The function now returns a
+# 4-tuple (ynab_response, transaction_id, sync_status, structure_applied).
+# When YNAB ignores a split/category structure change:
+#   - delete_transaction is NOT called
+#   - create_transaction is NOT called
+#   - status remains "matched_updated"
+#   - structure_applied=False signals the caller to set NEEDS_REVIEW
 # ---------------------------------------------------------------------------
 
 
 class TestUpdateOrReplaceTransaction:
-    def test_simple_update_succeeds(self):
+    def test_simple_update_succeeds_structure_applied_true(self):
         """PUT update works when YNAB applies changes (e.g., memo update on non-split)."""
         payload = _make_single_payload(memo="updated memo")
         response = _make_ynab_response(payload)
         client = _mock_client(update_response=response)
 
-        ynab_resp, final_id, status = _update_or_replace_transaction(
+        ynab_resp, final_id, status, structure_applied = _update_or_replace_transaction(
             client, BUDGET_ID, TXN_ID, payload, {"id": TXN_ID, "subtransactions": []},
         )
 
@@ -282,8 +301,9 @@ class TestUpdateOrReplaceTransaction:
         client.create_transaction.assert_not_called()
         assert status == "matched_updated"
         assert final_id == TXN_ID
+        assert structure_applied is True
 
-    def test_single_to_split_first_time_via_update(self):
+    def test_single_to_split_first_time_via_update_structure_applied_true(self):
         """Converting single to split works via PUT (YNAB supports this)."""
         splits = [
             {"amount": -30000, "category_id": CATEGORY_A, "memo": "food"},
@@ -293,16 +313,18 @@ class TestUpdateOrReplaceTransaction:
         response = _make_ynab_response(payload, sub_ids=["sub-1", "sub-2"])
         client = _mock_client(update_response=response)
 
-        ynab_resp, final_id, status = _update_or_replace_transaction(
+        ynab_resp, final_id, status, structure_applied = _update_or_replace_transaction(
             client, BUDGET_ID, TXN_ID, payload, {"id": TXN_ID, "subtransactions": [], "category_id": CATEGORY_A},
         )
 
         client.update_transaction.assert_called_once()
         client.delete_transaction.assert_not_called()
+        client.create_transaction.assert_not_called()
         assert status == "matched_updated"
+        assert structure_applied is True
 
-    def test_split_edit_triggers_delete_recreate(self):
-        """Editing splits on existing split triggers delete+create (YNAB ignores PUT)."""
+    def test_split_edit_ynab_ignores_flags_review_not_recreate(self):
+        """YNAB ignores split edit → structure_applied=False, NO delete/create, id unchanged."""
         old_splits = [
             {"id": "sub-1", "amount": -30000, "category_id": CATEGORY_A, "memo": "food"},
             {"id": "sub-2", "amount": -20000, "category_id": CATEGORY_B, "memo": "cleaning"},
@@ -317,21 +339,24 @@ class TestUpdateOrReplaceTransaction:
 
         # YNAB ignores the split update — returns original transaction unchanged
         stale_response = _make_ynab_response_ignoring_splits(existing)
-        new_response = _make_ynab_response(payload, transaction_id=NEW_TXN_ID, sub_ids=["sub-new-1", "sub-new-2"])
-        client = _mock_client(update_response=stale_response, create_response=new_response)
+        client = _mock_client(update_response=stale_response)
 
-        ynab_resp, final_id, status = _update_or_replace_transaction(
+        ynab_resp, final_id, status, structure_applied = _update_or_replace_transaction(
             client, BUDGET_ID, TXN_ID, payload, existing,
         )
 
+        # update_transaction was called once; delete/create MUST NOT be called
         client.update_transaction.assert_called_once()
-        client.delete_transaction.assert_called_once_with(BUDGET_ID, TXN_ID)
-        client.create_transaction.assert_called_once_with(BUDGET_ID, payload)
-        assert status == "created"
-        assert final_id == NEW_TXN_ID
+        client.delete_transaction.assert_not_called()
+        client.create_transaction.assert_not_called()
+        # Transaction id is unchanged (same as target)
+        assert final_id == TXN_ID
+        assert status == "matched_updated"
+        # Caller is responsible for NEEDS_REVIEW
+        assert structure_applied is False
 
-    def test_add_split_triggers_delete_recreate(self):
-        """Adding a third split to a 2-split transaction triggers delete+create."""
+    def test_add_split_ynab_ignores_flags_review_not_recreate(self):
+        """Adding a third split when YNAB ignores it → structure_applied=False, no delete/create."""
         old_splits = [
             {"id": "sub-1", "amount": -30000, "category_id": CATEGORY_A, "memo": "food"},
             {"id": "sub-2", "amount": -20000, "category_id": CATEGORY_B, "memo": "cleaning"},
@@ -346,20 +371,19 @@ class TestUpdateOrReplaceTransaction:
         payload = _make_split_payload(splits=new_splits)
 
         stale_response = _make_ynab_response_ignoring_splits(existing)
-        new_response = _make_ynab_response(payload, transaction_id=NEW_TXN_ID)
-        client = _mock_client(update_response=stale_response, create_response=new_response)
+        client = _mock_client(update_response=stale_response)
 
-        ynab_resp, final_id, status = _update_or_replace_transaction(
+        ynab_resp, final_id, status, structure_applied = _update_or_replace_transaction(
             client, BUDGET_ID, TXN_ID, payload, existing,
         )
 
-        client.delete_transaction.assert_called_once_with(BUDGET_ID, TXN_ID)
-        client.create_transaction.assert_called_once()
-        assert status == "created"
-        assert final_id == NEW_TXN_ID
+        client.delete_transaction.assert_not_called()
+        client.create_transaction.assert_not_called()
+        assert final_id == TXN_ID
+        assert structure_applied is False
 
-    def test_remove_split_triggers_delete_recreate(self):
-        """Removing one split from a 3-split transaction triggers delete+create."""
+    def test_remove_split_ynab_ignores_flags_review_not_recreate(self):
+        """Removing one split when YNAB ignores it → structure_applied=False, no delete/create."""
         old_splits = [
             {"id": "sub-1", "amount": -20000, "category_id": CATEGORY_A, "memo": "food"},
             {"id": "sub-2", "amount": -15000, "category_id": CATEGORY_B, "memo": "cleaning"},
@@ -374,19 +398,18 @@ class TestUpdateOrReplaceTransaction:
         payload = _make_split_payload(splits=new_splits)
 
         stale_response = _make_ynab_response_ignoring_splits(existing)
-        new_response = _make_ynab_response(payload, transaction_id=NEW_TXN_ID)
-        client = _mock_client(update_response=stale_response, create_response=new_response)
+        client = _mock_client(update_response=stale_response)
 
-        ynab_resp, final_id, status = _update_or_replace_transaction(
+        ynab_resp, final_id, status, structure_applied = _update_or_replace_transaction(
             client, BUDGET_ID, TXN_ID, payload, existing,
         )
 
-        client.delete_transaction.assert_called_once_with(BUDGET_ID, TXN_ID)
-        client.create_transaction.assert_called_once()
-        assert status == "created"
+        client.delete_transaction.assert_not_called()
+        client.create_transaction.assert_not_called()
+        assert structure_applied is False
 
-    def test_split_to_single_triggers_delete_recreate(self):
-        """Converting split back to single-category triggers delete+create."""
+    def test_split_to_single_ynab_ignores_flags_review_not_recreate(self):
+        """Converting split→single when YNAB ignores it → structure_applied=False, no delete/create."""
         old_splits = [
             {"id": "sub-1", "amount": -30000, "category_id": CATEGORY_A, "memo": "food"},
             {"id": "sub-2", "amount": -20000, "category_id": CATEGORY_B, "memo": "cleaning"},
@@ -397,21 +420,20 @@ class TestUpdateOrReplaceTransaction:
 
         # YNAB ignores the attempt to unsplit — returns original with splits still active
         stale_response = _make_ynab_response_ignoring_splits(existing)
-        new_response = _make_ynab_response(payload, transaction_id=NEW_TXN_ID)
-        client = _mock_client(update_response=stale_response, create_response=new_response)
+        client = _mock_client(update_response=stale_response)
 
-        ynab_resp, final_id, status = _update_or_replace_transaction(
+        ynab_resp, final_id, status, structure_applied = _update_or_replace_transaction(
             client, BUDGET_ID, TXN_ID, payload, existing,
         )
 
-        client.delete_transaction.assert_called_once_with(BUDGET_ID, TXN_ID)
-        client.create_transaction.assert_called_once()
-        assert status == "created"
-        assert final_id == NEW_TXN_ID
+        client.delete_transaction.assert_not_called()
+        client.create_transaction.assert_not_called()
+        assert final_id == TXN_ID
+        assert structure_applied is False
 
-    def test_memo_update_on_split_no_structure_change(self):
+    def test_memo_update_on_split_no_structure_change_structure_applied_true(self):
         """Updating only top-level memo on a split transaction should succeed via PUT
-        (structure hasn't changed, so no delete+create needed)."""
+        (structure hasn't changed, so structure_applied=True)."""
         splits = [
             {"amount": -30000, "category_id": CATEGORY_A, "memo": "food"},
             {"amount": -20000, "category_id": CATEGORY_B, "memo": "cleaning"},
@@ -429,13 +451,14 @@ class TestUpdateOrReplaceTransaction:
             ],
         }
 
-        ynab_resp, final_id, status = _update_or_replace_transaction(
+        ynab_resp, final_id, status, structure_applied = _update_or_replace_transaction(
             client, BUDGET_ID, TXN_ID, payload, existing,
         )
 
         client.update_transaction.assert_called_once()
         client.delete_transaction.assert_not_called()
         assert status == "matched_updated"
+        assert structure_applied is True
 
 
 # ---------------------------------------------------------------------------

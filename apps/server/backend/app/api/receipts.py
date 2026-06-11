@@ -10,7 +10,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.orm import Session
 
 from app.api.deps import app_settings, db_session
@@ -1012,6 +1012,27 @@ def sync_receipt(
             },
         )
 
+    # Atomic claim: transition receipt to SYNCING only if not already SYNCING.
+    # This prevents double-click races from enqueuing two concurrent sync jobs.
+    result = db.execute(
+        sa_update(Receipt)
+        .where(Receipt.id == receipt.id, Receipt.status != ReceiptStatus.SYNCING.value)
+        .values(
+            status=ReceiptStatus.SYNCING.value,
+            status_reason=None,
+            sync_started_at=utcnow(),
+        )
+    )
+    db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "sync_in_progress",
+                "message": "A sync is already in progress for this receipt.",
+            },
+        )
+
     try:
         job_id = enqueue_sync_job(
             receipt_id=receipt.id,
@@ -1020,12 +1041,17 @@ def sync_receipt(
         )
     except Exception as exc:
         logger.exception("Failed to enqueue sync job for receipt %s", receipt.id)
+        # Roll back to needs_review so the user can retry.
+        db.execute(
+            sa_update(Receipt)
+            .where(Receipt.id == receipt.id)
+            .values(status=ReceiptStatus.NEEDS_REVIEW.value, status_reason=None)
+        )
+        db.commit()
         raise HTTPException(status_code=503, detail="Failed to enqueue sync job") from exc
 
-    receipt.status = ReceiptStatus.SYNCING.value
-    receipt.status_reason = None
-    receipt.sync_started_at = utcnow()
-    db.commit()
+    # Refresh in-memory object to reflect committed state.
+    db.refresh(receipt)
 
     return SyncEnqueueResponse(
         receipt_id=receipt.id,

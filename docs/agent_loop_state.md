@@ -95,12 +95,13 @@ Local webapp must also be loaded and **visually inspected** via Playwright
 - [x] Allocation pin fixes — recompute can NEVER mutate total_amount; stale main-lane pins cleared; all-pinned shortfall warns; discounts subtract from weights (floor 0).
 - Checker finding deferred to M4: same-timestamp purchase/refund collides on duplicate signature → show as near-match note (kind-differing), not duplicate-candidate.
 
-### M2 — Sync idempotency
-- [ ] Set YNAB `import_id` on every create.
-- [ ] SYNCING-status guard + row lock on `POST /receipts/{id}/sync` (no double-post).
-- [ ] Retry preserves `created_transaction_id` evidence; post-POST bookkeeping (gamification) failure must **not** mark sync FAILED.
-- [ ] **Delete-recreate PROHIBITED** — when YNAB ignores a split-structure update, leave the transaction untouched and flag the receipt for manual fix (default: never delete-recreate).
-- [ ] Reconciliation amount-drift → **pull/flag, never push** (provisional).
+### M2 — Sync idempotency ✅ COMPLETE 2026-06-11 (checker: FINDINGS incl. 1 BLOCKER → all resolved)
+- [x] `import_id` = `RA:1:` + 31 uuid hex (≤36 chars, deterministic per receipt, amount/date-independent) on every create; stripped from PUT bodies. Duplicate-import_id 409 (YNAB's real single-create dedupe contract, per OpenAPI spec) resolves idempotently via `_create_transaction_idempotent` (list + match import_id/memo marker) — checker BLOCKER fixed; force_create documented as never-double-creating.
+- [x] Endpoint atomic claim (conditional UPDATE → 409 `sync_in_progress`; rollback on enqueue failure) + worker claim on unique `idempotency_key` row (fresh RUNNING → skip; stale → reclaim). Gate ordering verified: no path strands SYNCING.
+- [x] Evidence preserved on retry (only error_text cleared); verify-before-create via `get_transaction`; post-POST bookkeeping isolated (write result commits first; gamification failure → incident + `bookkeeping_ok=False`, never FAILED). No transient SYNCED window (final status in commit-1).
+- [x] Delete-recreate REMOVED — structure-ignored updates leave YNAB untouched, receipt → NEEDS_REVIEW with manual-fix reason; `delete_transaction` never called anywhere (mock-level invariant test).
+- [x] Reconciliation amount-drift → pull + NEEDS_REVIEW flag + correction/fire, never push; `_split_signature` deliberately stays amount-blind (regression-tested).
+- [x] Stuck-job reset also FAILs stale RUNNING sync rows (receipt/row coherence).
 
 ### M3 — Approval UX
 - [ ] Sync preview modal: full signed payload (sign, account, splits, duplicate status, mode badge) + explicit confirm. Checker notes from M0: (a) the persisted dry-run payload is the *create-intent* payload — label it as such, since a matched-update live path may send a minimal memo-marker update instead; (b) branch the previewed flag color on update-vs-create (`prior_success_sync and not force_create` → updated color) instead of always-blue.

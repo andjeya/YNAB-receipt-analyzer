@@ -12,9 +12,9 @@ from sqlalchemy import select
 from app.api import game, health, ingestion, receipts, stats, ynab
 from app.config import get_settings
 from app.db import SessionLocal
-from app.enums import ReceiptStatus
+from app.enums import ReceiptStatus, YNABSyncStatus
 from app.log_setup import configure_logging
-from app.models import Receipt
+from app.models import Receipt, YNABSync
 from app.services.ynab import refresh_ynab_cache
 from app.migrations import ensure_schema_current
 from app.utils import utcnow
@@ -44,6 +44,16 @@ def _reset_stuck_jobs() -> None:
                 )
             )
         )
+        # TASK 5c — also mark stale RUNNING YNABSync rows as FAILED so that
+        # receipt and sync-row state remain coherent after a crash or restart.
+        stuck_sync_rows = list(
+            db.scalars(
+                select(YNABSync).where(
+                    YNABSync.status == YNABSyncStatus.RUNNING.value,
+                    YNABSync.started_at < cutoff,
+                )
+            )
+        )
         for receipt in stuck_extracting:
             logger.warning("Resetting stuck EXTRACTING receipt %s (started %s)", receipt.id, receipt.extraction_started_at)
             receipt.status = ReceiptStatus.INGESTED.value
@@ -52,9 +62,23 @@ def _reset_stuck_jobs() -> None:
             logger.warning("Resetting stuck SYNCING receipt %s (started %s)", receipt.id, receipt.sync_started_at)
             receipt.status = ReceiptStatus.NEEDS_REVIEW.value
             receipt.status_reason = "Reset from stuck SYNCING state on startup"
-        if stuck_extracting or stuck_syncing:
+        for sync_row in stuck_sync_rows:
+            logger.warning(
+                "Resetting stuck RUNNING YNABSync row id=%s receipt_id=%s (started %s)",
+                sync_row.id,
+                sync_row.receipt_id,
+                sync_row.started_at,
+            )
+            sync_row.status = YNABSyncStatus.FAILED.value
+            sync_row.error_text = "Reset by stuck-job recovery"
+        if stuck_extracting or stuck_syncing or stuck_sync_rows:
             db.commit()
-            logger.info("Reset %d stuck extracting and %d stuck syncing receipts", len(stuck_extracting), len(stuck_syncing))
+            logger.info(
+                "Reset %d stuck extracting, %d stuck syncing receipts, %d stuck sync rows",
+                len(stuck_extracting),
+                len(stuck_syncing),
+                len(stuck_sync_rows),
+            )
 
 
 def _refresh_cache_once() -> None:
