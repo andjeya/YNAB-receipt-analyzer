@@ -17,6 +17,7 @@ import {
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { GripVertical } from "lucide-react";
 
 import { AllocationItem, AllocationLane, AllocationWorkspace } from "@/lib/types";
 import { setWorkspaceLanePinnedAmount } from "@/lib/allocation-workspace";
@@ -67,10 +68,12 @@ function DraggableAllocationItem({
   item,
   selected,
   onToggle,
+  laneColorClass,
 }: {
   item: AllocationItem;
   selected: boolean;
   onToggle: (itemId: string) => void;
+  laneColorClass?: string;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: item.item_id,
@@ -90,15 +93,20 @@ function DraggableAllocationItem({
       type="button"
       aria-pressed={selected}
       data-testid={`alloc-item-${item.source_index}`}
-      className={`w-full rounded-xl border px-2 py-1.5 text-left text-xs transition ${
+      className={`w-full rounded-xl border border-l-2 px-2 py-1.5 text-left text-xs transition ${laneColorClass ?? "border-l-transparent"} ${
         selected ? "border-sky-500 bg-sky-100 text-sky-900" : "border-ink/15 bg-white text-ink hover:bg-sand/50"
       }`}
       onClick={() => onToggle(item.item_id)}
     >
-      <p className="font-semibold">{item.label || `Item ${item.source_index + 1}`}</p>
-      <p className="text-[11px] text-ink/70">
-        {item.amount == null ? "Unknown amount" : `$${Math.abs(item.amount).toFixed(2)}`}
-      </p>
+      <div className="flex items-center gap-1.5">
+        <GripVertical className="h-3.5 w-3.5 shrink-0 text-ink/30 cursor-grab" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold truncate">{item.label || `Item ${item.source_index + 1}`}</p>
+          <p className="text-[11px] text-ink/70">
+            {item.amount == null ? "Unknown amount" : `$${Math.abs(item.amount).toFixed(2)}`}
+          </p>
+        </div>
+      </div>
     </button>
   );
 }
@@ -122,6 +130,14 @@ function PinBadge({ pinnedAmount, onUnpin }: { pinnedAmount: number; onUnpin: ()
   );
 }
 
+function getLaneColorClass(laneId: string): string {
+  if (laneId === "unassigned") return "border-l-slate-300";
+  if (laneId === "main") return "border-l-sky-400";
+  const splitIndex = Number(laneId.split("-")[1] ?? 0);
+  const colors = ["border-l-violet-400", "border-l-amber-400", "border-l-emerald-400", "border-l-rose-400"];
+  return colors[splitIndex % colors.length] ?? "border-l-sky-400";
+}
+
 function LaneColumn({
   lane,
   title,
@@ -130,6 +146,7 @@ function LaneColumn({
   selectedItemIds,
   onToggleItem,
   onUnpin,
+  onMoveItems,
 }: {
   lane: AllocationLane;
   title: string;
@@ -138,8 +155,10 @@ function LaneColumn({
   selectedItemIds: Set<string>;
   onToggleItem: (itemId: string) => void;
   onUnpin: (laneId: string) => void;
+  onMoveItems: (itemIds: string[], laneId: string) => void;
 }) {
   const { isOver, setNodeRef } = useDroppable({ id: lane.lane_id });
+  const colorClass = getLaneColorClass(lane.lane_id);
 
   return (
     <div
@@ -157,6 +176,16 @@ function LaneColumn({
           ) : null}
         </div>
         <div className="flex items-center gap-2">
+          {selectedItemIds.size > 0 ? (
+            <button
+              type="button"
+              className="text-[10px] font-semibold text-sky-700 hover:underline focus-visible:ring-1 focus-visible:ring-sky-400 rounded px-1"
+              onClick={() => onMoveItems(Array.from(selectedItemIds), lane.lane_id)}
+              title={`Move ${selectedItemIds.size} selected item(s) here`}
+            >
+              ← Move here
+            </button>
+          ) : null}
           {dollarTotal != null ? (
             <p className="text-[11px] font-semibold text-ink/60">${dollarTotal.toFixed(2)}</p>
           ) : null}
@@ -175,6 +204,7 @@ function LaneColumn({
             item={item}
             selected={selectedItemIds.has(item.item_id)}
             onToggle={onToggleItem}
+            laneColorClass={colorClass}
           />
         ))}
       </div>
@@ -317,23 +347,23 @@ export function AllocationBoard({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="font-semibold">Item Allocation</h2>
         <div className="flex flex-wrap items-center gap-1">
-          <Button variant="outline" size="sm" onClick={onClearSelection} disabled={selectedItemIds.size === 0}>
+          <Button variant="outline" size="sm" className="gap-1" onClick={onClearSelection} disabled={selectedItemIds.size === 0}>
             Clear selection
           </Button>
-          <Button variant="outline" size="sm" data-testid="recompute-keep" onClick={handleRecomputeKeep} disabled={isRecomputing}>
-            {isRecomputing ? "Recomputing..." : "Recompute (Keep Pinned)"}
+          <Button variant="outline" size="sm" className="gap-1" data-testid="recompute-keep" onClick={handleRecomputeKeep} disabled={isRecomputing} title="Re-run the AI allocation, keeping your manual amount adjustments">
+            {isRecomputing ? "Thinking..." : "Re-suggest"}
           </Button>
-          <Button size="sm" data-testid="recompute-discard" onClick={handleRecomputeDiscard} disabled={isRecomputing}>
-            Recompute (Discard Pinned)
+          <Button variant="outline" size="sm" className="gap-1 border-amber-400 text-amber-800 hover:bg-amber-50" data-testid="recompute-discard" onClick={handleRecomputeDiscard} disabled={isRecomputing} title="Start completely fresh — discard all manual changes and let AI reallocate">
+            Start fresh
           </Button>
           {undoAvailable && onWorkspaceChange ? (
             <Button
               variant="outline"
               size="sm"
-              className="border-amber-400 text-amber-700 hover:bg-amber-50"
+              className="gap-1 border-sky-400 text-sky-700 hover:bg-sky-50"
               onClick={handleUndo}
             >
-              Undo
+              Undo move
             </Button>
           ) : null}
         </div>
@@ -358,6 +388,10 @@ export function AllocationBoard({
               selectedItemIds={selectedItemIds}
               onToggleItem={onToggleItem}
               onUnpin={handleUnpinLane}
+              onMoveItems={(itemIds, laneId) => {
+                offerUndo(workspace);
+                onMoveItems(itemIds, laneId);
+              }}
             />
           ))}
         </div>
