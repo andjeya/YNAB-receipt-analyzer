@@ -7,8 +7,11 @@ import { format, formatDistanceToNow } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
   Droplets,
   Flame,
+  HelpCircle,
   Menu,
   RefreshCcw,
   ScanSearch,
@@ -245,6 +248,210 @@ function StatTilePopover({ text, id }: { text: string; id: string }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// "How scoring works" dialog content
+// ─────────────────────────────────────────────────────────────────────────────
+
+function HowScoringWorksDialog({
+  open,
+  onClose,
+  avgValidationAgeHours,
+}: {
+  open: boolean;
+  onClose: () => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  avgValidationAgeHours: any;
+}) {
+  return (
+    <Dialog open={open} onClose={onClose} labelledById="how-scoring-heading">
+      <Card className="w-full max-w-sm space-y-4 border-0 shadow-none">
+        <h2 id="how-scoring-heading" className="text-base font-semibold">How scoring works</h2>
+
+        <section className="space-y-2 text-sm text-ink/80">
+          <p className="font-semibold text-ink">Weekly score</p>
+          <p>
+            Each week gets a colour based on your <em>slowest</em> receipt that wasn&apos;t shredded.
+            Review within roughly 24 hours and the week goes <span className="font-semibold text-emerald-600">green</span>.
+            A little later and it&apos;s <span className="font-semibold text-yellow-600">yellow</span>.
+            Leave it too long and it turns <span className="font-semibold text-amber-800">brown</span>.
+          </p>
+        </section>
+
+        <section className="space-y-2 text-sm text-ink/80">
+          <p className="font-semibold text-ink">Water drops</p>
+          <p>
+            Every time you fix a category in YNAB after syncing, you earn water drops.
+            Spend them to put out fires before they burn your score.
+          </p>
+        </section>
+
+        <section className="space-y-2 text-sm text-ink/80">
+          <p className="font-semibold text-ink">Fire &amp; burn</p>
+          <p>
+            Fire builds up when receipts sit unreviewed. Once fire crosses the threshold,
+            it burns — turning a past week brown. Use water early to prevent this.
+          </p>
+        </section>
+
+        <section className="space-y-2 text-sm text-ink/80">
+          <p className="font-semibold text-ink">Shred tokens</p>
+          <p>
+            Hit a streak milestone (every 5 weeks in a row) and you earn a shred token.
+            Use it to shred a late or very-late receipt — it won&apos;t count against your weekly score.
+          </p>
+        </section>
+
+        <section className="space-y-2 text-sm text-ink/80">
+          <p className="font-semibold text-ink">Streak</p>
+          <p>
+            A streak counts consecutive weeks where you reviewed at least one receipt.
+            Keep it going to reach milestones and earn shred tokens.
+          </p>
+        </section>
+
+        <section className="rounded-xl bg-ink/5 px-3 py-2 text-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/50">Your current validation wait</p>
+          <p className="mt-1 text-lg font-bold text-ink">{formatWaitTime(avgValidationAgeHours)}</p>
+          <p className="text-xs text-ink/60">Average time between a receipt arriving and you reviewing it.</p>
+        </section>
+
+        <div className="flex justify-end">
+          <Button variant="outline" onClick={onClose}>Got it</Button>
+        </div>
+      </Card>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Journey-path week board
+// ─────────────────────────────────────────────────────────────────────────────
+
+type WeekSlot = {
+  index: number;
+  start_at: string;
+  end_at: string;
+  receipt_count: number;
+  display_state: GameDisplayState | null;
+};
+
+// State-colour map for the path nodes (matches TONE_STYLES in receipt-state-icon.tsx)
+const NODE_FILL: Record<Exclude<GameDisplayState, null>, string> = {
+  green:    "#34d399",
+  yellow:   "#facc15",
+  brown:    "#a16207",
+  shredded: "#a16207",
+};
+
+function JourneyPathBoard({ slots }: { slots: WeekSlot[] }) {
+  const [openNode, setOpenNode] = useState<number | null>(null);
+
+  // Close on Escape
+  useEffect(() => {
+    if (openNode === null) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") setOpenNode(null); };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [openNode]);
+
+  // Close on outside click
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (openNode === null) return;
+    const handler = (e: MouseEvent | TouchEvent) => {
+      if (boardRef.current && !boardRef.current.contains(e.target as Node)) setOpenNode(null);
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
+  }, [openNode]);
+
+  return (
+    <div ref={boardRef} className="relative">
+      {/* Connecting track line */}
+      <div className="absolute left-[calc(100%/18)] right-[calc(100%/18)] top-1/2 -translate-y-1/2 h-0.5 bg-white/20 rounded-full" aria-hidden="true" />
+
+      <div className="relative flex items-center justify-between gap-0">
+        {slots.map((slot, arrayIndex) => {
+          const isCurrentWeek = arrayIndex === slots.length - 1;
+          const slotLabel = `${isCurrentWeek ? "Current week — " : ""}${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} | scored receipts: ${slot.receipt_count}`;
+          const hasState = slot.display_state !== null;
+          const fill = hasState ? NODE_FILL[slot.display_state!] : undefined;
+          const isOpen = openNode === arrayIndex;
+
+          return (
+            <div key={`week-slot-${slot.index}`} className="relative flex flex-col items-center">
+              <button
+                type="button"
+                onClick={() => setOpenNode((prev) => (prev === arrayIndex ? null : arrayIndex))}
+                aria-describedby={isOpen ? `week-node-popover-${arrayIndex}` : undefined}
+                className={cn(
+                  "relative flex items-center justify-center rounded-full border-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+                  isCurrentWeek
+                    ? "h-10 w-10 border-mint/70 bg-ink animate-current-week-pulse"
+                    : "h-7 w-7 border-sand/20",
+                  hasState ? "border-transparent" : "border-dashed border-sand/30 bg-white/5",
+                )}
+                style={hasState ? { backgroundColor: fill, borderColor: fill } : undefined}
+                role="img"
+                aria-label={slotLabel}
+                title={slotLabel}
+              >
+                {slot.display_state === "shredded" ? (
+                  <ReceiptStateIcon tone="brown" shredded className={isCurrentWeek ? "h-5 w-5" : "h-3.5 w-3.5"} />
+                ) : hasState ? (
+                  <span
+                    className={cn("rounded-full bg-white/30", isCurrentWeek ? "h-3 w-3" : "h-2 w-2")}
+                    aria-hidden="true"
+                  />
+                ) : null}
+              </button>
+
+              {/* Node popover */}
+              {isOpen ? (
+                <div
+                  role="status"
+                  id={`week-node-popover-${arrayIndex}`}
+                  className="absolute bottom-full left-1/2 z-20 mb-2 w-max max-w-[13rem] -translate-x-1/2 rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
+                >
+                  {slotLabel}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Legend */}
+      <div className="mt-3 flex flex-wrap items-center gap-3 text-[10px] text-sand/60">
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#34d399" }} />
+          On time
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#facc15" }} />
+          Late
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#a16207" }} />
+          Very late
+        </span>
+        <span className="flex items-center gap-1">
+          <ReceiptStateIcon tone="brown" shredded className="h-2.5 w-2.5" />
+          Shredded
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main header component
+// ─────────────────────────────────────────────────────────────────────────────
+
 function ReceiptListHeader({
   dashboardData, highlightedCount, totalCount, maxWaterSpend, fireUnits, fireToBurn, isSpendWaterPending, onOpenWaterSpend,
   celebratingStreak,
@@ -263,10 +470,33 @@ function ReceiptListHeader({
   const derived = deriveSnappyPose({ needsReviewCount: highlightedCount, totalCount });
   const pose = celebratingStreak ? "celebrating" : derived.pose;
 
-  // Which stat tile currently has its popover open (null = none)
+  // Which stat chip currently has its popover open (null = none)
   const [openTile, setOpenTile] = useState<StatTileId | null>(null);
 
-  // Close on Escape key
+  // "How scoring works" dialog
+  const [scoringOpen, setScoringOpen] = useState(false);
+
+  // Mobile collapse state — persisted in localStorage.
+  // null = SSR/unhydrated (always show full content so no layout shift on desktop).
+  // After first client render we read the stored preference.
+  const [expanded, setExpanded] = useState<boolean | null>(null);
+  useEffect(() => {
+    try {
+      setExpanded(localStorage.getItem("snappy_header_expanded") !== "false");
+    } catch {
+      setExpanded(true);
+    }
+  }, []);
+  const isExpanded = expanded !== false; // treat null (SSR) as expanded
+  const toggleExpanded = () => {
+    setExpanded((prev) => {
+      const next = prev === false; // toggle: false → true, anything else → false
+      try { localStorage.setItem("snappy_header_expanded", String(next)); } catch { /* ignore */ }
+      return next;
+    });
+  };
+
+  // Close open popover on Escape key
   useEffect(() => {
     if (!openTile) return;
     const handler = (e: KeyboardEvent) => {
@@ -295,183 +525,200 @@ function ReceiptListHeader({
 
   const toggleTile = (id: StatTileId) => setOpenTile((prev) => (prev === id ? null : id));
 
+  const streak = dashboardData?.momentum.current_streak ?? 0;
+  const waterUnitsVal = dashboardData?.correctness.water_units ?? 0;
+  const waterCapacity = dashboardData?.correctness.water_capacity ?? 0;
+
+  const weekSlots: WeekSlot[] = dashboardData?.forest.weekly_slots ?? [];
+
+  // ── Chip render helpers ────────────────────────────────────────────────────
+
+  const streakLabel = streak === 0 ? "start a streak" : "day streak";
+  const fireLabel = fireToBurn === 0 ? "nothing to burn \u{1F389}" : `${fireToBurn} to burn`;
+
   return (
-    <Card className="animate-reveal space-y-3 bg-ink p-4 text-sand">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <Snappy pose={pose} size="h-16 w-16" />
-          <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-mint">Receipt -&gt; YNAB</p>
-            <h1 className="mt-1 font-[var(--font-heading)] text-3xl font-bold">Snappy</h1>
-            <p className="mt-1 text-sm text-sand/80">
-              {derived.line}
+    <>
+      {/* visually-hidden page h1 for a11y; visible eyebrow below */}
+      <h1 className="sr-only">Snappy — Receipt to YNAB</h1>
+
+      <Card
+        className="animate-reveal overflow-hidden rounded-3xl p-0 text-sand"
+        style={{ background: "linear-gradient(135deg, #172026 0%, #0e2a2f 60%, #0d2535 100%)" }}
+      >
+        {/* ── Top section: always visible ────────────────────────────────── */}
+        <div className="flex items-center gap-3 px-4 pt-4 pb-3">
+          {/* Snappy hero */}
+          <div className="shrink-0">
+            <Snappy pose={pose} size="h-20 w-20 sm:h-24 sm:w-24" />
+          </div>
+
+          {/* Speech bubble + eyebrow */}
+          <div className="min-w-0 flex-1">
+            {/* Eyebrow label */}
+            <p className="truncate whitespace-nowrap text-[10px] font-bold uppercase tracking-[0.18em] text-mint/70" aria-hidden="true">
+              SNAPPY · RECEIPT &rarr; YNAB
             </p>
+
+            {/* Speech bubble */}
+            <div className="relative mt-1.5">
+              {/* Tail pointing left toward Snappy */}
+              <div
+                className="absolute -left-2 top-1/2 -translate-y-1/2 h-0 w-0"
+                style={{
+                  borderTop: "6px solid transparent",
+                  borderBottom: "6px solid transparent",
+                  borderRight: "8px solid rgba(255,248,237,0.12)",
+                }}
+                aria-hidden="true"
+              />
+              <div
+                className="w-fit max-w-full rounded-2xl bg-white/10 px-3 py-2"
+              >
+                <p className="text-sm font-semibold leading-snug text-sand">
+                  {derived.line}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Mobile chevron */}
+          <button
+            type="button"
+            onClick={toggleExpanded}
+            aria-expanded={isExpanded}
+            aria-label={isExpanded ? "Collapse header" : "Expand header"}
+            className="ml-auto shrink-0 rounded-full p-1.5 text-sand/60 transition hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-mint/70 sm:hidden"
+          >
+            {isExpanded ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
+          </button>
+        </div>
+
+        {/* ── Expandable section: chips + journey path ───────────────────── */}
+        <div className={cn("px-4 pb-4 space-y-4", isExpanded ? "block" : "hidden sm:block")}>
+          {/* Stat chips row */}
+          <div ref={headerRef} className="flex flex-wrap gap-2">
+
+            {/* Streak chip */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => toggleTile("streak")}
+                aria-describedby={openTile === "streak" ? "tile-popover-streak" : undefined}
+                data-testid="stat-tile-streak"
+                className="flex items-center gap-2 rounded-2xl px-3 py-2 transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
+                style={{ background: "linear-gradient(135deg, #f59e0b 0%, #f97316 100%)" }}
+              >
+                <Flame className="h-5 w-5 text-white/90" aria-hidden="true" />
+                <div className="text-left">
+                  <p className="text-xl font-bold leading-none text-white">{streak}</p>
+                  <p className="mt-0.5 text-[11px] font-medium text-white/80">{streakLabel}</p>
+                </div>
+              </button>
+              {openTile === "streak" ? (
+                <StatTilePopover id="tile-popover-streak" text={STAT_TILE_TOOLTIPS.streak} />
+              ) : null}
+            </div>
+
+            {/* Water chip */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={onOpenWaterSpend}
+                disabled={maxWaterSpend <= 0 || isSpendWaterPending}
+                aria-label={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
+                data-testid="stat-tile-water"
+                className={cn(
+                  "flex items-center gap-2 rounded-2xl px-3 py-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+                  maxWaterSpend > 0 ? "hover:brightness-110" : "cursor-not-allowed opacity-70",
+                  isSpendWaterPending ? "animate-water-pulse" : undefined,
+                )}
+                style={{ background: "linear-gradient(135deg, #0ea5e9 0%, #14b8a6 100%)" }}
+              >
+                <Waves className="h-5 w-5 text-white/90" aria-hidden="true" />
+                <div className="text-left">
+                  <p className="text-xl font-bold leading-none text-white">
+                    {waterUnitsVal}
+                    <span className="text-sm font-normal text-white/70">/{waterCapacity}</span>
+                  </p>
+                  <p className="mt-0.5 text-[11px] font-medium text-white/80">water saved</p>
+                </div>
+              </button>
+              {/* Info affordance */}
+              <button
+                type="button"
+                className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-ink/60 text-[10px] font-bold text-sand/80 hover:bg-ink/80 focus-visible:ring-2 focus-visible:ring-mint/70"
+                onClick={(e) => { e.stopPropagation(); toggleTile("water"); }}
+                aria-label="Water tile info"
+                aria-describedby={openTile === "water" ? "tile-popover-water" : undefined}
+                data-testid="stat-tile-water-info"
+              >
+                ?
+              </button>
+              {openTile === "water" ? (
+                <StatTilePopover
+                  id="tile-popover-water"
+                  text={maxWaterSpend > 0 ? "Tap the tile to spend water and extinguish fire. Water is earned by correcting categories in YNAB." : "Water: earned by correcting categories in YNAB. Spend water to extinguish fire."}
+                />
+              ) : null}
+            </div>
+
+            {/* Fire chip */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => toggleTile("fire")}
+                aria-describedby={openTile === "fire" ? "tile-popover-fire" : undefined}
+                data-testid="stat-tile-fire"
+                className="flex items-center gap-2 rounded-2xl px-3 py-2 transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
+                style={{ background: "linear-gradient(135deg, #e11d48 0%, #f43f5e 100%)" }}
+              >
+                <Flame className="h-5 w-5 text-white/90" aria-hidden="true" />
+                <div className="text-left">
+                  <p className="text-xl font-bold leading-none text-white">{fireUnits}</p>
+                  <p className="mt-0.5 text-[11px] font-medium text-white/80">{fireLabel}</p>
+                </div>
+              </button>
+              {openTile === "fire" ? (
+                <StatTilePopover id="tile-popover-fire" text={STAT_TILE_TOOLTIPS.fire} />
+              ) : null}
+            </div>
+
+            {/* Shred tokens pill */}
+            <div className="flex items-center gap-1.5 rounded-2xl bg-white/10 px-3 py-2">
+              <Scissors className="h-4 w-4 text-amber-300" aria-hidden="true" />
+              <div className="text-left">
+                <p className="text-xl font-bold leading-none text-white">{dashboardData?.momentum.token_balance ?? 0}</p>
+                <p className="mt-0.5 text-[11px] font-medium text-sand/70">shred tokens</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Journey path section */}
+          <div>
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-sand/60">Past 9 weeks</p>
+              <button
+                type="button"
+                onClick={() => setScoringOpen(true)}
+                className="flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-sand/70 transition hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-mint/70"
+                aria-label="How scoring works"
+              >
+                <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                How it works
+              </button>
+            </div>
+
+            <JourneyPathBoard slots={weekSlots} />
           </div>
         </div>
-        <div className="flex items-center gap-1 rounded-2xl bg-white/10 px-3 py-2 text-xs">
-          <Scissors className="h-3.5 w-3.5 text-amber-300" />
-          <span className="font-semibold">Shred tokens:</span>
-          <span>{dashboardData?.momentum.token_balance ?? 0}</span>
-        </div>
-      </div>
+      </Card>
 
-      <div ref={headerRef} className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-        {/* Streak tile */}
-        <div className="relative">
-          <button
-            type="button"
-            className="w-full rounded-xl bg-white/10 px-3 py-2 text-left transition hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
-            onClick={() => toggleTile("streak")}
-            aria-describedby={openTile === "streak" ? "tile-popover-streak" : undefined}
-            title={STAT_TILE_TOOLTIPS.streak}
-            data-testid="stat-tile-streak"
-          >
-            <p className="text-sand/80">Streak</p>
-            <p className="mt-1 text-base font-semibold">{dashboardData?.momentum.current_streak ?? 0}</p>
-          </button>
-          {openTile === "streak" ? (
-            <StatTilePopover id="tile-popover-streak" text={STAT_TILE_TOOLTIPS.streak} />
-          ) : null}
-        </div>
-
-        {/* Validation wait tile */}
-        <div className="relative">
-          <button
-            type="button"
-            className="w-full rounded-xl bg-white/10 px-3 py-2 text-left transition hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
-            onClick={() => toggleTile("wait")}
-            aria-describedby={openTile === "wait" ? "tile-popover-wait" : undefined}
-            title={STAT_TILE_TOOLTIPS.wait}
-            data-testid="stat-tile-wait"
-          >
-            <p className="text-sand/80">Validation wait</p>
-            <p className="mt-1 text-base font-semibold">{formatWaitTime(dashboardData?.summary.avg_validation_age_hours)}</p>
-          </button>
-          {openTile === "wait" ? (
-            <StatTilePopover id="tile-popover-wait" text={STAT_TILE_TOOLTIPS.wait} />
-          ) : null}
-        </div>
-
-        {/* Water tile — opens spend modal; "?" affordance shows info popover */}
-        <div className="relative">
-          <button
-            type="button"
-            className={cn(
-              "w-full rounded-xl bg-white/10 px-3 py-2 text-left transition focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2",
-              maxWaterSpend > 0 ? "hover:bg-white/20" : "cursor-not-allowed opacity-80",
-              isSpendWaterPending ? "animate-water-pulse" : undefined,
-            )}
-            onClick={onOpenWaterSpend}
-            disabled={maxWaterSpend <= 0 || isSpendWaterPending}
-            title={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "Water: earned by correcting categories in YNAB. Spend water to extinguish fire."}
-            aria-label={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
-            data-testid="stat-tile-water"
-          >
-            <p className="text-sand/80">Water</p>
-            <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
-              <Waves className="h-3.5 w-3.5 text-sky-300" />
-              {dashboardData ? `${dashboardData.correctness.water_units}/${dashboardData.correctness.water_capacity}` : "0/0"}
-            </p>
-          </button>
-          {/* "?" info affordance for the water tile so touch users can read the description without triggering the modal */}
-          <button
-            type="button"
-            className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-white/20 text-[10px] font-bold text-sand/80 hover:bg-white/30 focus-visible:ring-2 focus-visible:ring-mint/70"
-            onClick={(e) => { e.stopPropagation(); toggleTile("water"); }}
-            aria-label="Water tile info"
-            aria-describedby={openTile === "water" ? "tile-popover-water" : undefined}
-            data-testid="stat-tile-water-info"
-          >
-            ?
-          </button>
-          {openTile === "water" ? (
-            <StatTilePopover
-              id="tile-popover-water"
-              text={maxWaterSpend > 0 ? "Tap the tile to spend water and extinguish fire. Water is earned by correcting categories in YNAB." : "Water: earned by correcting categories in YNAB. Spend water to extinguish fire."}
-            />
-          ) : null}
-        </div>
-
-        {/* Fire tile */}
-        <div className="relative">
-          <button
-            type="button"
-            className="w-full rounded-xl bg-white/10 px-3 py-2 text-left transition hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
-            onClick={() => toggleTile("fire")}
-            aria-describedby={openTile === "fire" ? "tile-popover-fire" : undefined}
-            title={STAT_TILE_TOOLTIPS.fire}
-            data-testid="stat-tile-fire"
-          >
-            <p className="text-sand/80">Fire</p>
-            <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
-              <Flame className="h-3.5 w-3.5 text-rose-300" />
-              {fireUnits}
-            </p>
-            <p className="mt-1 text-[11px] text-sand/80">
-              {fireToBurn > 0 ? `${fireToBurn} to burn` : "Burn threshold reached"}
-            </p>
-          </button>
-          {openTile === "fire" ? (
-            <StatTilePopover id="tile-popover-fire" text={STAT_TILE_TOOLTIPS.fire} />
-          ) : null}
-        </div>
-      </div>
-
-      <div>
-        <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-sand/70">
-          <p>Past 9 weeks</p>
-          <p>Weekly score = lowest non-shredded receipt</p>
-        </div>
-        <div className="grid grid-cols-9 gap-1.5 rounded-2xl bg-black/20 p-2">
-          {(dashboardData?.forest.weekly_slots ?? []).map((slot: { index: number; start_at: string; end_at: string; receipt_count: number; display_state: GameDisplayState | null }, arrayIndex: number, slots: { index: number; start_at: string; end_at: string; receipt_count: number; display_state: GameDisplayState | null }[]) => {
-            const isCurrentWeek = arrayIndex === slots.length - 1;
-            const slotLabel = `${isCurrentWeek ? "Current week — " : ""}${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} | scored receipts: ${slot.receipt_count}`;
-            return (
-              <div
-                key={`week-slot-${slot.index}`}
-                className={`flex h-11 flex-col items-center justify-center rounded-lg bg-white/5 ${isCurrentWeek ? "ring-2 ring-mint/60" : ""}`}
-                title={slotLabel}
-                role="img"
-                aria-label={slotLabel}
-              >
-                {slot.display_state ? (
-                  <ReceiptStateIcon
-                    tone={slot.display_state === "shredded" ? "brown" : slot.display_state}
-                    shredded={slot.display_state === "shredded"}
-                    className="h-[18px] w-[18px]"
-                  />
-                ) : (
-                  <span className="h-[18px] w-[18px] rounded-full border border-sand/25" aria-label="No scored receipts this week" />
-                )}
-              </div>
-            );
-          })}
-        </div>
-        {/* Legend: colors match TONE_STYLES in receipt-state-icon.tsx exactly */}
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-[10px] text-sand/60">
-          <span className="flex items-center gap-1">
-            {/* green fill: #34d399 */}
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#34d399" }} />
-            On time
-          </span>
-          <span className="flex items-center gap-1">
-            {/* yellow fill: #facc15 */}
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#facc15" }} />
-            Late
-          </span>
-          <span className="flex items-center gap-1">
-            {/* brown fill: #a16207 */}
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#a16207" }} />
-            Very late
-          </span>
-          <span className="flex items-center gap-1">
-            {/* shredded = brown icon with shredded=true; same #a16207 fill, distinct icon rendered in board */}
-            <ReceiptStateIcon tone="brown" shredded className="h-2.5 w-2.5" />
-            Shredded
-          </span>
-        </div>
-      </div>
-    </Card>
+      <HowScoringWorksDialog
+        open={scoringOpen}
+        onClose={() => setScoringOpen(false)}
+        avgValidationAgeHours={dashboardData?.summary?.avg_validation_age_hours}
+      />
+    </>
   );
 }
 

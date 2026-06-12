@@ -204,6 +204,20 @@ a {
   animation: snappy-sprout 300ms ease-out;
 }
 
+/* Current-week node pulse on the journey path board */
+@keyframes current-week-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(122, 214, 194, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(122, 214, 194, 0.25);
+  }
+}
+
+.animate-current-week-pulse {
+  animation: current-week-pulse 2s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-incident-enter,
   .animate-fire-fade,
@@ -215,7 +229,8 @@ a {
   .animate-snappy-pop,
   .animate-snappy-lean,
   .animate-snappy-breathe,
-  .animate-snappy-sprout {
+  .animate-snappy-sprout,
+  .animate-current-week-pulse {
     animation: none !important;
   }
 }
