@@ -58,6 +58,7 @@ function formatWaitTime(value: number | null | undefined): string {
   if (value == null) return "Not scored";
   if (value < 1) return `${Math.max(Math.round(value * 60), 1)}m`;
   if (value < 24) return `${Math.round(value)}h`;
+  if (value > 24 * 30) return `~${Math.round(value / 24 / 30)}mo`;
   return `${(value / 24).toFixed(1)}d`;
 }
 
@@ -262,11 +263,11 @@ function ReceiptListHeader({
       </div>
 
       <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-        <div className="rounded-xl bg-white/10 px-3 py-2">
+        <div className="rounded-xl bg-white/10 px-3 py-2" title="Streak: consecutive weeks with at least one synced receipt. Milestones every 5 earn a shred token.">
           <p className="text-sand/80">Streak</p>
           <p className="mt-1 text-base font-semibold">{dashboardData?.momentum.current_streak ?? 0}</p>
         </div>
-        <div className="rounded-xl bg-white/10 px-3 py-2">
+        <div className="rounded-xl bg-white/10 px-3 py-2" title="Average hours between a receipt landing in the inbox and you reviewing it. Lower is better — affects your weekly score.">
           <p className="text-sand/80">Validation wait</p>
           <p className="mt-1 text-base font-semibold">{formatWaitTime(dashboardData?.summary.avg_validation_age_hours)}</p>
         </div>
@@ -279,7 +280,7 @@ function ReceiptListHeader({
           )}
           onClick={onOpenWaterSpend}
           disabled={maxWaterSpend <= 0 || isSpendWaterPending}
-          title={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
+          title={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "Water: earned by correcting categories in YNAB. Spend water to extinguish fire."}
           aria-label={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
         >
           <p className="text-sand/80">Water</p>
@@ -288,7 +289,7 @@ function ReceiptListHeader({
             {dashboardData ? `${dashboardData.correctness.water_units}/${dashboardData.correctness.water_capacity}` : "0/0"}
           </p>
         </button>
-        <div className="rounded-xl bg-white/10 px-3 py-2">
+        <div className="rounded-xl bg-white/10 px-3 py-2" title="Fire: earned when you wait too long to review receipts. Too much fire burns your weekly score.">
           <p className="text-sand/80">Fire</p>
           <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
             <Flame className="h-3.5 w-3.5 text-rose-300" />
@@ -306,12 +307,13 @@ function ReceiptListHeader({
           <p>Weekly score = lowest non-shredded receipt</p>
         </div>
         <div className="grid grid-cols-9 gap-1.5 rounded-2xl bg-black/20 p-2">
-          {(dashboardData?.forest.weekly_slots ?? []).map((slot: { index: number; start_at: string; end_at: string; receipt_count: number; display_state: GameDisplayState | null }) => {
-            const slotLabel = `${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} | scored receipts: ${slot.receipt_count}`;
+          {(dashboardData?.forest.weekly_slots ?? []).map((slot: { index: number; start_at: string; end_at: string; receipt_count: number; display_state: GameDisplayState | null }, arrayIndex: number, slots: { index: number; start_at: string; end_at: string; receipt_count: number; display_state: GameDisplayState | null }[]) => {
+            const isCurrentWeek = arrayIndex === slots.length - 1;
+            const slotLabel = `${isCurrentWeek ? "Current week — " : ""}${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} | scored receipts: ${slot.receipt_count}`;
             return (
               <div
                 key={`week-slot-${slot.index}`}
-                className="flex h-11 flex-col items-center justify-center rounded-lg bg-white/5"
+                className={`flex h-11 flex-col items-center justify-center rounded-lg bg-white/5 ${isCurrentWeek ? "ring-2 ring-mint/60" : ""}`}
                 title={slotLabel}
                 role="img"
                 aria-label={slotLabel}
@@ -328,6 +330,11 @@ function ReceiptListHeader({
               </div>
             );
           })}
+        </div>
+        <div className="mt-2 flex items-center gap-3 text-[10px] text-sand/60">
+          <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-400/80" />On time</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-400/80" />Late</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-full bg-stone-400/80" />Very late</span>
         </div>
       </div>
     </Card>
@@ -432,98 +439,103 @@ function ReceiptListItem({
   const sproutClass = isGreen ? "animate-snappy-sprout" : undefined;
 
   return (
-    <Card
-      className={cn(
-        "animate-reveal transition",
-        receipt.status === "needs_review"
-          ? "border-amber-300 bg-amber-50/70"
-          : receipt.status === "duplicate_review"
-            ? "border-orange-300 bg-orange-50/70"
-            : undefined,
-      )}
-      style={{ animationDelay: `${120 + index * 28}ms` }}
-    >
-      <div className="flex items-start gap-3">
-        <div className="mt-1 flex shrink-0 items-center gap-1.5">
-          {correctionVisible ? (
-            <span title="YNAB correction tracked" aria-label="YNAB correction tracked">
-              <Flame
-                className="h-4 w-4 animate-fire-fade"
-                style={{ color: correctionColor, opacity: Math.max(correctionOpacity, 0.12) }}
-                aria-hidden="true"
-              />
-            </span>
-          ) : null}
-          <div className="flex w-7 justify-center">
-            {tone ? <ReceiptStateIcon tone={tone} shredded={shredded} className={cn("h-5 w-5", sproutClass)} /> : null}
-          </div>
-        </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3">
-            <Link href={`/receipts/${receipt.id}`} className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">
-                {receipt.display_payee_name ?? receipt.original_filename}
-              </p>
-              {showWaiting ? (
-                <p className="mt-1 text-xs font-semibold text-amber-700">
-                  {formatWallWait(receipt.ingested_at)} waiting
-                </p>
-              ) : (
-                <p className="mt-1 text-xs text-ink/65">
-                  {formatDistanceToNow(new Date(receipt.ingested_at), { addSuffix: true })}
-                </p>
-              )}
-            </Link>
-            <div className="text-right text-xs">
-              <p className="uppercase tracking-wide text-ink/70">Validation wait</p>
-              <p className="mt-1 font-semibold">{formatWaitTime(tile?.age_hours_at_validation)}</p>
+    <div className="relative">
+      <Card
+        className={cn(
+          "animate-reveal transition",
+          receipt.status === "needs_review"
+            ? "border-amber-300 bg-amber-50/70"
+            : receipt.status === "duplicate_review"
+              ? "border-orange-300 bg-orange-50/70"
+              : undefined,
+        )}
+        style={{ animationDelay: `${120 + index * 28}ms` }}
+      >
+        <Link href={`/receipts/${receipt.id}`} className="absolute inset-0 rounded-[inherit] z-0" aria-hidden="true" tabIndex={-1} />
+        <div className="flex items-start gap-3">
+          <div className="mt-1 flex shrink-0 items-center gap-1.5">
+            {correctionVisible ? (
+              <span title="YNAB correction tracked" aria-label="YNAB correction tracked">
+                <Flame
+                  className="h-4 w-4 animate-fire-fade"
+                  style={{ color: correctionColor, opacity: Math.max(correctionOpacity, 0.12) }}
+                  aria-hidden="true"
+                />
+              </span>
+            ) : null}
+            <div className="flex w-7 justify-center">
+              {tone ? <ReceiptStateIcon tone={tone} shredded={shredded} className={cn("h-5 w-5", sproutClass)} /> : null}
             </div>
           </div>
 
-          {receipt.correction_message ? (
-            <p className="mt-1 text-[11px] font-semibold text-ink/70">{receipt.correction_message}</p>
-          ) : null}
-
-          <div className="mt-3 flex items-center justify-between gap-2">
-            {(() => {
-              const kind = receipt.transaction_kind ?? "purchase";
-              const millis = receipt.display_total_milliunits;
-              if (millis == null) return <p className="text-sm font-semibold">--</p>;
-              const dollars = signedDollars(millis / 1000, kind);
-              const formatted = formatSignedDollars(dollars);
-              const isRefund = kind === "refund";
-              return (
-                <p className={cn("text-sm font-semibold", isRefund ? "text-emerald-700" : undefined)}>
-                  {formatted}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">
+                  {receipt.display_payee_name ?? receipt.original_filename}
                 </p>
-              );
-            })()}
-            <div className="flex items-center gap-2">
-              {tile?.display_state === "shredded" ? (
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700">
-                  <Sparkles className="h-3 w-3" />
-                  Shredded
-                </span>
+                {showWaiting ? (
+                  <p className="mt-1 text-xs font-semibold text-amber-700">
+                    {formatWallWait(receipt.ingested_at)} waiting
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-ink/65">
+                    {formatDistanceToNow(new Date(receipt.ingested_at), { addSuffix: true })}
+                  </p>
+                )}
+              </div>
+              {(tile?.age_hours_at_validation != null || !showWaiting) ? (
+                <div className="text-right text-xs">
+                  <p className="uppercase tracking-wide text-ink/70">Validation wait</p>
+                  <p className="mt-1 font-semibold">{formatWaitTime(tile?.age_hours_at_validation)}</p>
+                </div>
               ) : null}
-              {canShred ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-8 gap-1 border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
-                  onClick={() => onShred(receipt.id)}
-                  disabled={isShredPending}
-                >
-                  <Scissors className="h-3.5 w-3.5" />
-                  {isShredPending ? "Shredding..." : "Shred"}
-                </Button>
-              ) : null}
-              <StatusBadge status={receipt.status} />
+            </div>
+
+            {receipt.correction_message ? (
+              <p className="mt-1 text-[11px] font-semibold text-ink/70">{receipt.correction_message}</p>
+            ) : null}
+
+            <div className="mt-3 flex items-center justify-between gap-2">
+              {(() => {
+                const kind = receipt.transaction_kind ?? "purchase";
+                const millis = receipt.display_total_milliunits;
+                if (millis == null) return <p className="text-sm font-semibold">--</p>;
+                const dollars = signedDollars(millis / 1000, kind);
+                const formatted = formatSignedDollars(dollars);
+                const isRefund = kind === "refund";
+                return (
+                  <p className={cn("text-sm font-semibold", isRefund ? "text-emerald-700" : undefined)}>
+                    {formatted}
+                  </p>
+                );
+              })()}
+              <div className="relative z-10 flex items-center gap-2">
+                {tile?.display_state === "shredded" ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700">
+                    <Sparkles className="h-3 w-3" />
+                    Shredded
+                  </span>
+                ) : null}
+                {canShred ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 gap-1 border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
+                    onClick={() => onShred(receipt.id)}
+                    disabled={isShredPending}
+                  >
+                    <Scissors className="h-3.5 w-3.5" />
+                    {isShredPending ? "Shredding..." : "Shred"}
+                  </Button>
+                ) : null}
+                <StatusBadge status={receipt.status} />
+              </div>
             </div>
           </div>
         </div>
-      </div>
-    </Card>
+      </Card>
+    </div>
   );
 }
 

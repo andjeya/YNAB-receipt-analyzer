@@ -27,7 +27,7 @@ export function deriveSnappyPose({
     const noun = needsReviewCount === 1 ? "receipt" : "receipts";
     return {
       pose: "concerned",
-      line: `${needsReviewCount} ${noun} need your eyes`,
+      line: `${needsReviewCount} ${noun} need${needsReviewCount === 1 ? "s" : ""} your attention`,
     };
   }
   return { pose: "idle", line: "Welcome back!" };
