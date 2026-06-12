@@ -87,8 +87,10 @@ def _seed_receipt_with_validation(db: Any, settings: Settings) -> tuple[Receipt,
 # ---------------------------------------------------------------------------
 
 
-def test_settings_defaults_are_safe() -> None:
+def test_settings_defaults_are_safe(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default Settings must disable live writes and enable dry-run."""
+    monkeypatch.delenv("YNAB_SYNC_ENABLED", raising=False)
+    monkeypatch.delenv("YNAB_DRY_RUN", raising=False)
     s = Settings(_env_file=None)
     assert s.ynab_sync_enabled is False
     assert s.ynab_dry_run is True

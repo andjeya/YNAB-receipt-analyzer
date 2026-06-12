@@ -255,6 +255,10 @@ class ValidationPayload(BaseModel):
     transaction_kind: str = Field(default="purchase")
     category_id: str | None = None
     splits: list[ValidationSplit] = Field(default_factory=list)
+    # Provenance: set to "card_mapping" when account_id was overridden by the
+    # learned card→account mapping.  Absent (None) when the account came from
+    # the AI model or a user edit.
+    account_source: str | None = None
 
     @field_validator("category_id", mode="before")
     @classmethod

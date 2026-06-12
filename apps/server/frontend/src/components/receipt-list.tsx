@@ -451,7 +451,11 @@ function ReceiptListItem({
         )}
         style={{ animationDelay: `${120 + index * 28}ms` }}
       >
-        <Link href={`/receipts/${receipt.id}`} className="absolute inset-0 rounded-[inherit] z-0" aria-hidden="true" tabIndex={-1} />
+        <Link
+          href={`/receipts/${receipt.id}`}
+          className="absolute inset-0 rounded-[inherit] z-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-sand"
+          aria-label={`Open receipt: ${receipt.display_payee_name ?? receipt.original_filename}`}
+        />
         <div className="flex items-start gap-3">
           <div className="mt-1 flex shrink-0 items-center gap-1.5">
             {correctionVisible ? (

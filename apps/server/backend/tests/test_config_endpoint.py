@@ -13,10 +13,11 @@ Covers:
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+import app.api.config as config_module
 from app.api.config import get_app_config
 from app.config import Settings
 from app.enums import YNABCacheEntityType
@@ -36,6 +37,10 @@ def _make_settings(**overrides) -> Settings:
         ynab_default_account_id="acct-1",
         object_store_root="./data",
         ingest_dir="./data/ingest",
+        # Keep sync disabled by default so tests that don't exercise budget-name
+        # fetching do not attempt YNAB network calls (YNAB_SYNC_ENABLED may be
+        # set to true in the dev .env).
+        ynab_sync_enabled=False,
     )
     base.update(overrides)
     return Settings(**base)
@@ -49,6 +54,14 @@ def _call_endpoint(db_session, settings: Settings) -> AppConfigOut:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def clear_budget_name_cache():
+    """Reset the module-level budget name cache before each test."""
+    config_module._budget_name_cache.clear()
+    yield
+    config_module._budget_name_cache.clear()
+
 
 def test_config_defaults_safe_off(db_session):
     """ynab_sync_enabled defaults to False; ynab_dry_run defaults to True (when set explicitly)."""
@@ -93,7 +106,10 @@ def test_no_token_in_response(db_session):
 def test_ynab_sync_enabled_reflected(db_session):
     """ynab_sync_enabled=True is reflected in the response."""
     settings = _make_settings(ynab_sync_enabled=True)
-    result = _call_endpoint(db_session, settings)
+    mock_client = MagicMock()
+    mock_client.list_budgets.return_value = []
+    with patch("app.api.config.YNABClient", return_value=mock_client):
+        result = _call_endpoint(db_session, settings)
     assert result.ynab_sync_enabled is True
 
 

@@ -1,36 +1,55 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import app_settings, db_session
 from app.config import Settings
-from app.models import YNABCache
 from app.schemas import AppConfigOut
+from receipt_shared.ynab_client import YNABClient
 
 router = APIRouter(prefix="/config", tags=["config"])
 logger = logging.getLogger(__name__)
 
+# Module-level cache: (access_token, budget_id) → budget name string.
+# Populated at most once per process per unique (token, budget) pair.
+_budget_name_cache: dict[tuple[str, str], str] = {}
 
-def _resolve_budget_name(db: Session, budget_id: str | None) -> str | None:
-    """Best-effort budget name from cache rows, WITHOUT making any network calls.
 
-    YNAB does not expose a budget-level entity in the cache table.  We fall
-    back to None if the name cannot be derived locally.
+def _fetch_budget_name(settings: Settings) -> str | None:
+    """Return the YNAB budget name for the configured budget_id.
+
+    - Returns None (never raises) if sync is disabled, no token/budget_id, or on any error.
+    - Result is memoised in _budget_name_cache so the YNAB API is called at most once per process.
     """
-    if not budget_id:
+    if not settings.ynab_sync_enabled:
         return None
-    # Check if any cache rows exist for this budget (proves the cache was populated)
-    has_rows = db.scalar(
-        select(YNABCache.id).where(YNABCache.budget_id == budget_id).limit(1)
-    )
-    if has_rows is None:
+    token = settings.ynab_access_token
+    budget_id = settings.ynab_budget_id
+    if not token or not budget_id:
         return None
-    # We don't store the budget name in the cache — return None gracefully.
-    return None
+
+    cache_key = (token, budget_id)
+    if cache_key in _budget_name_cache:
+        return _budget_name_cache[cache_key]
+
+    try:
+        client = YNABClient(token)
+        budgets: list[dict[str, Any]] = client.list_budgets()
+        for b in budgets:
+            if b.get("id") == budget_id:
+                name: str | None = b.get("name")
+                if name:
+                    _budget_name_cache[cache_key] = name
+                    return name
+        # Budget not found in list (unusual — just return None).
+        return None
+    except Exception:
+        logger.warning("Failed to fetch YNAB budget name for budget_id=%s", budget_id, exc_info=True)
+        return None
 
 
 @router.get("", response_model=AppConfigOut)
@@ -38,7 +57,7 @@ def get_app_config(
     db: Session = Depends(db_session),
     settings: Settings = Depends(app_settings),
 ) -> AppConfigOut:
-    budget_name = _resolve_budget_name(db, settings.ynab_budget_id)
+    budget_name = _fetch_budget_name(settings)
     return AppConfigOut(
         ynab_sync_enabled=settings.ynab_sync_enabled,
         ynab_dry_run=settings.ynab_dry_run,

@@ -51,7 +51,7 @@ from app.services.correctness import award_water
 from app.services.duplicates import apply_semantic_duplicate_state, build_semantic_signature
 from app.services.incidents import record_incident
 from app.services.storage import storage_path
-from app.services.validation import validate_payload
+from app.services.validation import payloads_equivalent, validate_payload
 from app.services.ynab import get_cached_reference_data
 from receipt_shared.contracts import ReceiptTwinExtraction
 from receipt_shared.money import dollars_to_milliunits
@@ -830,7 +830,9 @@ def save_draft(
     )
     next_version = validation.version
 
-    payload_changed = latest_validation_before is None or latest_validation_before.payload != normalized_payload
+    payload_changed = latest_validation_before is None or not payloads_equivalent(
+        latest_validation_before.payload, normalized_payload
+    )
     if payload_changed and receipt.status in {ReceiptStatus.SYNCED.value, ReceiptStatus.ERROR_SYNC.value}:
         receipt.status = ReceiptStatus.NEEDS_REVIEW.value
         receipt.status_reason = None

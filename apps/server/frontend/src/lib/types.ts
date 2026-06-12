@@ -173,6 +173,10 @@ export interface AllocationItem {
   item_id: string;
   source_index: number;
   label: string;
+  /** Translated (human-readable) item text from the twin, if available. */
+  translated_text?: string | null;
+  /** Raw register text from the twin, if available. */
+  raw_text?: string | null;
   amount: number | null;
   tax_code: string | null;
   item_type: string;
@@ -209,6 +213,9 @@ export interface ValidationPayloadInput {
   transaction_kind: "purchase" | "refund";
   category_id: string;
   splits: ValidationSplitInput[];
+  /** Present in the stored validation payload when a learned card→account mapping
+   *  set the account_id. Only set by the backend; not sent by the frontend. */
+  account_source?: "card_mapping" | string;
 }
 
 export interface SaveDraftResponse {

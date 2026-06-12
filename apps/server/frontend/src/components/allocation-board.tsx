@@ -101,7 +101,12 @@ function DraggableAllocationItem({
       <div className="flex items-center gap-1.5">
         <GripVertical className="h-3.5 w-3.5 shrink-0 text-ink/30 cursor-grab" aria-hidden="true" />
         <div className="min-w-0 flex-1">
-          <p className="font-semibold truncate">{item.label || `Item ${item.source_index + 1}`}</p>
+          <p className="font-medium truncate">
+            {item.translated_text || item.label || `Item ${item.source_index + 1}`}
+          </p>
+          {item.raw_text && item.raw_text !== item.translated_text ? (
+            <p className="text-[10px] text-ink/50 font-mono uppercase truncate">{item.raw_text}</p>
+          ) : null}
           <p className="text-[11px] text-ink/70">
             {item.amount == null ? "Unknown amount" : `$${Math.abs(item.amount).toFixed(2)}`}
           </p>
@@ -350,7 +355,7 @@ export function AllocationBoard({
           <Button variant="outline" size="sm" className="gap-1" onClick={onClearSelection} disabled={selectedItemIds.size === 0}>
             Clear selection
           </Button>
-          <Button variant="outline" size="sm" className="gap-1" data-testid="recompute-keep" onClick={handleRecomputeKeep} disabled={isRecomputing} title="Re-run the AI allocation, keeping your manual amount adjustments">
+          <Button variant="solid" size="sm" className="gap-1" data-testid="recompute-keep" onClick={handleRecomputeKeep} disabled={isRecomputing} title="Re-run the AI allocation, keeping your manual amount adjustments">
             {isRecomputing ? "Thinking..." : "Re-suggest"}
           </Button>
           <Button variant="outline" size="sm" className="gap-1 border-amber-400 text-amber-800 hover:bg-amber-50" data-testid="recompute-discard" onClick={handleRecomputeDiscard} disabled={isRecomputing} title="Start completely fresh — discard all manual changes and let AI reallocate">

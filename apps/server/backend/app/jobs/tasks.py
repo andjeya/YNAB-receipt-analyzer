@@ -282,6 +282,7 @@ def _validate_ynab_payload(
         mapped_account = lookup_account_for_card(db, budget_id, card_last_four)
         if mapped_account:
             initial_payload["account_id"] = mapped_account
+            initial_payload["account_source"] = "card_mapping"
 
     return validate_payload(
         initial_payload,

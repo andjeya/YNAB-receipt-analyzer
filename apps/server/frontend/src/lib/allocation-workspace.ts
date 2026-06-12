@@ -42,12 +42,17 @@ function inferAllocatableItems(twin: ReceiptTwin | null): AllocationItem[] {
     })
     .map((item, index) => {
       const sourceIndex = Number.isFinite(item.index) ? item.index : index;
-      const label = item.raw_text?.trim() || item.translated_text?.trim() || `Line ${sourceIndex + 1}`;
+      const translated = item.translated_text?.trim() || null;
+      const raw = item.raw_text?.trim() || null;
+      // Label uses translated-first for accessibility names and search; raw is stored separately.
+      const label = translated || raw || `Line ${sourceIndex + 1}`;
       const amount = typeof item.line_total === "number" && Number.isFinite(item.line_total) ? normalizeAmount(Math.abs(item.line_total)) : null;
       return {
         item_id: `item-${sourceIndex}-${index}`,
         source_index: sourceIndex,
         label,
+        translated_text: translated,
+        raw_text: raw,
         amount,
         tax_code: item.tax_code ?? null,
         item_type: item.item_type ?? "product",

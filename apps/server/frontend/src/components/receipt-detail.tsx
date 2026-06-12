@@ -20,6 +20,7 @@ import {
   saveDraft,
 } from "@/lib/api";
 import { AllocationWorkspace, ReceiptDetail, ValidationPayloadInput } from "@/lib/types";
+import { shouldSkipPreview } from "@/lib/sync-skip";
 import { formatSignedDollarsWithDirection, formatDollarsMagnitude, signedDollars } from "@/lib/money";
 import { useToast } from "@/components/ui/toast";
 import { SyncPreviewDialog } from "@/components/sync-preview-dialog";
@@ -45,6 +46,7 @@ import { SnappyCelebration } from "@/components/snappy/celebration";
 const UNKNOWN_ACCOUNT_ID = "__unknown__";
 const PAYEE_SUGGESTION_LIMIT = 12;
 const AMBIGUITY_MIN_CONFIDENCE = 0.7;
+
 
 type CategoryAmbiguityFlag = {
   line_item: string;
@@ -185,6 +187,9 @@ function toDraftFromPayload(payload: Record<string, unknown>, fallbackPayee: str
     transaction_kind: payload.transaction_kind === "refund" ? "refund" : "purchase",
     category_id: categoryId,
     splits,
+    // Provenance survives saves so the "remembered from card" hint stays
+    // truthful across validation versions; cleared on manual account change.
+    ...(payload.account_source === "card_mapping" ? { account_source: "card_mapping" } : {}),
   };
 }
 
@@ -465,7 +470,7 @@ function TwinAndScanSection({ receiptId, receipt, mobileView, setMobileView, mob
   );
 }
 
-function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestions, payeeMenuOpen, setPayeeMenuOpen, accountNeedsAttention, cardLastFour }: {
+function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestions, payeeMenuOpen, setPayeeMenuOpen, accountNeedsAttention, cardLastFour, latestValidationPayload }: {
   draft: ValidationPayloadInput;
   setDraft: (d: ValidationPayloadInput) => void;
   setDirty: (v: boolean) => void;
@@ -475,6 +480,7 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
   setPayeeMenuOpen: (v: boolean) => void;
   accountNeedsAttention: boolean;
   cardLastFour?: string | null;
+  latestValidationPayload?: Record<string, unknown> | null;
 }) {
   return (
     <Card className="animate-reveal space-y-3" style={{ animationDelay: "70ms" }}>
@@ -527,7 +533,7 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
             data-testid="account-select"
             className={accountNeedsAttention ? "border-amber-500 bg-amber-50 text-amber-900 focus:ring-amber-300" : undefined}
             onChange={(event) => {
-              setDraft({ ...draft, account_id: event.target.value });
+              setDraft({ ...draft, account_id: event.target.value, account_source: undefined });
               setDirty(true);
             }}
           >
@@ -540,7 +546,11 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
           {accountNeedsAttention ? (
             <p className="mt-1 text-xs font-semibold text-amber-700">Unknown account selected. Sync is disabled until this is fixed.</p>
           ) : null}
-          {cardLastFour && draft.account_id && draft.account_id !== UNKNOWN_ACCOUNT_ID && draft.account_id !== "" ? (
+          {cardLastFour &&
+           draft.account_id &&
+           draft.account_id !== UNKNOWN_ACCOUNT_ID &&
+           draft.account_id !== "" &&
+           draft.account_source === "card_mapping" ? (
             <p className="mt-1 flex items-center gap-1 text-[11px] text-sky-700">
               <span>📌</span>
               <span>Account remembered from card ending {cardLastFour}</span>
@@ -585,7 +595,7 @@ function MemoCard({ draft, setDraft, setDirty }: {
             className="text-[11px] text-ink/50 hover:text-ink/70 underline"
             onClick={() => setShowTxType(true)}
           >
-            Purchase (outflow) — change transaction type?
+            {draft.transaction_kind === "refund" ? "Refund / return (inflow)" : "Purchase (outflow)"} — change transaction type?
           </button>
         ) : (
           <div>
@@ -1142,17 +1152,41 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     prevStatusRef.current = nextStatus;
   }, [receiptQuery.data?.status, toast]);
 
-  // Auto-confirm twin sections when extraction is clean and both sections are unconfirmed
+  // Auto-confirm twin sections when extraction is clean and both sections are unconfirmed.
+  // Guards:
+  //   - duplicate_review receipts: never auto-confirm (duplicate resolution flow owns the UI)
+  //   - extraction has warnings (schema_errors) or failed schema validation: skip
+  //   - latest validation payload has ambiguity flags: skip (user should review)
+  //   - per-browser once-per-receipt: localStorage key snappy_auto_confirm_done:<id>
+  //   - per-mount guard: autoConfirmedRef (prevents double-fire on fast re-renders)
   useEffect(() => {
     const receipt = receiptQuery.data;
     if (!receipt) return;
+
+    // FIX 2a: duplicate_review receipts must never be auto-confirmed
+    if (receipt.status === "duplicate_review") return;
+
+    // Per-mount guard
     if (autoConfirmedRef.current.has(receipt.id)) return;
+
+    // FIX 3: localStorage persistence — skip if already auto-confirmed this browser session
+    const lsKey = `snappy_auto_confirm_done:${receipt.id}`;
+    try {
+      if (typeof window !== "undefined" && window.localStorage.getItem(lsKey) === "true") return;
+    } catch {
+      // SSR or privacy mode — fall through; per-mount ref still guards double-fire
+    }
 
     const twin = receipt.latest_twin;
     if (!twin) return;
 
     const extraction = receipt.latest_extraction;
+    // FIX 2b: skip if extraction failed schema validation or has errors
     if (!extraction?.schema_valid || (extraction.schema_errors?.length ?? 0) > 0) return;
+
+    // FIX 2c: skip if the extraction payload carries ambiguity flags (uncertain categories)
+    const rawFlags = (extraction.parsed_json as Record<string, unknown> | null)?.category_ambiguity_flags;
+    if (Array.isArray(rawFlags) && rawFlags.length > 0) return;
 
     const dateConfirmed = twin.confirmed_sections?.date_time ?? false;
     const totalConfirmed = twin.confirmed_sections?.total ?? false;
@@ -1160,8 +1194,16 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     // Only auto-confirm if BOTH sections are unconfirmed (brand new receipt, not one the user rejected)
     if (dateConfirmed || totalConfirmed) return;
 
-    // Mark as processed so we don't re-run
+    // Mark as processed in per-mount ref so we don't re-run in this component lifetime
     autoConfirmedRef.current.add(receipt.id);
+    // FIX 3: persist to localStorage so remount (back-navigate, page reload) doesn't re-fire
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(lsKey, "true");
+      }
+    } catch {
+      // SSR or privacy mode — per-mount ref still prevents double-fire
+    }
 
     const confirmSection = async (section: "date_time" | "total") => {
       try {
@@ -1492,6 +1534,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             cardLastFour={
               (receiptQuery.data?.latest_extraction?.parsed_json as Record<string, unknown> | null)?.card_last_four as string | null ?? null
             }
+            latestValidationPayload={receiptQuery.data?.latest_validation?.payload ?? null}
           />
 
           {ambiguityFlags.length > 0 ? (
@@ -1576,7 +1619,13 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             canReset={canResetToBaseline}
             isAutosaving={saveMutation.isPending}
             onSync={() => {
-              if (stripReasons.length === 0 && typeof window !== "undefined" && window.localStorage.getItem("snappy_skip_preview") === "true") {
+              let skipEnabled = false;
+              try {
+                skipEnabled = typeof window !== "undefined" && window.localStorage.getItem("snappy_skip_preview") === "true";
+              } catch {
+                // SSR or privacy mode — default to showing the dialog
+              }
+              if (shouldSkipPreview({ stripReasons, lockWarnings, ambiguityFlags, skipEnabled })) {
                 syncMutation.mutate();
               } else {
                 setPreviewOpen(true);

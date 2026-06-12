@@ -89,6 +89,36 @@ def validate_payload(
     return normalized, len(errors) == 0, errors
 
 
+def normalize_payload_for_comparison(payload: dict[str, Any]) -> dict[str, Any]:
+    """Re-serialize a stored payload through the current contract.
+
+    Payloads persisted before the contract gained a new optional field lack
+    that key, while freshly normalized payloads carry it as None; comparing
+    raw dicts would report a spurious change (and e.g. flip SYNCED receipts
+    back to needs_review). Falls back to the raw dict for payloads that no
+    longer parse under the current contract.
+    """
+    try:
+        return ValidationPayload.model_validate(payload).model_dump(mode="json")
+    except ValidationError:
+        return payload
+
+
+def payloads_equivalent(old: dict[str, Any], new: dict[str, Any]) -> bool:
+    """True when two validation payloads agree on everything the user can see.
+
+    account_source is provenance metadata (who picked the account), not a
+    money or identity field — a save that only gains/loses it must not count
+    as a payload change, or no-op saves would flip SYNCED receipts back to
+    needs_review.
+    """
+    a = dict(normalize_payload_for_comparison(old))
+    b = dict(normalize_payload_for_comparison(new))
+    a.pop("account_source", None)
+    b.pop("account_source", None)
+    return a == b
+
+
 def build_initial_validation_payload(parsed_extraction: dict[str, Any], default_account_id: str | None) -> dict[str, Any]:
     raw_splits = parsed_extraction.get("splits", [])
     parsed_splits = [
