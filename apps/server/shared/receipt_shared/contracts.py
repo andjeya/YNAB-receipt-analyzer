@@ -259,6 +259,9 @@ class ValidationPayload(BaseModel):
     # learned card→account mapping.  Absent (None) when the account came from
     # the AI model or a user edit.
     account_source: str | None = None
+    # Provenance: set to "payee_memory" when category_id/splits were pre-filled
+    # from the learned payee→category memory.  Absent (None) otherwise.
+    category_source: str | None = None
 
     @field_validator("category_id", mode="before")
     @classmethod

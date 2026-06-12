@@ -31,6 +31,7 @@ class ReceiptSummary(BaseModel):
     correction_shade_opacity: float | None = None
     correction_message: str | None = None
     duplicate_of_receipt_id: str | None = None
+    sync_ready: bool = False
 
 
 class AppConfigOut(BaseModel):

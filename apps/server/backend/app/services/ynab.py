@@ -1024,6 +1024,46 @@ def _apply_post_sync(
                 receipt.id,
             )
 
+        # Learn payee→category memory from this sync (non-blocking inner try).
+        try:
+            if isinstance(validation.payload, dict) and settings.ynab_budget_id:
+                _latest_twin = db.scalar(
+                    select(ReceiptTwin)
+                    .where(ReceiptTwin.receipt_id == receipt.id)
+                    .order_by(ReceiptTwin.version.desc())
+                )
+                payee_name = None
+                if _latest_twin is not None and isinstance(_latest_twin.payload, dict):
+                    payee_name = _latest_twin.payload.get("store_name") or validation.payload.get("payee_name")
+                else:
+                    payee_name = validation.payload.get("payee_name")
+                # On the adopt/update path the payload splits were rewritten from
+                # YNAB but the workspace assignments were not — a template built
+                # from that pair maps items to the wrong lanes. Only learn from
+                # clean creates.
+                adopted = sync_row.status == YNABSyncStatus.MATCHED_UPDATED.value
+                if payee_name and settings.ynab_budget_id and not adopted:
+                    from app.services.payee_memory import build_template_from_validation, upsert_payee_memory
+                    template = build_template_from_validation(
+                        validation.payload,
+                        validation.allocation_workspace if isinstance(validation.allocation_workspace, dict) else None,
+                    )
+                    category_id_to_learn: str | None = None
+                    if template is None:
+                        category_id_to_learn = validation.payload.get("category_id") or None
+                    upsert_payee_memory(
+                        db,
+                        budget_id=settings.ynab_budget_id,
+                        payee_name=payee_name,
+                        category_id=category_id_to_learn,
+                        template=template,
+                    )
+        except Exception:
+            logger.exception(
+                "Payee memory upsert failed for receipt %s (non-fatal, sync already committed)",
+                receipt.id,
+            )
+
         db.commit()
     except Exception:
         logger.exception("Post-sync bookkeeping failed for receipt %s (sync is already committed)", receipt.id)

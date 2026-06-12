@@ -23,6 +23,7 @@ export interface ReceiptSummary {
   correction_shade_opacity: number | null;
   correction_message: string | null;
   duplicate_of_receipt_id: string | null;
+  sync_ready: boolean;
 }
 
 export interface AppConfig {
@@ -216,6 +217,9 @@ export interface ValidationPayloadInput {
   /** Present in the stored validation payload when a learned card→account mapping
    *  set the account_id. Only set by the backend; not sent by the frontend. */
   account_source?: "card_mapping" | string;
+  /** Present when the learned payee→category memory pre-filled the category or
+   *  splits. Cleared by the frontend on any manual category/split change. */
+  category_source?: "payee_memory" | string;
 }
 
 export interface SaveDraftResponse {

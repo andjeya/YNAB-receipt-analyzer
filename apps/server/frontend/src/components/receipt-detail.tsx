@@ -190,6 +190,9 @@ function toDraftFromPayload(payload: Record<string, unknown>, fallbackPayee: str
     // Provenance survives saves so the "remembered from card" hint stays
     // truthful across validation versions; cleared on manual account change.
     ...(payload.account_source === "card_mapping" ? { account_source: "card_mapping" } : {}),
+    // Provenance survives saves so the "remembered from store" hint stays
+    // truthful across validation versions; cleared on any manual category/split change.
+    ...(payload.category_source === "payee_memory" ? { category_source: "payee_memory" } : {}),
   };
 }
 
@@ -640,7 +643,7 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
             onClick={() => {
               if (isSplitMode) {
                 const fallbackCategory = draft.splits.find((s) => s.category_id)?.category_id ?? draft.category_id;
-                setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
+                setDraft({ ...draft, category_id: fallbackCategory, splits: [], category_source: undefined });
                 setDirty(true);
               }
             }}
@@ -653,7 +656,7 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
             className={`rounded-lg px-3 py-1 font-semibold transition focus-visible:ring-2 focus-visible:ring-mint/70 ${isSplitMode ? "bg-ink text-white shadow-sm" : "text-ink/60 hover:text-ink/80"}`}
             onClick={() => {
               if (!isSplitMode) {
-                setDraft({ ...draft, category_id: "", splits: [{ category_id: draft.category_id, amount: draft.total_amount, memo: "" }] });
+                setDraft({ ...draft, category_id: "", splits: [{ category_id: draft.category_id, amount: draft.total_amount, memo: "" }], category_source: undefined });
                 setDirty(true);
               }
             }}
@@ -663,6 +666,12 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
           </button>
         </div>
       </div>
+      {draft.category_source === "payee_memory" ? (
+        <p className="flex items-center gap-1 text-[11px] text-sky-700">
+          <span>📌</span>
+          <span>Categories remembered from how you sorted this store last time</span>
+        </p>
+      ) : null}
 
       {!isSplitMode ? (
         <div>
@@ -672,7 +681,7 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
             categories={categories}
             placeholder="Select or search category"
             onChange={(nextCategoryId) => {
-              setDraft({ ...draft, category_id: nextCategoryId });
+              setDraft({ ...draft, category_id: nextCategoryId, category_source: undefined });
               setDirty(true);
             }}
           />
@@ -701,7 +710,7 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
               size="sm"
               className="gap-1"
               onClick={() => {
-                setDraft({ ...draft, splits: [...draft.splits, { category_id: "", amount: 0, memo: "" }] });
+                setDraft({ ...draft, splits: [...draft.splits, { category_id: "", amount: 0, memo: "" }], category_source: undefined });
                 setDirty(true);
               }}
             >
@@ -723,9 +732,9 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
                         const nextSplits = draft.splits.filter((_, i) => i !== index);
                         if (nextSplits.length === 0) {
                           const fallbackCategory = split.category_id || draft.category_id;
-                          setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
+                          setDraft({ ...draft, category_id: fallbackCategory, splits: [], category_source: undefined });
                         } else {
-                          setDraft({ ...draft, category_id: "", splits: nextSplits });
+                          setDraft({ ...draft, category_id: "", splits: nextSplits, category_source: undefined });
                         }
                         setDirty(true);
                       }}
@@ -762,7 +771,7 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
                       const nextSplits = [...draft.splits];
                       const nextAmount = Number(event.target.value) || 0;
                       nextSplits[index] = { ...split, amount: nextAmount };
-                      setDraft({ ...draft, splits: nextSplits });
+                      setDraft({ ...draft, splits: nextSplits, category_source: undefined });
                       setDirty(true);
                       onSplitAmountEdited?.(index, nextAmount);
                     }}
@@ -775,7 +784,7 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
                   onChange={(nextCategoryId) => {
                     const nextSplits = [...draft.splits];
                     nextSplits[index] = { ...split, category_id: nextCategoryId };
-                    setDraft({ ...draft, splits: nextSplits });
+                    setDraft({ ...draft, splits: nextSplits, category_source: undefined });
                     setDirty(true);
                   }}
                 />
@@ -1390,10 +1399,15 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
       { workspace: sourceWorkspace, mode },
       {
         onSuccess: (result) => {
-          const nextDraft = toDraftFromPayload(
-            result.payload as unknown as Record<string, unknown>,
-            draft.payee_name,
-          );
+          const nextDraft = {
+            ...toDraftFromPayload(
+              result.payload as unknown as Record<string, unknown>,
+              draft.payee_name,
+            ),
+            // Recompute rewrites splits — this is not a loaded memory assignment,
+            // so clear the provenance chip regardless of what the payload carries.
+            category_source: undefined,
+          };
           const nextWorkspace = workspaceFromApi(
             result.workspace,
             nextDraft,

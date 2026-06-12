@@ -17,6 +17,7 @@ from app.enums import ReceiptStatus
 from app.models import ExtractionRun, Receipt, ReceiptTwin, TimingMetric, Validation
 from app.services.allocation_workspace import build_initial_allocation_workspace
 from app.services.card_mapping import lookup_account_for_card
+from app.services.payee_memory import apply_single_category_memory, lookup_payee_memory
 from app.services.duplicates import apply_semantic_duplicate_state
 from app.services.reconciliation import run_ynab_reconciliation
 from app.services.validation import build_initial_validation_payload, validate_payload
@@ -283,6 +284,18 @@ def _validate_ynab_payload(
         if mapped_account:
             initial_payload["account_id"] = mapped_account
             initial_payload["account_source"] = "card_mapping"
+
+    # Apply learned payee→category memory override (single-category only).
+    if db is not None and budget_id:
+        payee_memory = lookup_payee_memory(db, budget_id, parsed_json.get("payee_name"))
+        if payee_memory is not None:
+            apply_single_category_memory(
+                initial_payload,
+                payee_memory,
+                allowed_category_ids=allowed_category_ids,
+                db=db,
+                budget_id=budget_id,
+            )
 
     return validate_payload(
         initial_payload,
@@ -573,6 +586,25 @@ def _finalize_unified_success(ctx: _ExtractionCtx, unified: _UnifiedAttemptResul
         twin_payload=twin_payload_for_workspace,
         twin_version=twin_version,
     )
+
+    # Apply learned split memory (if any) before persisting validation.
+    if ctx.db is not None and ctx.settings.ynab_budget_id:
+        payee_name = (unified.validation_payload or {}).get("payee_name")
+        _split_memory = lookup_payee_memory(ctx.db, ctx.settings.ynab_budget_id, payee_name)
+        if _split_memory is not None and _split_memory.template_json is not None:
+            from app.services.payee_memory import apply_split_memory_to_workspace
+            _new_payload, _new_workspace, _applied = apply_split_memory_to_workspace(
+                unified.validation_payload or {},
+                workspace,
+                _split_memory,
+                allowed_category_ids=ctx.allowed_category_ids,
+                db=ctx.db,
+                budget_id=ctx.settings.ynab_budget_id,
+            )
+            if _applied:
+                unified.validation_payload = _new_payload
+                workspace = _new_workspace
+
     _create_validation(
         ctx.db,
         receipt=ctx.receipt,

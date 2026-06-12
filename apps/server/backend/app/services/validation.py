@@ -114,8 +114,9 @@ def payloads_equivalent(old: dict[str, Any], new: dict[str, Any]) -> bool:
     """
     a = dict(normalize_payload_for_comparison(old))
     b = dict(normalize_payload_for_comparison(new))
-    a.pop("account_source", None)
-    b.pop("account_source", None)
+    for key in ("account_source", "category_source"):
+        a.pop(key, None)
+        b.pop(key, None)
     return a == b
 
 

@@ -354,6 +354,19 @@ class CardAccountMapping(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
 
+class PayeeCategoryMemory(Base):
+    __tablename__ = "payee_category_memory"
+    __table_args__ = (UniqueConstraint("budget_id", "payee_key", name="uq_payee_category_memory_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    budget_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    payee_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    category_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    template_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
 class YNABReconciliationRun(Base):
     __tablename__ = "ynab_reconciliation_runs"
 

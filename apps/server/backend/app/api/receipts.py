@@ -51,7 +51,7 @@ from app.services.correctness import award_water
 from app.services.duplicates import apply_semantic_duplicate_state, build_semantic_signature
 from app.services.incidents import record_incident
 from app.services.storage import storage_path
-from app.services.validation import payloads_equivalent, validate_payload
+from app.services.validation import payloads_equivalent, validate_payload, UNKNOWN_ACCOUNT_ID
 from app.services.ynab import get_cached_reference_data
 from receipt_shared.contracts import ReceiptTwinExtraction
 from receipt_shared.money import dollars_to_milliunits
@@ -408,6 +408,114 @@ def _batch_latest_validation_kinds(db: Session, receipt_ids: list[str]) -> dict[
     return result
 
 
+def _batch_sync_ready(
+    db: Session,
+    receipts: list[Receipt],
+    *,
+    sync_enabled: bool,
+) -> dict[str, bool]:
+    """Batch compute sync_ready for a list of receipts — no N+1 queries.
+
+    sync_ready is True iff ALL of:
+    - sync_enabled is True
+    - receipt.status == NEEDS_REVIEW
+    - receipt.duplicate_of_receipt_id is None
+    - latest validation exists, is_valid True
+    - validation payload has a non-blank account_id that is not UNKNOWN_ACCOUNT_ID
+    - twin gate: if a latest twin exists, both confirmed_sections date_time and total
+      must be True; if no twin exists, the gate passes (mirrors sync_receipt logic)
+
+    Uses a single subquery join per table (Validation, ReceiptTwin) to avoid per-receipt
+    round trips.
+    """
+    if not receipts:
+        return {}
+
+    # Short-circuit: if sync is disabled, all False
+    if not sync_enabled:
+        return {r.id: False for r in receipts}
+
+    # Pre-filter to candidates: needs_review + no duplicate link
+    candidates = [
+        r for r in receipts
+        if r.status == ReceiptStatus.NEEDS_REVIEW.value and r.duplicate_of_receipt_id is None
+    ]
+    candidate_ids = [r.id for r in candidates]
+
+    if not candidate_ids:
+        return {r.id: False for r in receipts}
+
+    # --- Batch latest validation (max version per receipt_id) ---
+    val_max_sq = (
+        select(Validation.receipt_id, func.max(Validation.version).label("max_version"))
+        .where(Validation.receipt_id.in_(candidate_ids))
+        .group_by(Validation.receipt_id)
+        .subquery()
+    )
+    val_rows = db.execute(
+        select(Validation.receipt_id, Validation.is_valid, Validation.payload)
+        .join(
+            val_max_sq,
+            (Validation.receipt_id == val_max_sq.c.receipt_id)
+            & (Validation.version == val_max_sq.c.max_version),
+        )
+    ).all()
+
+    valid_account_ids: set[str] = set()
+    for row_receipt_id, is_valid, payload in val_rows:
+        if not is_valid:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        account_id = str(payload.get("account_id") or "").strip()
+        if not account_id or account_id == UNKNOWN_ACCOUNT_ID:
+            continue
+        valid_account_ids.add(row_receipt_id)
+
+    # Further filter to candidates that passed validation gate
+    val_candidates = [rid for rid in candidate_ids if rid in valid_account_ids]
+
+    if not val_candidates:
+        return {r.id: False for r in receipts}
+
+    # --- Batch latest twin (max version per receipt_id) ---
+    twin_max_sq = (
+        select(ReceiptTwin.receipt_id, func.max(ReceiptTwin.version).label("max_version"))
+        .where(ReceiptTwin.receipt_id.in_(val_candidates))
+        .group_by(ReceiptTwin.receipt_id)
+        .subquery()
+    )
+    twin_rows = db.execute(
+        select(ReceiptTwin.receipt_id, ReceiptTwin.confirmed_sections)
+        .join(
+            twin_max_sq,
+            (ReceiptTwin.receipt_id == twin_max_sq.c.receipt_id)
+            & (ReceiptTwin.version == twin_max_sq.c.max_version),
+        )
+    ).all()
+
+    # Build twin-gate result: True = gate passes (confirmed or no twin)
+    twin_gate: dict[str, bool] = {}
+    for row_receipt_id, confirmed_sections in twin_rows:
+        confirmed = _normalize_confirmed_sections(confirmed_sections)
+        twin_gate[row_receipt_id] = confirmed["date_time"] and confirmed["total"]
+
+    # Build result map
+    result: dict[str, bool] = {}
+    for receipt in receipts:
+        rid = receipt.id
+        if rid not in valid_account_ids:
+            result[rid] = False
+            continue
+        # twin_gate: absent key means no twin → gate passes
+        if not twin_gate.get(rid, True):
+            result[rid] = False
+            continue
+        result[rid] = True
+
+    return result
+
+
 def _latest_correction(db: Session, receipt_id: str) -> ReceiptCorrection | None:
     return db.scalar(
         select(ReceiptCorrection)
@@ -490,6 +598,7 @@ def list_receipts(
     sort: str = Query(default="newest"),
     limit: int = Query(default=200, ge=1, le=1000),
     db: Session = Depends(db_session),
+    settings: Settings = Depends(app_settings),
 ) -> list[ReceiptSummary]:
     stmt = select(Receipt)
     if status:
@@ -503,6 +612,7 @@ def list_receipts(
     now = utcnow()
     receipt_ids = [r.id for r in receipts]
     kind_map = _batch_latest_validation_kinds(db, receipt_ids)
+    sync_ready_map = _batch_sync_ready(db, receipts, sync_enabled=settings.ynab_sync_enabled)
     summaries: list[ReceiptSummary] = []
     for receipt in receipts:
         correction = _latest_correction(db, receipt.id)
@@ -524,6 +634,7 @@ def list_receipts(
                 correction_shade_opacity=shade,
                 correction_message=_correction_note_for_display(correction),
                 duplicate_of_receipt_id=receipt.duplicate_of_receipt_id,
+                sync_ready=sync_ready_map.get(receipt.id, False),
             )
         )
     return summaries

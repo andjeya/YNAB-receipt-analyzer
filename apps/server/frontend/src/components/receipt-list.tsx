@@ -22,6 +22,7 @@ import {
 
 import {
   acknowledgeGameIncident,
+  enqueueSync,
   fetchYnabUpdates,
   getGameDebugSeed,
   getGameDashboard,
@@ -788,7 +789,7 @@ function TabBar({
 }
 
 function ReceiptListItem({
-  receipt, tile, currentWeekSlot, spendableNow, onShred, isShredPending, index, showWaiting,
+  receipt, tile, currentWeekSlot, spendableNow, onShred, isShredPending, onQuickSync, isQuickSyncPending, index, showWaiting,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   receipt: any;
@@ -798,6 +799,8 @@ function ReceiptListItem({
   spendableNow: boolean;
   onShred: (receiptId: string) => void;
   isShredPending: boolean;
+  onQuickSync: (receiptId: string) => void;
+  isQuickSyncPending: boolean;
   index: number;
   /** When true (To Review tab), show a prominent "Xd waiting" label. */
   showWaiting?: boolean;
@@ -912,6 +915,21 @@ function ReceiptListItem({
                   >
                     <Scissors className="h-3.5 w-3.5" />
                     {isShredPending ? "Shredding..." : "Shred"}
+                  </Button>
+                ) : null}
+                {receipt.sync_ready ? (
+                  <Button
+                    data-testid="quick-sync-button"
+                    size="sm"
+                    className="h-8 gap-1 bg-mint text-white hover:bg-mint/90"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onQuickSync(receipt.id);
+                    }}
+                    disabled={isQuickSyncPending}
+                  >
+                    {isQuickSyncPending ? "Syncing…" : "Looks right — Sync"}
                   </Button>
                 ) : null}
                 <StatusBadge status={receipt.status} />
@@ -1315,6 +1333,24 @@ export function ReceiptList() {
     },
   });
 
+  const [quickSyncingId, setQuickSyncingId] = useState<string | null>(null);
+
+  const quickSyncMutation = useMutation({
+    mutationFn: (receiptId: string) => enqueueSync(receiptId),
+    onSuccess: (_data, receiptId) => {
+      setQuickSyncingId(null);
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+      toast({ variant: "success", title: "Synced to YNAB ✓", message: `Receipt ${receiptId.slice(0, 8)}… queued for sync.` });
+    },
+    onError: (e, receiptId) => {
+      setQuickSyncingId(null);
+      const message = e instanceof Error && e.message ? e.message : `Sync failed for ${receiptId.slice(0, 8)}…`;
+      toast({ variant: "error", message });
+    },
+  });
+
   const spendWaterMutation = useMutation({
     mutationFn: (units: number) => spendGameWater(units),
     onSuccess: () => {
@@ -1497,6 +1533,11 @@ export function ReceiptList() {
               spendableNow={Boolean(dashboardQuery.data?.momentum.spendable_now)}
               onShred={(receiptId) => shredMutation.mutate(receiptId)}
               isShredPending={shredMutation.isPending}
+              onQuickSync={(receiptId) => {
+                setQuickSyncingId(receiptId);
+                quickSyncMutation.mutate(receiptId);
+              }}
+              isQuickSyncPending={quickSyncingId === receipt.id}
               index={index}
               showWaiting={activeTab === "review"}
             />
