@@ -183,6 +183,9 @@ Schema:
   "payee_name": "string (can be empty if uncertain)",
   "account_id": "string",
   "transaction_date": "YYYY-MM-DD | null",
+  "transaction_date_raw": "string (literal date text seen, e.g. \"5/12\")",
+  "date_confidence": "high | low",
+  "date_note": "string (short explanation when low confidence)",
   "transaction_time": "HH:MM | null",
   "memo": "string",
   "card_last_four": "string | null",
@@ -218,7 +221,11 @@ Rules:
    - Preferred format: "Bucket: item, item; Bucket: item".
    - Avoid vague-only output like "Groceries" without item detail.
    - Keep it concise (ideally <= 180 characters) while preserving useful detail.
-7. If date is unclear, set transaction_date to null.
+7. Date handling:
+   - Set transaction_date to a full YYYY-MM-DD ONLY when confident AND the year is printed or unambiguous.
+   - Always copy the literal date text you see into transaction_date_raw (e.g. "5/12" or "5/12/2026"). Use the date that best represents when the transaction occurred; if several dates appear, put the best match first.
+   - Set date_confidence to "low" when the year is missing, multiple dates appear, or the date is handwritten/unclear; otherwise "high".
+   - When the year is missing, leave transaction_date null and rely on transaction_date_raw (the year is completed downstream). Briefly explain in date_note.
 8. If time is unclear or unavailable, set transaction_time to null.
 9. If any line item could map to multiple categories with confidence >= 0.70, include it in category_ambiguity_flags.
 10. category_ambiguity_flags should be [] when there are no qualifying ambiguous items.
@@ -251,6 +258,9 @@ Unified schema:
   "store_name": "string",
   "store_address": "string",
   "transaction_date": "YYYY-MM-DD | null",
+  "transaction_date_raw": "string (literal date text seen, e.g. \"5/12\")",
+  "date_confidence": "high | low",
+  "date_note": "string (short explanation when low confidence)",
   "transaction_time": "HH:MM | null",
   "currency": "string",
   "line_items": [
@@ -301,7 +311,11 @@ Rules:
 8. Choose one YNAB mode:
    - Single category mode: category_id set, splits = []
    - Split mode: category_id = null and 2+ splits summing to total_amount
-9. If date is unclear, set transaction_date to null.
+9. Date handling:
+   - Set transaction_date to a full YYYY-MM-DD ONLY when confident AND the year is printed or unambiguous.
+   - Always copy the literal date text you see into transaction_date_raw (e.g. "5/12" or "5/12/2026"). Use the date that best represents when the transaction occurred; if several dates appear, put the best match first.
+   - Set date_confidence to "low" when the year is missing, multiple dates appear, or the date is handwritten/unclear; otherwise "high".
+   - When the year is missing, leave transaction_date null and rely on transaction_date_raw (the year is completed downstream). Explain briefly in date_note (e.g. "Two dates detected; 'Date In' 5/12 best matches; year not printed").
 10. If time is unclear or unavailable, set transaction_time to null.
 11. Write memo as a high-signal purchase summary:
    - Describe what was purchased, not where.
@@ -333,6 +347,9 @@ Schema:
   "store_name": "string",
   "store_address": "string",
   "transaction_date": "YYYY-MM-DD | null",
+  "transaction_date_raw": "string (literal date text seen, e.g. \"5/12\")",
+  "date_confidence": "high | low",
+  "date_note": "string (short explanation when low confidence)",
   "transaction_time": "HH:MM | null",
   "currency": "string",
   "line_items": [
@@ -360,7 +377,7 @@ Rules:
 2. translated_text is optional and must be non-hallucinatory.
 3. item_type must use the allowed taxonomy.
 4. Ignore non-transaction artifacts unless financially relevant.
-5. If date is unclear, set transaction_date to null.
+5. Date handling: set transaction_date to a full YYYY-MM-DD only when confident the year is known; always copy the literal date text into transaction_date_raw; set date_confidence to "low" (with a short date_note) when the year is missing or the date is unclear, leaving transaction_date null so the year is completed downstream.
 6. If time is unclear or unavailable, set transaction_time to null.
 7. Include line_items when possible. Keep uncertain numeric fields as null.
 8. Extract card_last_four: the last 4 digits of the card used for payment, as a 4-character digit string. For a masked PAN (e.g. **** **** **** 5830, XXXXXXXXXXXX1108) use its trailing 4 digits. For Apple Pay / Google Pay / digital wallets use the device account number's last 4 if printed (stable per device-card). Set to null for cash, gift cards with no number, or when no card digits are printed. Never invent digits.

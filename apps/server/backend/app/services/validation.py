@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -7,6 +8,9 @@ from pydantic import ValidationError
 
 from receipt_shared.contracts import ValidationPayload
 from receipt_shared.money import dollars_to_milliunits
+
+from app.services.date_resolution import resolve_receipt_date
+from app.utils import utcnow
 
 UNKNOWN_ACCOUNT_ID = "__unknown__"
 
@@ -114,13 +118,17 @@ def payloads_equivalent(old: dict[str, Any], new: dict[str, Any]) -> bool:
     """
     a = dict(normalize_payload_for_comparison(old))
     b = dict(normalize_payload_for_comparison(new))
-    for key in ("account_source", "category_source"):
+    for key in ("account_source", "category_source", "date_source", "date_confidence", "date_note"):
         a.pop(key, None)
         b.pop(key, None)
     return a == b
 
 
-def build_initial_validation_payload(parsed_extraction: dict[str, Any], default_account_id: str | None) -> dict[str, Any]:
+def build_initial_validation_payload(
+    parsed_extraction: dict[str, Any],
+    default_account_id: str | None,
+    ingest_date: date | None = None,
+) -> dict[str, Any]:
     raw_splits = parsed_extraction.get("splits", [])
     parsed_splits = [
         {
@@ -139,14 +147,28 @@ def build_initial_validation_payload(parsed_extraction: dict[str, Any], default_
     payee_name = str(parsed_extraction.get("payee_name") or "").strip()
     memo = str(parsed_extraction.get("memo") or "").strip()
 
+    # Deterministically resolve the transaction date (completing a missing year)
+    # and record provenance.  A guessed/low-confidence date is tagged so the UI
+    # requires a confirm and the sync gate blocks until then.
+    resolved = resolve_receipt_date(
+        structured_date=parsed_extraction.get("transaction_date"),
+        raw_text=parsed_extraction.get("transaction_date_raw"),
+        model_confidence=parsed_extraction.get("date_confidence"),
+        model_note=parsed_extraction.get("date_note"),
+        ingest_date=ingest_date or utcnow().date(),
+    )
+
     return {
         "payee_name": payee_name,
         "account_id": parsed_extraction.get("account_id") or default_account_id or "",
-        "transaction_date": parsed_extraction.get("transaction_date"),
+        "transaction_date": resolved.iso_date,
         "transaction_time": parsed_extraction.get("transaction_time"),
         "memo": memo or "Imported from receipt via Gemini",
         "total_amount": parsed_extraction.get("total_amount") or 0,
         "transaction_kind": parsed_extraction.get("transaction_kind") or "purchase",
         "category_id": category_id or "",
         "splits": parsed_splits if len(parsed_splits) >= 2 else [],
+        "date_source": resolved.source,
+        "date_confidence": resolved.confidence,
+        "date_note": resolved.note,
     }

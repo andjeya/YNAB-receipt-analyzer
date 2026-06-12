@@ -21,6 +21,7 @@ from app.services.payee_memory import apply_single_category_memory, lookup_payee
 from app.services.duplicates import apply_semantic_duplicate_state
 from app.services.reconciliation import run_ynab_reconciliation
 from app.services.validation import build_initial_validation_payload, validate_payload
+from app.services.date_resolution import resolve_receipt_date
 from app.services.ynab import get_cached_reference_data, refresh_ynab_cache, sync_receipt_to_ynab
 from receipt_shared.contracts import GeminiReceiptExtraction, ReceiptTwinExtraction, UnifiedReceiptExtraction
 from receipt_shared.gemini import (
@@ -65,7 +66,7 @@ def _safe_decimal(value: Any) -> Decimal | None:
         return None
 
 
-def _normalize_twin_payload(parsed_json: dict[str, Any]) -> dict[str, Any]:
+def _normalize_twin_payload(parsed_json: dict[str, Any], ingest_date: Any = None) -> dict[str, Any]:
     payload = {field: parsed_json.get(field) for field in TWIN_PAYLOAD_FIELDS}
     line_items = payload.get("line_items")
     if not isinstance(line_items, list):
@@ -77,6 +78,21 @@ def _normalize_twin_payload(parsed_json: dict[str, Any]) -> dict[str, Any]:
         payload["currency"] = "USD"
     if not payload.get("receipt_language"):
         payload["receipt_language"] = "en"
+
+    # Deterministically complete a missing year on the twin's date so the user
+    # has a concrete date to confirm in the twin's Date + Time section, and carry
+    # the guess provenance/note so the UI can show the "confirm the date" bubble.
+    resolved = resolve_receipt_date(
+        structured_date=parsed_json.get("transaction_date"),
+        raw_text=parsed_json.get("transaction_date_raw"),
+        model_confidence=parsed_json.get("date_confidence"),
+        model_note=parsed_json.get("date_note"),
+        ingest_date=ingest_date or utcnow().date(),
+    )
+    payload["transaction_date"] = resolved.iso_date
+    payload["date_source"] = resolved.source
+    payload["date_confidence"] = resolved.confidence
+    payload["date_note"] = resolved.note
     return payload
 
 
@@ -274,8 +290,9 @@ def _validate_ynab_payload(
     allowed_account_ids: set[str],
     db: Any = None,
     budget_id: str | None = None,
+    ingest_date: Any = None,
 ) -> tuple[dict[str, Any], bool, list[str]]:
-    initial_payload = build_initial_validation_payload(parsed_json, default_account_id)
+    initial_payload = build_initial_validation_payload(parsed_json, default_account_id, ingest_date)
 
     # Apply learned card→account mapping override (ALWAYS wins over AI guess).
     if db is not None and budget_id:
@@ -448,6 +465,7 @@ def _run_simple_extraction(ctx: _ExtractionCtx) -> None:
             allowed_account_ids=ctx.allowed_account_ids,
             db=ctx.db,
             budget_id=ctx.settings.ynab_budget_id,
+            ingest_date=ctx.receipt.ingested_at.date() if ctx.receipt.ingested_at else None,
         )
         if is_valid:
             workspace = build_initial_allocation_workspace(
@@ -539,8 +557,9 @@ def _run_unified_attempt(ctx: _ExtractionCtx) -> _UnifiedAttemptResult:
             allowed_account_ids=ctx.allowed_account_ids,
             db=ctx.db,
             budget_id=ctx.settings.ynab_budget_id,
+            ingest_date=ctx.receipt.ingested_at.date() if ctx.receipt.ingested_at else None,
         )
-        unified_twin_payload = _normalize_twin_payload(unified_analysis.parsed_json)
+        unified_twin_payload = _normalize_twin_payload(unified_analysis.parsed_json, ctx.receipt.ingested_at.date() if ctx.receipt.ingested_at else None)
         twin_warnings, twin_hard_fail = _evaluate_twin_quality(
             unified_twin_payload,
             hard_fail_delta_abs=ctx.settings.twin_recon_hard_fail_delta_abs,
@@ -681,6 +700,7 @@ def _run_fallback_and_finalize(ctx: _ExtractionCtx, unified: _UnifiedAttemptResu
             allowed_account_ids=ctx.allowed_account_ids,
             db=ctx.db,
             budget_id=ctx.settings.ynab_budget_id,
+            ingest_date=ctx.receipt.ingested_at.date() if ctx.receipt.ingested_at else None,
         )
         if is_valid:
             fallback_ynab_payload = normalized_payload
@@ -721,7 +741,7 @@ def _run_fallback_and_finalize(ctx: _ExtractionCtx, unified: _UnifiedAttemptResu
 
     fallback_twin_payload: dict[str, Any] | None = None
     if fallback_twin_analysis.schema_valid and fallback_twin_analysis.parsed_json:
-        fallback_twin_payload = _normalize_twin_payload(fallback_twin_analysis.parsed_json)
+        fallback_twin_payload = _normalize_twin_payload(fallback_twin_analysis.parsed_json, ctx.receipt.ingested_at.date() if ctx.receipt.ingested_at else None)
         twin_warnings, _ = _evaluate_twin_quality(
             fallback_twin_payload,
             hard_fail_delta_abs=ctx.settings.twin_recon_hard_fail_delta_abs,

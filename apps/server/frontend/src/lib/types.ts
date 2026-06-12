@@ -104,6 +104,13 @@ export interface ReceiptTwinPayload {
   total_amount: number;
   payment_method: string;
   receipt_language: string;
+  /** "ai_guess" when the date was guessed (missing year / low confidence) and
+   *  needs confirming. Drives the "confirm the date" bubble. */
+  date_source?: "ai_guess" | string | null;
+  /** "high" | "low" — UI hint. */
+  date_confidence?: string | null;
+  /** Short human explanation shown in the date warning bubble. */
+  date_note?: string | null;
 }
 
 export interface ReceiptTwin {
@@ -220,6 +227,15 @@ export interface ValidationPayloadInput {
   /** Present when the learned payee→category memory pre-filled the category or
    *  splits. Cleared by the frontend on any manual category/split change. */
   category_source?: "payee_memory" | string;
+  /** "ai_guess" when the date was guessed (missing year / low confidence /
+   *  ambiguous) and is UNCONFIRMED. Drives the orange date warning bubble and
+   *  blocks sync. Cleared (set undefined) when the user confirms or edits the
+   *  date, which unblocks sync. */
+  date_source?: "ai_guess" | string;
+  /** "high" | "low" — UI hint for the date warning bubble. */
+  date_confidence?: string;
+  /** Short human explanation shown in the date warning bubble. */
+  date_note?: string;
 }
 
 export interface SaveDraftResponse {

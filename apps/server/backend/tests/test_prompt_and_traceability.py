@@ -24,7 +24,10 @@ class TestGeminiPromptAndContracts:
 
         assert "transaction_date\": \"YYYY-MM-DD | null\"" in prompt
         assert "transaction_time\": \"HH:MM | null\"" in prompt
-        assert "If date is unclear, set transaction_date to null." in prompt
+        assert "transaction_date_raw" in prompt
+        assert "Always copy the literal date text" in prompt
+        assert 'date_confidence to "low"' in prompt
+        assert "the year is completed downstream" in prompt
         assert "If time is unclear or unavailable, set transaction_time to null." in prompt
         assert "If date is unclear, use today's date." not in prompt
         assert "Never suggest these categories:" in prompt
@@ -41,7 +44,9 @@ class TestGeminiPromptAndContracts:
             ["Trader Joe's"],
         )
 
-        assert "If date is unclear, set transaction_date to null." in prompt
+        assert "transaction_date_raw" in prompt
+        assert "Always copy the literal date text" in prompt
+        assert "the year is completed downstream" in prompt
         assert "If time is unclear or unavailable, set transaction_time to null." in prompt
         assert "Describe what was purchased, not where." in prompt
         assert 'Preferred format: "Bucket: item, item; Bucket: item".' in prompt

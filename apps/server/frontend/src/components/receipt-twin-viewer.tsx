@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { Check, Pencil, RefreshCw, Save, X } from "lucide-react";
+import { AlertTriangle, Check, Pencil, RefreshCw, Save, X } from "lucide-react";
 
 import { confirmTwinSection, retryTwinExtraction, saveReceiptTwin } from "@/lib/api";
 import { ReceiptLineItem, ReceiptTwin, ReceiptTwinPayload } from "@/lib/types";
@@ -354,6 +354,18 @@ export function ReceiptTwinViewer({
             }}
           />
         </div>
+        {!dateTimeConfirmed && draft.date_source === "ai_guess" && draft.date_note ? (
+          <p
+            className="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-100/80 px-2.5 py-2 text-xs font-medium text-amber-900"
+            data-testid="date-guess-note"
+            role="status"
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>
+              {draft.date_note} Check the date, then tap “Looks right” to confirm.
+            </span>
+          </p>
+        ) : null}
       </section>
 
       <section

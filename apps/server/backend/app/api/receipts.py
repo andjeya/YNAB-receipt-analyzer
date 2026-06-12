@@ -52,6 +52,7 @@ from app.services.duplicates import apply_semantic_duplicate_state, build_semant
 from app.services.incidents import record_incident
 from app.services.storage import storage_path
 from app.services.validation import payloads_equivalent, validate_payload, UNKNOWN_ACCOUNT_ID
+from app.services.date_resolution import date_sync_block_reason
 from app.services.ynab import get_cached_reference_data
 from receipt_shared.contracts import ReceiptTwinExtraction
 from receipt_shared.money import dollars_to_milliunits
@@ -222,6 +223,9 @@ def _apply_twin_locks_to_payload(payload: dict[str, Any], twin: ReceiptTwin | No
             if locked_payload.get(field) != twin_payload.get(field):
                 warnings.append(f"{field} is locked by confirmed receipt twin and was overridden")
             locked_payload[field] = twin_payload.get(field)
+        # Confirming the twin's date IS the date confirmation: clear the guess
+        # marker so the date sync gate passes.
+        locked_payload["date_source"] = None
 
     if confirmed_sections["total"]:
         if locked_payload.get("total_amount") != twin_payload.get("total_amount"):
@@ -469,6 +473,9 @@ def _batch_sync_ready(
             continue
         account_id = str(payload.get("account_id") or "").strip()
         if not account_id or account_id == UNKNOWN_ACCOUNT_ID:
+            continue
+        # Date gate: a missing or unconfirmed-guess date blocks sync.
+        if date_sync_block_reason(payload) is not None:
             continue
         valid_account_ids.add(row_receipt_id)
 
@@ -1014,7 +1021,11 @@ def save_draft(
 
     return SaveDraftResponse(
         validation=_to_validation_schema(validation),
-        can_sync=is_valid and receipt.status != ReceiptStatus.DUPLICATE_REVIEW.value,
+        can_sync=(
+            is_valid
+            and receipt.status != ReceiptStatus.DUPLICATE_REVIEW.value
+            and date_sync_block_reason(normalized_payload) is None
+        ),
         lock_warnings=lock_warnings,
     )
 
@@ -1147,6 +1158,14 @@ def sync_receipt(
     validation = _latest_validation(db, receipt.id)
     if validation is None or not validation.is_valid:
         raise HTTPException(status_code=400, detail="Receipt must have a valid draft before sync")
+
+    # Date gate (safety-critical): never sync a missing or unconfirmed-guess date.
+    date_block = date_sync_block_reason(validation.payload if isinstance(validation.payload, dict) else {})
+    if date_block is not None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "date_unconfirmed", "message": date_block},
+        )
 
     # Enforce twin confirmation when a twin extraction exists for this receipt.
     # Mirrors the frontend: only block when a twin exists; no-twin receipts proceed.

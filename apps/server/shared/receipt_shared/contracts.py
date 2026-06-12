@@ -61,6 +61,9 @@ class GeminiReceiptExtraction(BaseModel):
     payee_name: str = ""
     account_id: str = Field(min_length=1)
     transaction_date: date | None = None
+    transaction_date_raw: str = ""
+    date_confidence: str = "high"
+    date_note: str = ""
     transaction_time: time | None = None
     memo: str = ""
     card_last_four: str | None = None
@@ -113,6 +116,9 @@ class UnifiedReceiptExtraction(BaseModel):
     store_name: str = ""
     store_address: str = ""
     transaction_date: date | None = None
+    transaction_date_raw: str = ""
+    date_confidence: str = "high"
+    date_note: str = ""
     transaction_time: time | None = None
     currency: str = "USD"
     line_items: list[ReceiptLineItem] = Field(default_factory=list)
@@ -174,6 +180,9 @@ class ReceiptTwinExtraction(BaseModel):
     store_name: str = ""
     store_address: str = ""
     transaction_date: date | None = None
+    transaction_date_raw: str = ""
+    date_confidence: str = "high"
+    date_note: str = ""
     transaction_time: time | None = None
     currency: str = "USD"
     line_items: list[ReceiptLineItem] = Field(default_factory=list)
@@ -248,7 +257,10 @@ class ValidationPayload(BaseModel):
 
     payee_name: str = Field(min_length=1)
     account_id: str = Field(min_length=1)
-    transaction_date: date
+    # Nullable so a receipt with no confident date can still exist as a draft in
+    # needs_review (the user fills it in).  Sync is hard-gated separately on a
+    # present, confirmed date — see date_resolution.date_sync_block_reason.
+    transaction_date: date | None = None
     transaction_time: time | None = None
     memo: str = ""
     total_amount: float
@@ -262,6 +274,14 @@ class ValidationPayload(BaseModel):
     # Provenance: set to "payee_memory" when category_id/splits were pre-filled
     # from the learned payee→category memory.  Absent (None) otherwise.
     category_source: str | None = None
+    # Date provenance + UI hints.  date_source == "ai_guess" means the date was
+    # guessed (missing year / low confidence / ambiguous) and is UNCONFIRMED:
+    # the warning bubble shows and sync is blocked until the user confirms or
+    # edits the date (which clears date_source).  date_confidence / date_note
+    # drive the bubble text.  Excluded from payload-equivalence comparison.
+    date_source: str | None = None
+    date_confidence: str | None = None
+    date_note: str | None = None
 
     @field_validator("category_id", mode="before")
     @classmethod

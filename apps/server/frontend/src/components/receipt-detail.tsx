@@ -193,6 +193,15 @@ function toDraftFromPayload(payload: Record<string, unknown>, fallbackPayee: str
     // Provenance survives saves so the "remembered from store" hint stays
     // truthful across validation versions; cleared on any manual category/split change.
     ...(payload.category_source === "payee_memory" ? { category_source: "payee_memory" } : {}),
+    // Date guess provenance: drives the orange "confirm the date" bubble and the
+    // sync gate. Cleared when the user confirms or edits the date.
+    ...(payload.date_source === "ai_guess"
+      ? {
+          date_source: "ai_guess",
+          date_confidence: payload.date_confidence ? String(payload.date_confidence) : undefined,
+          date_note: payload.date_note ? String(payload.date_note) : undefined,
+        }
+      : {}),
   };
 }
 
