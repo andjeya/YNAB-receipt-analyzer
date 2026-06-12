@@ -22,10 +22,11 @@ export interface ToastItem {
   message: string;
   title?: string;
   action?: ToastAction;
+  durationMs?: number;
 }
 
 interface ToastContextValue {
-  toast: (options: { variant: ToastVariant; message: string; title?: string; action?: ToastAction }) => void;
+  toast: (options: { variant: ToastVariant; message: string; title?: string; action?: ToastAction; durationMs?: number }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,12 +59,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const toast = useCallback(
-    ({ variant, message, title, action }: { variant: ToastVariant; message: string; title?: string; action?: ToastAction }) => {
+    ({ variant, message, title, action, durationMs }: { variant: ToastVariant; message: string; title?: string; action?: ToastAction; durationMs?: number }) => {
       const id = nextId();
-      const item: ToastItem = { id, variant, message, title, action };
+      const item: ToastItem = { id, variant, message, title, action, durationMs };
       setToasts((prev) => [...prev, item]);
 
-      const delay = variant === "error" ? 5000 : 3000;
+      const delay = durationMs ?? (variant === "error" ? 5000 : 3000);
       const timer = setTimeout(() => {
         dismiss(id);
       }, delay);

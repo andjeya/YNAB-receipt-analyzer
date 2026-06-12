@@ -11,12 +11,14 @@ import {
   confirmDuplicateReceipt,
   confirmTwinSection,
   enqueueSync,
+  deleteReceipt,
   getAppConfig,
   getReceiptDetail,
   getYnabCache,
   overrideDuplicateReceipt,
   recomputeAllocationWorkspace,
   receiptFileUrl,
+  restoreReceipt,
   saveDraft,
 } from "@/lib/api";
 import { AllocationWorkspace, ReceiptDetail, ValidationPayloadInput } from "@/lib/types";
@@ -1132,6 +1134,37 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteReceipt(receiptId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+      toast({
+        variant: "success",
+        message: "Receipt deleted.",
+        durationMs: 6000,
+        action: {
+          label: "Undo",
+          onClick: () => {
+            restoreReceipt(receiptId)
+              .then(() => {
+                queryClient.invalidateQueries({ queryKey: ["receipts"] });
+                queryClient.invalidateQueries({ queryKey: ["stats"] });
+              })
+              .catch((e) =>
+                toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Couldn’t restore the receipt" }),
+              );
+          },
+        },
+      });
+      router.push("/");
+    },
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Couldn’t delete this receipt" });
+    },
+  });
+
   useEffect(() => {
     if (!draft || !dirty) return;
     const timer = setTimeout(() => {
@@ -1524,7 +1557,22 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
                 : "--"}
             </p>
           </div>
-          <StatusBadge status={receipt.status} />
+          <div className="flex items-center gap-2">
+            {receipt.status !== "synced" && receipt.status !== "syncing" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="forget-receipt-button"
+                className="h-8 gap-1 border-red-200 text-red-600 hover:bg-red-50"
+                onClick={() => deleteMutation.mutate()}
+                disabled={deleteMutation.isPending}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Forget it
+              </Button>
+            ) : null}
+            <StatusBadge status={receipt.status} />
+          </div>
         </div>
         {receipt.status_reason ? <p className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700">{receipt.status_reason}</p> : null}
         {receipt.status === "error_extract" ? (

@@ -126,6 +126,19 @@ export function getReceiptTwin(receiptId: string) {
   return request<ReceiptTwin>(`/receipts/${receiptId}/twin`);
 }
 
+export function deleteReceipt(receiptId: string) {
+  return request<{ receipt_id: string; deleted: boolean }>(`/receipts/${receiptId}`, {
+    method: "DELETE",
+  });
+}
+
+export function restoreReceipt(receiptId: string) {
+  return request<{ receipt_id: string; status: string }>(`/receipts/${receiptId}/restore`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
 export function saveReceiptTwin(receiptId: string, payload: SaveTwinRequest) {
   return request<SaveTwinResponse>(`/receipts/${receiptId}/twin`, {
     method: "PUT",

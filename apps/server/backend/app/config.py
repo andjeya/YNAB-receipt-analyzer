@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     stable_min_age_seconds: int = 3
     max_ingest_file_size_bytes: int = 50 * 1024 * 1024  # 50 MB
     stuck_job_timeout_minutes: int = 30
+    # Soft-deleted receipts are kept this long (so the user can Undo) before a
+    # startup sweep hard-deletes the file + rows.
+    soft_delete_purge_hours: int = 24
 
     game_green_hours_threshold: float = 24.0
     game_brown_hours_threshold: float = 72.0

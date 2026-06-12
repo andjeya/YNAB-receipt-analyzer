@@ -1309,7 +1309,11 @@ def sync_receipt_to_ynab(
 
 
 def compute_status_counts(db: Session) -> dict[str, int]:
-    rows = db.execute(select(Receipt.status, func.count()).group_by(Receipt.status)).all()
+    rows = db.execute(
+        select(Receipt.status, func.count())
+        .where(Receipt.deleted_at.is_(None))
+        .group_by(Receipt.status)
+    ).all()
     return {status: count for status, count in rows}
 
 

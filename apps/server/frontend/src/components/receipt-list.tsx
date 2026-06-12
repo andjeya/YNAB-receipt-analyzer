@@ -17,11 +17,13 @@ import {
   ScanSearch,
   Scissors,
   Sparkles,
+  Trash2,
   Waves,
 } from "lucide-react";
 
 import {
   acknowledgeGameIncident,
+  deleteReceipt,
   enqueueSync,
   fetchYnabUpdates,
   getGameDebugSeed,
@@ -30,6 +32,7 @@ import {
   listReceipts,
   rebuildGameState,
   recomputeCorrectnessState,
+  restoreReceipt,
   shredGameReceipt,
   spendGameWater,
   triggerScan,
@@ -789,7 +792,7 @@ function TabBar({
 }
 
 function ReceiptListItem({
-  receipt, tile, currentWeekSlot, spendableNow, onShred, isShredPending, onQuickSync, isQuickSyncPending, index, showWaiting,
+  receipt, tile, currentWeekSlot, spendableNow, onShred, isShredPending, onQuickSync, isQuickSyncPending, onDelete, isDeletePending, index, showWaiting,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   receipt: any;
@@ -801,6 +804,8 @@ function ReceiptListItem({
   isShredPending: boolean;
   onQuickSync: (receiptId: string) => void;
   isQuickSyncPending: boolean;
+  onDelete: (receiptId: string) => void;
+  isDeletePending: boolean;
   index: number;
   /** When true (To Review tab), show a prominent "Xd waiting" label. */
   showWaiting?: boolean;
@@ -931,6 +936,23 @@ function ReceiptListItem({
                   >
                     {isQuickSyncPending ? "Syncing…" : "Looks right — Sync"}
                   </Button>
+                ) : null}
+                {receipt.status !== "synced" && receipt.status !== "syncing" ? (
+                  <button
+                    type="button"
+                    data-testid="delete-receipt-button"
+                    aria-label="Delete receipt"
+                    title="Delete receipt"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full text-ink/40 opacity-70 transition hover:bg-red-50 hover:text-red-600 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-40"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onDelete(receipt.id);
+                    }}
+                    disabled={isDeletePending}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
                 ) : null}
                 <StatusBadge status={receipt.status} />
               </div>
@@ -1351,6 +1373,43 @@ export function ReceiptList() {
     },
   });
 
+  const restoreMutation = useMutation({
+    mutationFn: (receiptId: string) => restoreReceipt(receiptId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+    },
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Couldn’t restore the receipt" });
+    },
+  });
+
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const deleteMutation = useMutation({
+    mutationFn: (receiptId: string) => deleteReceipt(receiptId),
+    onMutate: (receiptId) => setDeletingId(receiptId),
+    onSuccess: (_data, receiptId) => {
+      setDeletingId(null);
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+      toast({
+        variant: "success",
+        message: "Receipt deleted.",
+        durationMs: 6000,
+        action: { label: "Undo", onClick: () => restoreMutation.mutate(receiptId) },
+      });
+    },
+    onError: (e, receiptId) => {
+      setDeletingId(null);
+      const message =
+        e instanceof Error && e.message ? e.message : `Couldn’t delete receipt ${receiptId.slice(0, 8)}…`;
+      toast({ variant: "error", message });
+    },
+  });
+
   const spendWaterMutation = useMutation({
     mutationFn: (units: number) => spendGameWater(units),
     onSuccess: () => {
@@ -1538,6 +1597,8 @@ export function ReceiptList() {
                 quickSyncMutation.mutate(receiptId);
               }}
               isQuickSyncPending={quickSyncingId === receipt.id}
+              onDelete={(receiptId) => deleteMutation.mutate(receiptId)}
+              isDeletePending={deletingId === receipt.id}
               index={index}
               showWaiting={activeTab === "review"}
             />

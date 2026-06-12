@@ -56,6 +56,11 @@ class Receipt(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
+    # Soft delete: set when the user discards a non-synced receipt. Filtered out
+    # of all listings/queries; a background sweep hard-deletes (file + rows) after
+    # the purge window so the user can Undo in the meantime.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
     extraction_runs: Mapped[list["ExtractionRun"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
     twins: Mapped[list["ReceiptTwin"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
     validations: Mapped[list["Validation"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")

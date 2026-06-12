@@ -16,6 +16,7 @@ from app.enums import ReceiptStatus, YNABSyncStatus
 from app.log_setup import configure_logging
 from app.models import Receipt, YNABSync
 from app.services.ynab import refresh_ynab_cache
+from app.services.retention import purge_soft_deleted_receipts
 from app.migrations import ensure_schema_current
 from app.utils import utcnow
 
@@ -33,6 +34,7 @@ def _reset_stuck_jobs() -> None:
                 select(Receipt).where(
                     Receipt.status == ReceiptStatus.EXTRACTING.value,
                     Receipt.extraction_started_at < cutoff,
+                    Receipt.deleted_at.is_(None),
                 )
             )
         )
@@ -41,6 +43,7 @@ def _reset_stuck_jobs() -> None:
                 select(Receipt).where(
                     Receipt.status == ReceiptStatus.SYNCING.value,
                     Receipt.sync_started_at < cutoff,
+                    Receipt.deleted_at.is_(None),
                 )
             )
         )
@@ -81,6 +84,11 @@ def _reset_stuck_jobs() -> None:
             )
 
 
+def _purge_soft_deleted() -> None:
+    with SessionLocal() as db:
+        purge_soft_deleted_receipts(db, settings)
+
+
 def _refresh_cache_once() -> None:
     if not settings.ynab_access_token or not settings.ynab_budget_id:
         return
@@ -113,6 +121,10 @@ async def lifespan(_: FastAPI):
         await asyncio.to_thread(_reset_stuck_jobs)
     except Exception:
         logger.exception("Stuck job reset failed on startup")
+    try:
+        await asyncio.to_thread(_purge_soft_deleted)
+    except Exception:
+        logger.exception("Soft-delete purge failed on startup")
     refresh_task: asyncio.Task[None] | None = None
     if settings.ynab_access_token and settings.ynab_budget_id:
         try:

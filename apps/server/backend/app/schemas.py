@@ -177,6 +177,16 @@ class DuplicateConfirmResponse(BaseModel):
     kept_receipt_id: str
 
 
+class DeleteReceiptResponse(BaseModel):
+    receipt_id: str
+    deleted: bool = True
+
+
+class RestoreReceiptResponse(BaseModel):
+    receipt_id: str
+    status: str
+
+
 class DuplicateOverrideRequest(BaseModel):
     confirmed: bool = False
 

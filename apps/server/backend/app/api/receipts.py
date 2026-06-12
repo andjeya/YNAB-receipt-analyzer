@@ -22,7 +22,9 @@ from app.schemas import (
     AllocationRecomputeRequest,
     AllocationRecomputeResponse,
     ConfirmedSectionsOut,
+    DeleteReceiptResponse,
     DuplicateConfirmResponse,
+    RestoreReceiptResponse,
     DuplicateOverrideRequest,
     DuplicateOverrideResponse,
     ExtractionRunOut,
@@ -607,7 +609,7 @@ def list_receipts(
     db: Session = Depends(db_session),
     settings: Settings = Depends(app_settings),
 ) -> list[ReceiptSummary]:
-    stmt = select(Receipt)
+    stmt = select(Receipt).where(Receipt.deleted_at.is_(None))
     if status:
         stmt = stmt.where(Receipt.status == status)
     if sort == "oldest":
@@ -650,7 +652,7 @@ def list_receipts(
 @router.get("/{receipt_id}", response_model=ReceiptDetailOut)
 def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> ReceiptDetailOut:
     receipt = db.get(Receipt, receipt_id)
-    if receipt is None:
+    if receipt is None or receipt.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
     extraction = _latest_extraction(db, receipt_id)
@@ -1151,6 +1153,49 @@ def override_duplicate_receipt(
     )
 
 
+@router.delete("/{receipt_id}", response_model=DeleteReceiptResponse)
+def delete_receipt(receipt_id: str, db: Session = Depends(db_session)) -> DeleteReceiptResponse:
+    """Soft-delete a non-synced receipt so the user can Undo before it is purged.
+
+    Synced receipts are not deletable here: removing our record would orphan the
+    YNAB transaction and reconciliation. Deleting never touches YNAB.
+    """
+    receipt = db.get(Receipt, receipt_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    if receipt.deleted_at is not None:
+        # Idempotent: already soft-deleted.
+        return DeleteReceiptResponse(receipt_id=receipt.id, deleted=True)
+
+    if (
+        receipt.status in {ReceiptStatus.SYNCED.value, ReceiptStatus.SYNCING.value}
+        or _has_successful_sync(db, receipt.id)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "receipt_synced",
+                "message": "Synced receipts can't be deleted here — they live in YNAB now.",
+            },
+        )
+
+    receipt.deleted_at = utcnow()
+    db.commit()
+    return DeleteReceiptResponse(receipt_id=receipt.id, deleted=True)
+
+
+@router.post("/{receipt_id}/restore", response_model=RestoreReceiptResponse)
+def restore_receipt(receipt_id: str, db: Session = Depends(db_session)) -> RestoreReceiptResponse:
+    """Undo a soft-delete, as long as the receipt has not been purged yet."""
+    receipt = db.get(Receipt, receipt_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    if receipt.deleted_at is not None:
+        receipt.deleted_at = None
+        db.commit()
+    return RestoreReceiptResponse(receipt_id=receipt.id, status=receipt.status)
+
+
 @router.post("/{receipt_id}/sync", response_model=SyncEnqueueResponse)
 def sync_receipt(
     receipt_id: str,
@@ -1159,7 +1204,7 @@ def sync_receipt(
     settings: Settings = Depends(app_settings),
 ) -> SyncEnqueueResponse:
     receipt = db.get(Receipt, receipt_id)
-    if receipt is None:
+    if receipt is None or receipt.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
     validation = _latest_validation(db, receipt.id)

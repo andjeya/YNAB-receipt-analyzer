@@ -167,6 +167,7 @@ def apply_semantic_duplicate_state(
             .where(
                 Receipt.semantic_signature == signature,
                 Receipt.id != receipt.id,
+                Receipt.deleted_at.is_(None),
             )
             .order_by(Receipt.ingested_at.asc(), Receipt.id.asc())
         )
