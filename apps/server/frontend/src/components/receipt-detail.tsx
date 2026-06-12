@@ -9,6 +9,7 @@ import { ArrowLeft, Droplets, Flame, Plus, Trash2 } from "lucide-react";
 
 import {
   confirmDuplicateReceipt,
+  confirmTwinSection,
   enqueueSync,
   getAppConfig,
   getReceiptDetail,
@@ -349,21 +350,14 @@ function ScanPanel({ receiptId, mimeType, originalFilename }: {
     <Card className="h-full overflow-hidden p-0">
       <div className="flex items-center justify-between border-b border-ink/10 px-3 py-2">
         <h2 className="text-sm font-semibold">Original Scan</h2>
-        <div className="flex gap-3">
-          <a
-            href={previewUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs text-ink/50 underline hover:text-ink/80"
-          >
-            Open
+        <div className="flex gap-2">
+          <a href={previewUrl} target="_blank" rel="noreferrer"
+             className="rounded-md border border-ink/20 bg-white/80 px-2 py-1 text-xs font-medium text-ink/80 hover:bg-white transition">
+            Open ↗
           </a>
-          <a
-            href={downloadUrl}
-            className="text-xs text-ink/50 underline hover:text-ink/80"
-            download
-          >
-            Download
+          <a href={downloadUrl} download
+             className="rounded-md border border-ink/20 bg-white/80 px-2 py-1 text-xs font-medium text-ink/80 hover:bg-white transition">
+            Download ↓
           </a>
         </div>
       </div>
@@ -471,7 +465,7 @@ function TwinAndScanSection({ receiptId, receipt, mobileView, setMobileView, mob
   );
 }
 
-function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestions, payeeMenuOpen, setPayeeMenuOpen, accountNeedsAttention }: {
+function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestions, payeeMenuOpen, setPayeeMenuOpen, accountNeedsAttention, cardLastFour }: {
   draft: ValidationPayloadInput;
   setDraft: (d: ValidationPayloadInput) => void;
   setDirty: (v: boolean) => void;
@@ -480,6 +474,7 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
   payeeMenuOpen: boolean;
   setPayeeMenuOpen: (v: boolean) => void;
   accountNeedsAttention: boolean;
+  cardLastFour?: string | null;
 }) {
   return (
     <Card className="animate-reveal space-y-3" style={{ animationDelay: "70ms" }}>
@@ -537,13 +532,19 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
             }}
           >
             <option value="">Select account</option>
-            <option value={UNKNOWN_ACCOUNT_ID}>Unknown (needs review)</option>
             {accounts.map((account) => (
               <option key={account.entity_id} value={account.entity_id}>{account.name}</option>
             ))}
+            <option value={UNKNOWN_ACCOUNT_ID}>Unknown (needs review)</option>
           </Select>
           {accountNeedsAttention ? (
             <p className="mt-1 text-xs font-semibold text-amber-700">Unknown account selected. Sync is disabled until this is fixed.</p>
+          ) : null}
+          {cardLastFour && draft.account_id && draft.account_id !== UNKNOWN_ACCOUNT_ID && draft.account_id !== "" ? (
+            <p className="mt-1 flex items-center gap-1 text-[11px] text-sky-700">
+              <span>📌</span>
+              <span>Account remembered from card ending {cardLastFour}</span>
+            </p>
           ) : null}
         </div>
       </div>
@@ -556,11 +557,17 @@ function MemoCard({ draft, setDraft, setDirty }: {
   setDraft: (d: ValidationPayloadInput) => void;
   setDirty: (v: boolean) => void;
 }) {
+  const [showTxType, setShowTxType] = useState(draft.transaction_kind === "refund");
+
   return (
     <Card className="animate-reveal space-y-3" style={{ animationDelay: "120ms" }}>
       <h2 className="font-semibold">Memo</h2>
       <div>
         <label htmlFor="memo-input" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Transaction memo</label>
+        <p className="mb-1 flex items-center gap-1 text-[11px] text-sky-600">
+          <span>✨</span>
+          <span>AI-generated — edit if needed</span>
+        </p>
         <Textarea
           id="memo-input"
           rows={2}
@@ -572,17 +579,29 @@ function MemoCard({ draft, setDraft, setDirty }: {
         />
       </div>
       <div>
-        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Transaction type</label>
-        <Select
-          value={draft.transaction_kind}
-          onChange={(event) => {
-            setDraft({ ...draft, transaction_kind: event.target.value as "purchase" | "refund" });
-            setDirty(true);
-          }}
-        >
-          <option value="purchase">Purchase (outflow)</option>
-          <option value="refund">Refund / return (inflow)</option>
-        </Select>
+        {!showTxType ? (
+          <button
+            type="button"
+            className="text-[11px] text-ink/50 hover:text-ink/70 underline"
+            onClick={() => setShowTxType(true)}
+          >
+            Purchase (outflow) — change transaction type?
+          </button>
+        ) : (
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Transaction type</label>
+            <Select
+              value={draft.transaction_kind}
+              onChange={(event) => {
+                setDraft({ ...draft, transaction_kind: event.target.value as "purchase" | "refund" });
+                setDirty(true);
+              }}
+            >
+              <option value="purchase">Purchase (outflow)</option>
+              <option value="refund">Refund / return (inflow)</option>
+            </Select>
+          </div>
+        )}
       </div>
     </Card>
   );
@@ -597,27 +616,41 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
   splitTotal: number;
   onSplitAmountEdited?: (index: number, amount: number) => void;
 }) {
+  const [confirmDeleteIndex, setConfirmDeleteIndex] = useState<number | null>(null);
+
   return (
     <Card className="animate-reveal space-y-3" style={{ animationDelay: "170ms" }}>
       <div className="flex items-center justify-between">
-        <h2 className="font-semibold">{isSplitMode ? "Split Categories" : "Category"}</h2>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1"
-          onClick={() => {
-            if (isSplitMode) {
-              const fallbackCategory = draft.splits.find((split) => split.category_id)?.category_id ?? draft.category_id;
-              setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
-              setDirty(true);
-              return;
-            }
-            setDraft({ ...draft, category_id: "", splits: [{ category_id: draft.category_id, amount: draft.total_amount, memo: "" }] });
-            setDirty(true);
-          }}
-        >
-          {isSplitMode ? "Use Single Category" : "Split Transaction"}
-        </Button>
+        <h2 className="font-semibold">Categories</h2>
+        <div className="inline-flex rounded-xl border border-ink/20 bg-ink/5 p-0.5 text-xs">
+          <button
+            type="button"
+            className={`rounded-lg px-3 py-1 font-semibold transition focus-visible:ring-2 focus-visible:ring-mint/70 ${!isSplitMode ? "bg-ink text-white shadow-sm" : "text-ink/60 hover:text-ink/80"}`}
+            onClick={() => {
+              if (isSplitMode) {
+                const fallbackCategory = draft.splits.find((s) => s.category_id)?.category_id ?? draft.category_id;
+                setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
+                setDirty(true);
+              }
+            }}
+            disabled={!isSplitMode}
+          >
+            Single
+          </button>
+          <button
+            type="button"
+            className={`rounded-lg px-3 py-1 font-semibold transition focus-visible:ring-2 focus-visible:ring-mint/70 ${isSplitMode ? "bg-ink text-white shadow-sm" : "text-ink/60 hover:text-ink/80"}`}
+            onClick={() => {
+              if (!isSplitMode) {
+                setDraft({ ...draft, category_id: "", splits: [{ category_id: draft.category_id, amount: draft.total_amount, memo: "" }] });
+                setDirty(true);
+              }
+            }}
+            disabled={isSplitMode}
+          >
+            Split
+          </button>
+        </div>
       </div>
 
       {!isSplitMode ? (
@@ -635,8 +668,23 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
         </div>
       ) : (
         <>
-          <div className="flex items-center justify-between rounded-xl bg-sand/50 px-3 py-2 text-xs text-ink/75">
-            <span>Split total: ${splitTotal.toFixed(2)}</span>
+          <div className="flex items-center justify-between rounded-xl bg-sand/50 px-3 py-2 text-xs">
+            {(() => {
+              const delta = Math.round((draft.total_amount - splitTotal) * 100) / 100;
+              const hasDiscrepancy = Math.abs(delta) > 0.005;
+              return (
+                <span className={hasDiscrepancy ? "font-semibold text-red-700" : "text-ink/75"}>
+                  Split total: ${splitTotal.toFixed(2)}
+                  {hasDiscrepancy ? (
+                    <span className="ml-2">
+                      ({delta > 0 ? `+$${delta.toFixed(2)} unassigned` : `-$${Math.abs(delta).toFixed(2)} over total`})
+                    </span>
+                  ) : (
+                    <span className="ml-1 text-emerald-700">✓</span>
+                  )}
+                </span>
+              );
+            })()}
             <Button
               variant="outline"
               size="sm"
@@ -654,38 +702,61 @@ function CategorySplitCard({ draft, setDraft, setDirty, categories, isSplitMode,
             <div key={`${index}-${split.category_id}`} className="rounded-2xl border border-ink/10 bg-sand/70 p-3">
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Split {index + 1}</p>
-                <button
-                  type="button"
-                  className="inline-flex items-center text-red-600 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
-                  onClick={() => {
-                    const nextSplits = draft.splits.filter((_, splitIndex) => splitIndex !== index);
-                    if (nextSplits.length === 0) {
-                      const fallbackCategory = split.category_id || draft.category_id;
-                      setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
-                      setDirty(true);
-                      return;
-                    }
-                    setDraft({ ...draft, category_id: "", splits: nextSplits });
-                    setDirty(true);
-                  }}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                {confirmDeleteIndex === index ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      className="text-[10px] font-semibold text-red-700 hover:underline"
+                      onClick={() => {
+                        setConfirmDeleteIndex(null);
+                        const nextSplits = draft.splits.filter((_, i) => i !== index);
+                        if (nextSplits.length === 0) {
+                          const fallbackCategory = split.category_id || draft.category_id;
+                          setDraft({ ...draft, category_id: fallbackCategory, splits: [] });
+                        } else {
+                          setDraft({ ...draft, category_id: "", splits: nextSplits });
+                        }
+                        setDirty(true);
+                      }}
+                    >
+                      Remove
+                    </button>
+                    <button
+                      type="button"
+                      className="text-[10px] text-ink/50 hover:underline"
+                      onClick={() => setConfirmDeleteIndex(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="inline-flex items-center text-red-600 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
+                    onClick={() => setConfirmDeleteIndex(index)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                )}
               </div>
               <div className="grid gap-2">
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={split.amount}
-                  onChange={(event) => {
-                    const nextSplits = [...draft.splits];
-                    const nextAmount = Number(event.target.value) || 0;
-                    nextSplits[index] = { ...split, amount: nextAmount };
-                    setDraft({ ...draft, splits: nextSplits });
-                    setDirty(true);
-                    onSplitAmountEdited?.(index, nextAmount);
-                  }}
-                />
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-ink/60">$</span>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={split.amount}
+                    className="pl-6"
+                    onChange={(event) => {
+                      const nextSplits = [...draft.splits];
+                      const nextAmount = Number(event.target.value) || 0;
+                      nextSplits[index] = { ...split, amount: nextAmount };
+                      setDraft({ ...draft, splits: nextSplits });
+                      setDirty(true);
+                      onSplitAmountEdited?.(index, nextAmount);
+                    }}
+                  />
+                </div>
                 <CategorySearchSelect
                   value={split.category_id}
                   categories={categories}
@@ -834,7 +905,7 @@ function DuplicateReviewSection({
   );
 }
 
-function ActionButtonBar({ isSyncing, onReset, canReset, isAutosaving, onSync, canSync, syncButtonLabel }: {
+function ActionButtonBar({ isSyncing, onReset, canReset, isAutosaving, onSync, canSync, syncButtonLabel, stripReasons }: {
   isSyncing: boolean;
   onReset: () => void;
   canReset: boolean;
@@ -842,12 +913,21 @@ function ActionButtonBar({ isSyncing, onReset, canReset, isAutosaving, onSync, c
   onSync: () => void;
   canSync: boolean;
   syncButtonLabel: string;
+  stripReasons: string[];
 }) {
   return (
     <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink/15 bg-white/95 px-4 py-3 backdrop-blur">
+      {stripReasons.length > 0 ? (
+        <div className="mx-auto mb-2 max-w-6xl">
+          <p className="text-xs font-medium text-amber-800">
+            {stripReasons[0]}
+            {stripReasons.length > 1 ? <span className="ml-1 text-ink/50">(+{stripReasons.length - 1} more)</span> : null}
+          </p>
+        </div>
+      ) : null}
       <div className="mx-auto flex max-w-6xl items-center gap-2">
         <Button variant="outline" className="flex-1" onClick={onReset} disabled={!canReset || isAutosaving}>
-          Cancel
+          Reset
         </Button>
         <Button className="flex-1" variant={isSyncing ? "outline" : "solid"} onClick={onSync} disabled={!canSync || isSyncing} data-testid="sync-button">
           {syncButtonLabel}
@@ -877,6 +957,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   // Accuracy celebration: track previous status to fire only on edge synced transition
   const prevStatusRef = useRef<string | null>(null);
   const [showSyncCelebration, setShowSyncCelebration] = useState(false);
+  const autoConfirmedRef = useRef<Set<string>>(new Set());
 
   const receiptQuery = useQuery({
     queryKey: ["receipt", receiptId],
@@ -1060,6 +1141,40 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     }
     prevStatusRef.current = nextStatus;
   }, [receiptQuery.data?.status, toast]);
+
+  // Auto-confirm twin sections when extraction is clean and both sections are unconfirmed
+  useEffect(() => {
+    const receipt = receiptQuery.data;
+    if (!receipt) return;
+    if (autoConfirmedRef.current.has(receipt.id)) return;
+
+    const twin = receipt.latest_twin;
+    if (!twin) return;
+
+    const extraction = receipt.latest_extraction;
+    if (!extraction?.schema_valid || (extraction.schema_errors?.length ?? 0) > 0) return;
+
+    const dateConfirmed = twin.confirmed_sections?.date_time ?? false;
+    const totalConfirmed = twin.confirmed_sections?.total ?? false;
+
+    // Only auto-confirm if BOTH sections are unconfirmed (brand new receipt, not one the user rejected)
+    if (dateConfirmed || totalConfirmed) return;
+
+    // Mark as processed so we don't re-run
+    autoConfirmedRef.current.add(receipt.id);
+
+    const confirmSection = async (section: "date_time" | "total") => {
+      try {
+        await confirmTwinSection(receipt.id, { section, confirmed: true });
+      } catch {
+        // Silent fail — user can manually confirm
+      }
+    };
+
+    void confirmSection("date_time").then(() => confirmSection("total")).then(() => {
+      queryClient.invalidateQueries({ queryKey: ["receipt", receipt.id] });
+    });
+  }, [receiptQuery.data, queryClient]);
 
   const categories = useMemo(
     () =>
@@ -1316,8 +1431,9 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 pb-28 pt-4">
       <header className="animate-reveal rounded-3xl bg-white/90 p-4 shadow-float">
-        <Link href="/" className="inline-flex items-center gap-2 text-sm font-semibold text-ink/70">
-          <ArrowLeft className="h-4 w-4" /> Back
+        <Link href="/" className="inline-flex items-center gap-1.5 rounded-xl border border-ink/20 bg-white/80 px-3 py-2 text-sm font-medium text-ink/80 hover:bg-white transition shadow-sm">
+          <ArrowLeft className="h-4 w-4" />
+          Back
         </Link>
         <div className="mt-3 flex items-start justify-between gap-2">
           <div>
@@ -1373,6 +1489,9 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             payeeMenuOpen={payeeMenuOpen}
             setPayeeMenuOpen={setPayeeMenuOpen}
             accountNeedsAttention={accountNeedsAttention}
+            cardLastFour={
+              (receiptQuery.data?.latest_extraction?.parsed_json as Record<string, unknown> | null)?.card_last_four as string | null ?? null
+            }
           />
 
           {ambiguityFlags.length > 0 ? (
@@ -1456,9 +1575,16 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             onReset={resetDraft}
             canReset={canResetToBaseline}
             isAutosaving={saveMutation.isPending}
-            onSync={() => setPreviewOpen(true)}
+            onSync={() => {
+              if (stripReasons.length === 0 && typeof window !== "undefined" && window.localStorage.getItem("snappy_skip_preview") === "true") {
+                syncMutation.mutate();
+              } else {
+                setPreviewOpen(true);
+              }
+            }}
             canSync={canSync}
             syncButtonLabel={syncButtonLabel}
+            stripReasons={stripReasons}
           />
 
           {/* Sync preview/confirm dialog */}

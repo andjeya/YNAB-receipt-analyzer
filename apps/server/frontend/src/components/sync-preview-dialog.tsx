@@ -302,6 +302,26 @@ export function SyncPreviewDialog({
 
       {/* Footer */}
       <div className="border-t border-ink/10 px-4 py-3">
+        <div className="flex items-center gap-2 border-b border-ink/10 pb-3 mb-3">
+          <input
+            type="checkbox"
+            id="skip-preview-checkbox"
+            className="h-4 w-4 rounded"
+            defaultChecked={typeof window !== "undefined" && window.localStorage.getItem("snappy_skip_preview") === "true"}
+            onChange={(e) => {
+              if (typeof window !== "undefined") {
+                if (e.target.checked) {
+                  window.localStorage.setItem("snappy_skip_preview", "true");
+                } else {
+                  window.localStorage.removeItem("snappy_skip_preview");
+                }
+              }
+            }}
+          />
+          <label htmlFor="skip-preview-checkbox" className="text-xs text-ink/60">
+            Skip this preview for future clean syncs
+          </label>
+        </div>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
