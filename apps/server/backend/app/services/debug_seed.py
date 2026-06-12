@@ -82,9 +82,12 @@ def _get_or_create_streak(db: Session) -> GameStreak:
 
 def apply_debug_seed_to_live_state(db: Session, seed: GameDebugSeed) -> None:
     correctness = _get_or_create_correctness_state(db)
-    correctness.water_units = max(seed.water_units, 0)
+    # Clamp water_units to the new capacity (5).
+    correctness.water_units = min(max(seed.water_units, 0), 5)
     correctness.water_earned_count = max(seed.water_earned_count, 0)
     correctness.water_spent_count = max(seed.water_spent_count, 0)
+    # fire_units / burn_count are legacy in the correctness state; week-scoped fire
+    # lives in game_week_fires. Keep writing for audit trail compatibility.
     correctness.fire_units = max(seed.fire_units, 0)
     correctness.fire_added_count = max(seed.fire_added_count, 0)
     correctness.fire_extinguished_count = max(seed.fire_extinguished_count, 0)
@@ -95,8 +98,6 @@ def apply_debug_seed_to_live_state(db: Session, seed: GameDebugSeed) -> None:
     tokens.earned_count = max(seed.token_earned_count, 0)
     tokens.spent_count = max(seed.token_spent_count, 0)
 
-    streak = _get_or_create_streak(db)
-    streak.current_streak = max(seed.current_streak, 0)
-    streak.max_streak = max(seed.max_streak, 0)
-    streak.active_streak_group_id = max(seed.active_streak_group_id, 1)
-    streak.break_reason = seed.break_reason
+    # Streak is now derived from GameReceiptStateModel history; do not write GameStreak.
+    # Keep GameStreak row but don't overwrite it — the legacy streak fields are read-only
+    # in the seed context.

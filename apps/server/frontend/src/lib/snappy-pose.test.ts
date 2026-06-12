@@ -112,6 +112,40 @@ describe("SNAPPY_QUOTES integrity", () => {
   });
 });
 
+describe("deriveSnappyPose — activeFlames", () => {
+  const FIRE_LINE = "A fix-up slipped through to YNAB — tap the flame on your trail to douse it!";
+
+  it("concerned + fire line when activeFlames>0 and queue empty", () => {
+    const result = deriveSnappyPose({ needsReviewCount: 0, totalCount: 0, activeFlames: 1, random: never });
+    assert.equal(result.pose, "concerned");
+    assert.equal(result.line, FIRE_LINE);
+    assert.equal(result.attribution, undefined);
+  });
+
+  it("concerned + fire line when activeFlames>0 and needsReviewCount>0", () => {
+    const result = deriveSnappyPose({ needsReviewCount: 2, totalCount: 3, activeFlames: 2, random: never });
+    assert.equal(result.pose, "concerned");
+    assert.equal(result.line, FIRE_LINE);
+  });
+
+  it("concerned + fire line when activeFlames>0 and queue all reviewed", () => {
+    const result = deriveSnappyPose({ needsReviewCount: 0, totalCount: 5, activeFlames: 3, random: never });
+    assert.equal(result.pose, "concerned");
+    assert.equal(result.line, FIRE_LINE);
+  });
+
+  it("does NOT show fire line when activeFlames is 0", () => {
+    const result = deriveSnappyPose({ needsReviewCount: 0, totalCount: 5, activeFlames: 0, random: never, now: NOON, userName: "Anna" });
+    assert.notEqual(result.line, FIRE_LINE);
+    assert.equal(result.pose, "idle");
+  });
+
+  it("does NOT show fire line when activeFlames is undefined (default)", () => {
+    const result = deriveSnappyPose({ needsReviewCount: 0, totalCount: 5, random: never, now: NOON, userName: "Anna" });
+    assert.notEqual(result.line, FIRE_LINE);
+  });
+});
+
 describe("isStreakMilestone", () => {
   it("returns false when streak is 0", () => {
     assert.equal(isStreakMilestone(0, 5), false);

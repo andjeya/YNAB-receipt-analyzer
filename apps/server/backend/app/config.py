@@ -34,14 +34,13 @@ class Settings(BaseSettings):
     game_green_hours_threshold: float = 24.0
     game_brown_hours_threshold: float = 72.0
     game_timezone: str = "UTC"
-    game_token_earn_every_greens: int = 5
+    game_pass_every_green_weeks: int = 4
     game_shred_daily_spend_cap: int = 0
     game_green_ratio_target_percent: int = 70
     game_streak_challenge_target: int = 6
     game_shred_challenge_target: int = 2
-    game_water_capacity: int = 15
-    game_bucket_capacity: int = 3
-    game_fire_burn_threshold: int = 15
+    game_water_capacity: int = 5
+    game_fire_burn_threshold: int = 3
     correction_fade_days: int = 90
 
     gemini_api_key: str | None = None
@@ -98,11 +97,11 @@ class Settings(BaseSettings):
             raise ValueError("Game hour thresholds must be greater than zero")
         return value
 
-    @field_validator("game_token_earn_every_greens")
+    @field_validator("game_pass_every_green_weeks")
     @classmethod
-    def validate_token_every(cls, value: int) -> int:
+    def validate_pass_every(cls, value: int) -> int:
         if value < 1:
-            raise ValueError("GAME_TOKEN_EARN_EVERY_GREENS must be at least 1")
+            raise ValueError("GAME_PASS_EVERY_GREEN_WEEKS must be at least 1")
         return value
 
     @field_validator("game_shred_daily_spend_cap")
@@ -161,7 +160,7 @@ class Settings(BaseSettings):
             raise ValueError("TWIN_RECON_HARD_FAIL_DELTA_PCT cannot be negative")
         return value
 
-    @field_validator("game_water_capacity", "game_bucket_capacity", "game_fire_burn_threshold", "correction_fade_days")
+    @field_validator("game_water_capacity", "game_fire_burn_threshold", "correction_fade_days")
     @classmethod
     def validate_positive_int(cls, value: int) -> int:
         if value < 1:

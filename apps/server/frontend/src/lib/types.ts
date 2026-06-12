@@ -321,29 +321,25 @@ export interface StatsSummary {
 }
 
 export type GameWindow = "week" | "month";
-export type GameDisplayState = "green" | "yellow" | "brown" | "shredded";
+export type GameDisplayState = "green" | "yellow" | "brown" | "shredded" | "burnt";
 
 export interface GameRules {
   green_hours_threshold: number;
   brown_hours_threshold: number;
-  token_earn_every_greens: number;
   shred_daily_spend_cap: number;
   water_capacity: number;
-  bucket_capacity: number;
   fire_burn_threshold: number;
+  pass_every_green_weeks: number;
 }
 
 export interface GameMomentum {
   current_streak: number;
   max_streak: number;
-  last_green_at: string | null;
-  break_reason: string | null;
   token_balance: number;
   token_earned_count: number;
   token_spent_count: number;
-  token_threshold: number;
-  token_progress_current: number;
-  next_token_in: number;
+  pass_every_green_weeks: number;
+  next_pass_in_weeks: number;
   spendable_now: boolean;
 }
 
@@ -360,7 +356,7 @@ export interface GameForestTile {
 
 export interface GameForest {
   latest_receipt_id: string | null;
-  counts: Record<GameDisplayState, number>;
+  counts: Record<string, number>;
   receipts: GameForestTile[];
   weekly_slots: GameWeeklySlot[];
 }
@@ -372,6 +368,8 @@ export interface GameWeeklySlot {
   is_empty: boolean;
   display_state: Exclude<GameDisplayState, "shredded"> | null;
   receipt_count: number;
+  flames: number;
+  burnt: boolean;
 }
 
 export interface GameSummary {
@@ -390,16 +388,9 @@ export interface GameSummary {
 export interface GameCorrectness {
   water_units: number;
   water_capacity: number;
-  bucket_capacity: number;
-  buckets_filled: number;
-  fire_units: number;
-  fires_to_burn: number;
-  small_fires: number;
-  medium_fires: number;
-  large_fires: number;
-  burn_count: number;
-  last_burned_at: string | null;
   last_reconciled_at: string | null;
+  total_active_flames: number;
+  burnt_week_count: number;
 }
 
 export interface GameDashboard {
@@ -439,15 +430,15 @@ export interface GameReconcileResponse {
 export interface GameCorrectnessRecomputeResponse {
   correction_count: number;
   water_units: number;
-  fire_units: number;
-  burn_count: number;
+  total_active_flames: number;
+  burnt_week_count: number;
 }
 
 export interface GameWaterSpendResponse {
   waters_spent: number;
   fires_extinguished: number;
   water_units: number;
-  fire_units: number;
+  week_flames_active: number;
 }
 
 export interface GameIncident {
@@ -466,17 +457,10 @@ export interface GameDebugSeed {
   water_units: number;
   water_earned_count: number;
   water_spent_count: number;
-  fire_units: number;
-  fire_added_count: number;
-  fire_extinguished_count: number;
-  burn_count: number;
+  current_week_flames: number;
   token_balance: number;
   token_earned_count: number;
   token_spent_count: number;
-  current_streak: number;
-  max_streak: number;
-  active_streak_group_id: number;
-  break_reason: string | null;
   correctness_event_floor_id: number;
   sync_floor_unix_ms: number;
 }
@@ -502,17 +486,10 @@ export interface GameDebugSeedUpdateRequest {
   water_units?: number;
   water_earned_count?: number;
   water_spent_count?: number;
-  fire_units?: number;
-  fire_added_count?: number;
-  fire_extinguished_count?: number;
-  burn_count?: number;
+  current_week_flames?: number;
   token_balance?: number;
   token_earned_count?: number;
   token_spent_count?: number;
-  current_streak?: number;
-  max_streak?: number;
-  active_streak_group_id?: number;
-  break_reason?: string | null;
   reset_floors_to_now?: boolean;
   apply_to_live_state?: boolean;
 }

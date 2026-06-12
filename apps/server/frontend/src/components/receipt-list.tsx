@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { format, formatDistanceToNow } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -15,8 +15,9 @@ import {
   Scissors,
   Search,
   Sparkles,
+  Ticket,
   Trash2,
-  Waves,
+  Zap,
   Wrench,
 } from "lucide-react";
 
@@ -40,7 +41,7 @@ import {
   triggerScan,
   updateGameDebugSeed,
 } from "@/lib/api";
-import { GameDisplayState, GameForestTile, GameIncident } from "@/lib/types";
+import { GameForestTile, GameIncident, GameWeeklySlot } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { formatSignedDollars, signedDollars } from "@/lib/money";
 import { deriveSnappyPose, isStreakMilestone } from "@/lib/snappy-pose";
@@ -57,6 +58,34 @@ import { Snappy } from "@/components/snappy/snappy";
 import { CardMappingPanel } from "@/components/card-mapping-panel";
 import { SyncPreviewDialog } from "@/components/sync-preview-dialog";
 import { toDraftFromPayload } from "@/lib/validation-draft";
+import { parseApiDate } from "@/lib/dates";
+import { notifyDevtoolsChange } from "@/components/providers";
+
+// ---------------------------------------------------------------------------
+// Query-devtools toggle helpers (mirrors providers.tsx; read here so DebugPanel
+// can show the current state and toggle it live without a reload).
+// ---------------------------------------------------------------------------
+
+const DEVTOOLS_KEY = "snappy_query_devtools";
+
+function readDevtoolsPref(): boolean {
+  try { return localStorage.getItem(DEVTOOLS_KEY) === "1"; } catch { return false; }
+}
+
+// Shared subscriber set with providers.tsx (same in-memory module singleton).
+// We re-use notifyDevtoolsChange() to fire both sides.
+const devtoolsPrefSubscribers = new Set<() => void>();
+export function subscribeDevtoolsPref(cb: () => void): () => void {
+  devtoolsPrefSubscribers.add(cb);
+  return () => { devtoolsPrefSubscribers.delete(cb); };
+}
+
+function setDevtoolsPref(enabled: boolean): void {
+  try { localStorage.setItem(DEVTOOLS_KEY, enabled ? "1" : "0"); } catch { /* ignore */ }
+  // Notify the providers.tsx gate (DevtoolsGate) and this panel's useSyncExternalStore.
+  notifyDevtoolsChange();
+  for (const cb of devtoolsPrefSubscribers) cb();
+}
 
 // Tab definitions — each maps to a ReceiptBucket (see src/lib/receipt-buckets.ts).
 // Processing receipts live at the bottom of To Review with a "working" label,
@@ -90,7 +119,7 @@ function formatWaitTime(value: number | null | undefined): string {
  * "waiting" string (e.g. "3d", "5h", "12m") for the To Review tab.
  */
 function formatWallWait(ingestedAt: string): string {
-  const elapsedMs = Date.now() - new Date(ingestedAt).getTime();
+  const elapsedMs = Date.now() - parseApiDate(ingestedAt).getTime();
   const totalMinutes = Math.max(Math.round(elapsedMs / 60_000), 1);
   const totalHours = elapsedMs / (1000 * 60 * 60);
   if (totalMinutes < 60) return `${totalMinutes}m`;
@@ -100,7 +129,7 @@ function formatWallWait(ingestedAt: string): string {
 
 function deriveIconState(
   tile: GameForestTile | undefined,
-): { tone: Exclude<GameDisplayState, "shredded"> | null; shredded: boolean } {
+): { tone: "green" | "yellow" | "brown" | null; shredded: boolean } {
   if (!tile) return { tone: null, shredded: false };
   if (tile.display_state === "shredded") {
     return { tone: tile.state, shredded: true };
@@ -108,12 +137,13 @@ function deriveIconState(
   if (tile.display_state === "green" || tile.display_state === "yellow" || tile.display_state === "brown") {
     return { tone: tile.display_state, shredded: false };
   }
+  // "burnt" and other states fall through to no tone (receipts on burnt weeks show no icon)
   return { tone: null, shredded: false };
 }
 
 function isWithinSlot(isoTimestamp: string, slotStart: string, slotEnd: string): boolean {
-  const ts = new Date(isoTimestamp).getTime();
-  return ts >= new Date(slotStart).getTime() && ts < new Date(slotEnd).getTime();
+  const ts = parseApiDate(isoTimestamp).getTime();
+  return ts >= parseApiDate(slotStart).getTime() && ts < parseApiDate(slotEnd).getTime();
 }
 
 function severityClass(incident: GameIncident): string {
@@ -130,14 +160,10 @@ function toInt(value: unknown): number {
 type DebugSeedForm = {
   enabled: boolean;
   water_units: number;
-  fire_units: number;
-  burn_count: number;
+  current_week_flames: number;
   token_balance: number;
   token_earned_count: number;
   token_spent_count: number;
-  current_streak: number;
-  max_streak: number;
-  active_streak_group_id: number;
 };
 
 /**
@@ -221,13 +247,7 @@ function ReceiptLookup({ onNavigate }: { onNavigate: (path: string) => void }) {
 }
 
 // Tile IDs for the tap-popover system
-type StatTileId = "streak" | "wait" | "water" | "fire";
-
-const STAT_TILE_TOOLTIPS: Record<Exclude<StatTileId, "water">, string> = {
-  streak: "Streak: consecutive weeks with at least one synced receipt. Milestones every 5 earn a shred token.",
-  wait: "Average hours between a receipt landing in the inbox and you reviewing it. Lower is better — affects your weekly score.",
-  fire: "Fire: earned when you wait too long to review receipts. Too much fire burns your weekly score.",
-};
+type StatTileId = "streak" | "droplets" | "skip-pass";
 
 function StatTilePopover({ text, id }: { text: string; id: string }) {
   return (
@@ -242,63 +262,58 @@ function StatTilePopover({ text, id }: { text: string; id: string }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// "How scoring works" dialog content
+// "How to play" dialog content
 // ─────────────────────────────────────────────────────────────────────────────
 
-function HowScoringWorksDialog({
+function HowToPlayDialog({
   open,
   onClose,
   avgValidationAgeHours,
+  rules,
 }: {
   open: boolean;
   onClose: () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   avgValidationAgeHours: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rules: any;
 }) {
+  const waterCap = rules?.water_capacity ?? 5;
+  const burnThreshold = rules?.fire_burn_threshold ?? 3;
+  const passEvery = rules?.pass_every_green_weeks ?? 4;
+
   return (
-    <Dialog open={open} onClose={onClose} labelledById="how-scoring-heading">
+    <Dialog open={open} onClose={onClose} labelledById="how-to-play-heading">
       <Card className="w-full max-w-sm space-y-4 border-0 shadow-none">
-        <h2 id="how-scoring-heading" className="text-base font-semibold">How it works</h2>
+        <h2 id="how-to-play-heading" className="text-base font-semibold">How to play</h2>
 
         <section className="space-y-2 text-sm text-ink/80">
-          <p className="font-semibold text-ink">Weekly score</p>
+          <p className="font-semibold text-ink">Keep weeks green</p>
           <p>
-            Each week gets a colour based on your <em>slowest</em> receipt that wasn&apos;t shredded.
-            Review within roughly 24 hours and the week goes <span className="font-semibold text-emerald-600">green</span>.
-            A little later and it&apos;s <span className="font-semibold text-yellow-600">yellow</span>.
-            Leave it too long and it turns <span className="font-semibold text-amber-800">brown</span>.
+            Each week&apos;s stamp takes the color of the slowest receipt you reviewed that week:
+            within a day &rarr; green, within three days &rarr; yellow, longer &rarr; brown.
+            Weeks with no receipts don&apos;t count for &mdash; or against &mdash; you.
           </p>
         </section>
 
         <section className="space-y-2 text-sm text-ink/80">
-          <p className="font-semibold text-ink">Water drops</p>
+          <p className="font-semibold text-ink">Droplets &amp; flames</p>
           <p>
-            Every time you fix a category in YNAB after syncing, you earn water drops.
-            Spend them to put out fires before they burn your score.
+            Catch one of Snappy&apos;s category mistakes while reviewing and you earn a droplet
+            (you can hold {waterCap}). If a synced transaction has to be fixed in YNAB later,
+            a flame lands on that receipt&apos;s week &mdash; {burnThreshold} flames burn the week for good.
+            Tap a flaming week to douse it, one droplet per flame.
+            If a third flame lands while you have a droplet saved, Snappy spends it automatically
+            to save the week.
           </p>
         </section>
 
         <section className="space-y-2 text-sm text-ink/80">
-          <p className="font-semibold text-ink">Fire &amp; burn</p>
+          <p className="font-semibold text-ink">Streak &amp; Skip Passes</p>
           <p>
-            Fire builds up when receipts sit unreviewed. Once fire crosses the threshold,
-            it burns — turning a past week brown. Use water early to prevent this.
-          </p>
-        </section>
-
-        <section className="space-y-2 text-sm text-ink/80">
-          <p className="font-semibold text-ink">Shred tokens</p>
-          <p>
-            Hit a streak milestone (every 5 weeks in a row) and you earn a shred token.
-            Use it to shred a late or very-late receipt — it won&apos;t count against your weekly score.
-          </p>
-        </section>
-
-        <section className="space-y-2 text-sm text-ink/80">
-          <p className="font-semibold text-ink">Streak</p>
-          <p>
-            A streak counts consecutive weeks where you reviewed at least one receipt.
-            Keep it going to reach milestones and earn shred tokens.
+            Green, flame-free weeks in a row build your streak; an active flame pauses it until
+            you douse it. Every {passEvery} streak weeks earns a Skip Pass &mdash; shred a late receipt
+            and it won&apos;t count against its week.
           </p>
         </section>
 
@@ -319,26 +334,39 @@ function HowScoringWorksDialog({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Journey-path week board
+// Week trail
 // ─────────────────────────────────────────────────────────────────────────────
 
-type WeekSlot = {
-  index: number;
-  start_at: string;
-  end_at: string;
-  receipt_count: number;
-  display_state: GameDisplayState | null;
-};
-
-// State-colour map for the path nodes (matches TONE_STYLES in receipt-state-icon.tsx)
-const NODE_FILL: Record<Exclude<GameDisplayState, null>, string> = {
+// State-colour map for the trail nodes (matches TONE_STYLES in receipt-state-icon.tsx)
+const NODE_FILL: Record<string, string> = {
   green:    "#34d399",
   yellow:   "#facc15",
   brown:    "#a16207",
   shredded: "#a16207",
+  burnt:    "#292524",
 };
 
-function JourneyPathBoard({ slots }: { slots: WeekSlot[] }) {
+/**
+ * WeekTrail — replaces JourneyPathBoard.
+ * - HERO tile (last slot): larger (~h-14), labeled "This week"
+ * - PAST stamps (first 8 slots): small circles
+ *   - Mobile: show last 4 past stamps (hidden sm:flex for older 4)
+ *   - EXCEPTION: any hidden-on-mobile slot with flames or burnt gets forced-shown
+ * - Flames: Flame overlays (max 3, pulse) on flaming weeks
+ * - Burnt: charred dark fill
+ * - Tap popover with Douse action
+ */
+function WeekTrail({
+  slots,
+  waterUnits,
+  isDousingPending,
+  onDouse,
+}: {
+  slots: GameWeeklySlot[];
+  waterUnits: number;
+  isDousingPending: boolean;
+  onDouse: (slot: GameWeeklySlot) => void;
+}) {
   const [openNode, setOpenNode] = useState<number | null>(null);
 
   // Close on Escape
@@ -350,11 +378,11 @@ function JourneyPathBoard({ slots }: { slots: WeekSlot[] }) {
   }, [openNode]);
 
   // Close on outside click
-  const boardRef = useRef<HTMLDivElement | null>(null);
+  const trailRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (openNode === null) return;
     const handler = (e: MouseEvent | TouchEvent) => {
-      if (boardRef.current && !boardRef.current.contains(e.target as Node)) setOpenNode(null);
+      if (trailRef.current && !trailRef.current.contains(e.target as Node)) setOpenNode(null);
     };
     document.addEventListener("mousedown", handler);
     document.addEventListener("touchstart", handler);
@@ -364,81 +392,192 @@ function JourneyPathBoard({ slots }: { slots: WeekSlot[] }) {
     };
   }, [openNode]);
 
-  return (
-    <div ref={boardRef} className="relative">
-      {/* Connecting track line */}
-      <div className="absolute left-[calc(100%/18)] right-[calc(100%/18)] top-1/2 -translate-y-1/2 h-0.5 bg-white/20 rounded-full" aria-hidden="true" />
+  if (slots.length === 0) return null;
 
-      <div className="relative flex items-center justify-between gap-0">
-        {slots.map((slot, arrayIndex) => {
-          const isCurrentWeek = arrayIndex === slots.length - 1;
-          const receiptsPart = slot.receipt_count === 0 ? "no receipts yet" : `${slot.receipt_count} receipt${slot.receipt_count === 1 ? "" : "s"} scored`;
-          const slotLabel = `${isCurrentWeek ? "Current week — " : ""}${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} · ${receiptsPart}`;
-          const hasState = slot.display_state !== null;
-          const fill = hasState ? NODE_FILL[slot.display_state!] : undefined;
-          const isOpen = openNode === arrayIndex;
+  const pastSlots = slots.slice(0, -1); // all but last
+  const heroSlot = slots[slots.length - 1];
 
-          return (
-            <div key={`week-slot-${slot.index}`} className="relative flex flex-col items-center">
+  // Determine which past slots are off-screen on mobile (older 4 when there are 8)
+  // Mobile shows the 4 MOST RECENT past stamps + hero.
+  // If pastSlots.length <= 4, all are shown.
+  const mobileVisibleCutoff = Math.max(0, pastSlots.length - 4);
+
+  // Force-show a slot on mobile if it has flames or is burnt (even if it would be hidden)
+  function isForcedOnMobile(slotIndex: number): boolean {
+    if (slotIndex >= mobileVisibleCutoff) return false; // already visible
+    const slot = pastSlots[slotIndex];
+    return (slot.flames > 0 || slot.burnt);
+  }
+
+  function slotLabel(slot: GameWeeklySlot, isCurrent: boolean): string {
+    const receiptsPart = slot.receipt_count === 0 ? "no receipts yet" : `${slot.receipt_count} receipt${slot.receipt_count === 1 ? "" : "s"} scored`;
+    const flamePart = slot.flames > 0 ? `, ${slot.flames} flame${slot.flames === 1 ? "" : "s"}` : "";
+    const burntPart = slot.burnt ? ", burnt" : "";
+    return `${isCurrent ? "This week — " : ""}${format(parseApiDate(slot.start_at), "MMM d")}–${format(parseApiDate(slot.end_at), "MMM d")} · ${receiptsPart}${flamePart}${burntPart}`;
+  }
+
+  function slotFill(slot: GameWeeklySlot): string | undefined {
+    if (slot.burnt) return NODE_FILL.burnt;
+    if (!slot.display_state) return undefined;
+    return NODE_FILL[slot.display_state] ?? undefined;
+  }
+
+  function renderFlameOverlay(count: number, large: boolean) {
+    const clampedCount = Math.min(count, 3);
+    return (
+      <div className={cn("absolute inset-0 flex items-center justify-center gap-0.5", large ? "gap-1" : "gap-0")} aria-hidden="true">
+        {Array.from({ length: clampedCount }).map((_, i) => (
+          <Flame
+            key={i}
+            className={cn(
+              "animate-fire-fade text-orange-400 drop-shadow-sm",
+              large ? "h-4 w-4" : "h-2.5 w-2.5",
+            )}
+            style={{ animationDelay: `${i * 150}ms` }}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  function PastStamp({ slot, arrayIndex }: { slot: GameWeeklySlot; arrayIndex: number }) {
+    const fill = slotFill(slot);
+    const hasState = slot.display_state !== null || slot.burnt;
+    const isOpen = openNode === arrayIndex;
+    const label = slotLabel(slot, false);
+    const canDouse = slot.flames > 0 && !slot.burnt && waterUnits > 0;
+    const isOlderOnMobile = arrayIndex < mobileVisibleCutoff;
+    const isForced = isForcedOnMobile(arrayIndex);
+
+    const buttonEl = (
+      <div className={cn("relative flex flex-col items-center", isOlderOnMobile && !isForced ? "hidden sm:flex" : undefined)}>
+        <button
+          type="button"
+          data-testid={`trail-week-${slot.index}`}
+          onClick={() => setOpenNode((prev) => (prev === arrayIndex ? null : arrayIndex))}
+          aria-describedby={isOpen ? `trail-popover-${arrayIndex}` : undefined}
+          className={cn(
+            "relative flex items-center justify-center rounded-full border-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+            "h-7 w-7",
+            slot.burnt ? "border-transparent bg-stone-900" : hasState ? "border-transparent" : "border-dashed border-sand/30 bg-white/5",
+          )}
+          style={!slot.burnt && hasState && fill ? { backgroundColor: fill, borderColor: fill } : undefined}
+          aria-label={label}
+          title={label}
+        >
+          {slot.burnt ? (
+            <Flame className="h-3 w-3 text-stone-400" aria-hidden="true" />
+          ) : hasState ? (
+            <span className="h-2 w-2 rounded-full bg-white/30" aria-hidden="true" />
+          ) : null}
+          {slot.flames > 0 && !slot.burnt ? renderFlameOverlay(slot.flames, false) : null}
+        </button>
+
+        {/* Popover */}
+        {isOpen ? (
+          <div
+            role="status"
+            id={`trail-popover-${arrayIndex}`}
+            className="absolute bottom-full left-1/2 z-20 mb-2 w-max max-w-[14rem] -translate-x-1/2 rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
+          >
+            <p>{label}</p>
+            {canDouse ? (
               <button
                 type="button"
-                onClick={() => setOpenNode((prev) => (prev === arrayIndex ? null : arrayIndex))}
-                aria-describedby={isOpen ? `week-node-popover-${arrayIndex}` : undefined}
-                className={cn(
-                  "relative flex items-center justify-center rounded-full border-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
-                  isCurrentWeek
-                    ? "h-10 w-10 border-mint/70 bg-ink animate-current-week-pulse"
-                    : "h-7 w-7 border-sand/20",
-                  hasState ? "border-transparent" : "border-dashed border-sand/30 bg-white/5",
-                )}
-                style={hasState ? { backgroundColor: fill, borderColor: fill } : undefined}
-                role="img"
-                aria-label={slotLabel}
-                title={slotLabel}
+                data-testid="douse-button"
+                className="mt-2 flex items-center gap-1 rounded-lg bg-sky-500 px-2 py-1 text-[11px] font-semibold text-white transition hover:bg-sky-400 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70"
+                onClick={(e) => { e.stopPropagation(); setOpenNode(null); onDouse(slot); }}
+                disabled={isDousingPending}
               >
-                {slot.display_state === "shredded" ? (
-                  <ReceiptStateIcon tone="brown" shredded className={isCurrentWeek ? "h-5 w-5" : "h-3.5 w-3.5"} />
-                ) : hasState ? (
-                  <span
-                    className={cn("rounded-full bg-white/30", isCurrentWeek ? "h-3 w-3" : "h-2 w-2")}
-                    aria-hidden="true"
-                  />
-                ) : null}
+                <Droplets className="h-3 w-3" />
+                {isDousingPending ? "Dousing…" : `Douse (${slot.flames} droplet${slot.flames === 1 ? "" : "s"})`}
               </button>
+            ) : slot.flames > 0 && !slot.burnt ? (
+              <p className="mt-1 text-[10px] text-sand/60">No droplets to douse with.</p>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
 
-              {/* Node popover */}
-              {isOpen ? (
-                <div
-                  role="status"
-                  id={`week-node-popover-${arrayIndex}`}
-                  className="absolute bottom-full left-1/2 z-20 mb-2 w-max max-w-[13rem] -translate-x-1/2 rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
+    return buttonEl;
+  }
+
+  // Hero tile (current week)
+  const heroFill = slotFill(heroSlot);
+  const heroHasState = heroSlot.display_state !== null || heroSlot.burnt;
+  const heroIsOpen = openNode === pastSlots.length;
+  const heroLabel = slotLabel(heroSlot, true);
+  const heroCanDouse = heroSlot.flames > 0 && !heroSlot.burnt && waterUnits > 0;
+
+  return (
+    <div ref={trailRef} className="relative">
+      {/* Connecting track line */}
+      <div className="absolute left-[calc(100%/18)] right-0 top-1/2 -translate-y-1/2 h-0.5 bg-white/20 rounded-full" style={{ right: "3.5rem" }} aria-hidden="true" />
+
+      <div className="relative flex items-end gap-1.5">
+        {/* Past stamps */}
+        {pastSlots.map((slot, arrayIndex) => (
+          <PastStamp key={`past-${slot.index}`} slot={slot} arrayIndex={arrayIndex} />
+        ))}
+
+        {/* Hero tile (current week) */}
+        <div className="relative ml-2 flex flex-col items-center gap-1 shrink-0">
+          <button
+            type="button"
+            data-testid={`trail-week-${heroSlot.index}`}
+            onClick={() => setOpenNode((prev) => (prev === pastSlots.length ? null : pastSlots.length))}
+            aria-describedby={heroIsOpen ? `trail-popover-hero` : undefined}
+            className={cn(
+              "relative flex flex-col items-center justify-center rounded-2xl border-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+              "h-14 w-14 sm:h-16 sm:w-16",
+              heroSlot.burnt
+                ? "border-transparent bg-stone-900"
+                : heroHasState
+                  ? "border-transparent"
+                  : "border-dashed border-mint/40 bg-white/5 animate-current-week-pulse",
+            )}
+            style={!heroSlot.burnt && heroHasState && heroFill ? { backgroundColor: heroFill, borderColor: heroFill } : undefined}
+            aria-label={heroLabel}
+            title={heroLabel}
+          >
+            {heroSlot.burnt ? (
+              <Flame className="h-6 w-6 text-stone-400 animate-fire-fade" aria-hidden="true" />
+            ) : heroHasState ? (
+              <span className="h-4 w-4 rounded-full bg-white/30" aria-hidden="true" />
+            ) : (
+              // Empty / no receipts yet: subtle sprout hint
+              <span className="text-lg" aria-hidden="true">🌱</span>
+            )}
+            {heroSlot.flames > 0 && !heroSlot.burnt ? renderFlameOverlay(heroSlot.flames, true) : null}
+          </button>
+          <p className="text-[10px] font-semibold text-sand/60 whitespace-nowrap">This week</p>
+
+          {/* Hero popover */}
+          {heroIsOpen ? (
+            <div
+              role="status"
+              id="trail-popover-hero"
+              className="absolute bottom-full left-1/2 z-20 mb-2 w-max max-w-[15rem] -translate-x-1/2 rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
+            >
+              <p>{heroLabel}</p>
+              {heroCanDouse ? (
+                <button
+                  type="button"
+                  data-testid="douse-button"
+                  className="mt-2 flex items-center gap-1 rounded-lg bg-sky-500 px-2 py-1 text-[11px] font-semibold text-white transition hover:bg-sky-400 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70"
+                  onClick={(e) => { e.stopPropagation(); setOpenNode(null); onDouse(heroSlot); }}
+                  disabled={isDousingPending}
                 >
-                  {slotLabel}
-                </div>
+                  <Droplets className="h-3 w-3" />
+                  {isDousingPending ? "Dousing…" : `Douse (${heroSlot.flames} droplet${heroSlot.flames === 1 ? "" : "s"})`}
+                </button>
+              ) : heroSlot.flames > 0 && !heroSlot.burnt ? (
+                <p className="mt-1 text-[10px] text-sand/60">No droplets to douse with.</p>
               ) : null}
             </div>
-          );
-        })}
-      </div>
-
-      {/* Legend */}
-      <div className="mt-3 flex flex-wrap items-center gap-3 text-[10px] text-sand/60">
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#34d399" }} />
-          On time
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#facc15" }} />
-          Late
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#a16207" }} />
-          Very late
-        </span>
-        <span className="flex items-center gap-1">
-          <ReceiptStateIcon tone="brown" shredded className="h-2.5 w-2.5" />
-          Shredded
-        </span>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -449,20 +588,18 @@ function JourneyPathBoard({ slots }: { slots: WeekSlot[] }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ReceiptListHeader({
-  dashboardData, highlightedCount, totalCount, maxWaterSpend, fireUnits, fireToBurn, isSpendWaterPending, onOpenWaterSpend,
+  dashboardData, highlightedCount, totalCount,
   celebratingStreak, userName,
+  isDousingPending, onDouse,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   dashboardData: any;
   highlightedCount: number;
   totalCount: number;
-  maxWaterSpend: number;
-  fireUnits: number;
-  fireToBurn: number;
-  isSpendWaterPending: boolean;
-  onOpenWaterSpend: () => void;
   celebratingStreak: boolean;
   userName: string;
+  isDousingPending: boolean;
+  onDouse: (slot: GameWeeklySlot) => void;
 }) {
   const isEmpty = totalCount === 0;
   // Two-pass render for the speech bubble: the line is randomized (greetings/
@@ -473,23 +610,32 @@ function ReceiptListHeader({
   // the bubble flickering on every 7s poll.
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
+
+  const streak = dashboardData?.momentum?.current_streak ?? 0;
+  const waterUnitsVal: number = dashboardData?.correctness?.water_units ?? 0;
+  const totalActiveFlames: number = dashboardData?.correctness?.total_active_flames ?? 0;
+  const tokenBalance: number = dashboardData?.momentum?.token_balance ?? 0;
+  const weekSlots: GameWeeklySlot[] = dashboardData?.forest?.weekly_slots ?? [];
+
   const derived = useMemo(
     () =>
       deriveSnappyPose({
         needsReviewCount: highlightedCount,
         totalCount: isEmpty ? 0 : 1,
         userName,
+        activeFlames: mounted ? totalActiveFlames : 0,
         ...(mounted ? {} : { random: () => 0.5, now: new Date(2026, 0, 1, 12, 0, 0) }),
       }),
-    [mounted, highlightedCount, isEmpty, userName],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mounted, highlightedCount, isEmpty, userName, totalActiveFlames],
   );
   const pose = celebratingStreak ? "celebrating" : derived.pose;
 
   // Which stat chip currently has its popover open (null = none)
   const [openTile, setOpenTile] = useState<StatTileId | null>(null);
 
-  // "How scoring works" dialog
-  const [scoringOpen, setScoringOpen] = useState(false);
+  // "How to play" dialog
+  const [howToPlayOpen, setHowToPlayOpen] = useState(false);
 
   // Mobile collapse state — persisted in localStorage.
   // null = SSR/unhydrated (always show full content so no layout shift on desktop).
@@ -540,16 +686,13 @@ function ReceiptListHeader({
 
   const toggleTile = (id: StatTileId) => setOpenTile((prev) => (prev === id ? null : id));
 
-  const streak = dashboardData?.momentum?.current_streak ?? 0;
-  const waterUnitsVal = dashboardData?.correctness?.water_units ?? 0;
-  const waterCapacity = dashboardData?.correctness?.water_capacity ?? 0;
+  const streakLabel = streak === 0 ? "start a streak" : `${streak}-week streak`;
 
-  const weekSlots: WeekSlot[] = dashboardData?.forest?.weekly_slots ?? [];
-
-  // ── Chip render helpers ────────────────────────────────────────────────────
-
-  const streakLabel = streak === 0 ? "start a streak" : "week streak";
-  const fireLabel = fireToBurn === 0 ? "nothing to burn \u{1F389}" : `${fireToBurn} to burn`;
+  // Conditional indicators:
+  // Droplets pill: visible iff water_units>0 OR total_active_flames>0
+  const showDroplets = waterUnitsVal > 0 || totalActiveFlames > 0;
+  // Skip Pass badge: visible iff token_balance >= 1
+  const showSkipPass = tokenBalance > 0;
 
   return (
     <>
@@ -613,12 +756,12 @@ function ReceiptListHeader({
           </button>
         </div>
 
-        {/* ── Expandable section: chips + journey path ───────────────────── */}
+        {/* ── Expandable section: chips + trail ──────────────────────────── */}
         <div className={cn("px-4 pb-4 space-y-4", isExpanded ? "block" : "hidden sm:block")}>
           {/* Stat chips row */}
           <div ref={headerRef} className="flex flex-wrap gap-2">
 
-            {/* Streak chip */}
+            {/* Streak chip — ONLY permanent number chip; Zap icon (not Flame) */}
             <div className="relative">
               <button
                 type="button"
@@ -628,115 +771,97 @@ function ReceiptListHeader({
                 className="flex items-center gap-2 rounded-2xl px-3 py-2 transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
                 style={{ background: "linear-gradient(135deg, #f59e0b 0%, #f97316 100%)" }}
               >
-                <Flame className="h-5 w-5 text-white/90" aria-hidden="true" />
+                <Zap className="h-5 w-5 text-white/90" aria-hidden="true" />
                 <div className="text-left">
                   <p className="text-xl font-bold leading-none text-white">{streak}</p>
                   <p className="mt-0.5 text-[11px] font-medium text-white/80">{streakLabel}</p>
                 </div>
               </button>
               {openTile === "streak" ? (
-                <StatTilePopover id="tile-popover-streak" text={STAT_TILE_TOOLTIPS.streak} />
-              ) : null}
-            </div>
-
-            {/* Water chip */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={onOpenWaterSpend}
-                disabled={maxWaterSpend <= 0 || isSpendWaterPending}
-                aria-label={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
-                data-testid="stat-tile-water"
-                className={cn(
-                  "flex items-center gap-2 rounded-2xl px-3 py-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
-                  maxWaterSpend > 0 ? "hover:brightness-110" : "cursor-not-allowed opacity-70",
-                  isSpendWaterPending ? "animate-water-pulse" : undefined,
-                )}
-                style={{ background: "linear-gradient(135deg, #0ea5e9 0%, #14b8a6 100%)" }}
-              >
-                <Waves className="h-5 w-5 text-white/90" aria-hidden="true" />
-                <div className="text-left">
-                  <p className="text-xl font-bold leading-none text-white">
-                    {waterUnitsVal}
-                    <span className="text-sm font-normal text-white/70">/{waterCapacity}</span>
-                  </p>
-                  <p className="mt-0.5 text-[11px] font-medium text-white/80">water saved</p>
-                </div>
-              </button>
-              {/* Info affordance */}
-              <button
-                type="button"
-                className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-ink/60 text-[10px] font-bold text-sand/80 hover:bg-ink/80 focus-visible:ring-2 focus-visible:ring-mint/70"
-                onClick={(e) => { e.stopPropagation(); toggleTile("water"); }}
-                aria-label="Water tile info"
-                aria-describedby={openTile === "water" ? "tile-popover-water" : undefined}
-                data-testid="stat-tile-water-info"
-              >
-                ?
-              </button>
-              {openTile === "water" ? (
                 <StatTilePopover
-                  id="tile-popover-water"
-                  text={maxWaterSpend > 0 ? "Tap the tile to spend water and extinguish fire. Water is earned by correcting categories in YNAB." : "Water: earned by correcting categories in YNAB. Spend water to extinguish fire."}
+                  id="tile-popover-streak"
+                  text="Green, flame-free weeks in a row. Weeks with no receipts don't count — or break — it."
                 />
               ) : null}
             </div>
 
-            {/* Fire chip */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => toggleTile("fire")}
-                aria-describedby={openTile === "fire" ? "tile-popover-fire" : undefined}
-                data-testid="stat-tile-fire"
-                className="flex items-center gap-2 rounded-2xl px-3 py-2 transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
-                style={{ background: "linear-gradient(135deg, #e11d48 0%, #f43f5e 100%)" }}
-              >
-                <Flame className="h-5 w-5 text-white/90" aria-hidden="true" />
-                <div className="text-left">
-                  <p className="text-xl font-bold leading-none text-white">{fireUnits}</p>
-                  <p className="mt-0.5 text-[11px] font-medium text-white/80">{fireLabel}</p>
-                </div>
-              </button>
-              {openTile === "fire" ? (
-                <StatTilePopover id="tile-popover-fire" text={STAT_TILE_TOOLTIPS.fire} />
-              ) : null}
-            </div>
-
-            {/* Shred tokens pill */}
-            <div className="flex items-center gap-1.5 rounded-2xl bg-white/10 px-3 py-2">
-              <Scissors className="h-4 w-4 text-amber-300" aria-hidden="true" />
-              <div className="text-left">
-                <p className="text-xl font-bold leading-none text-white">{dashboardData?.momentum?.token_balance ?? 0}</p>
-                <p className="mt-0.5 text-[11px] font-medium text-sand/70">shred tokens</p>
+            {/* Droplets pill — conditional: only when water_units>0 OR any active flames */}
+            {showDroplets ? (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => toggleTile("droplets")}
+                  aria-describedby={openTile === "droplets" ? "tile-popover-droplets" : undefined}
+                  data-testid="droplets-pill"
+                  aria-label={`Droplets — ${waterUnitsVal} available. Earned by catching Snappy's mistakes during review`}
+                  className="flex items-center gap-2 rounded-2xl px-3 py-2 transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
+                  style={{ background: "linear-gradient(135deg, #0ea5e9 0%, #14b8a6 100%)" }}
+                >
+                  <Droplets className="h-5 w-5 text-white/90" aria-hidden="true" />
+                  <p className="text-xl font-bold leading-none text-white">{waterUnitsVal}</p>
+                </button>
+                {openTile === "droplets" ? (
+                  <StatTilePopover
+                    id="tile-popover-droplets"
+                    text={`Droplets — earned by catching Snappy's mistakes during review. You can hold up to ${dashboardData?.rules?.water_capacity ?? 5}. Tap a flaming week on your trail to spend them.`}
+                  />
+                ) : null}
               </div>
-            </div>
+            ) : null}
+
+            {/* Skip Pass badge — conditional: only when token_balance >= 1 */}
+            {showSkipPass ? (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => toggleTile("skip-pass")}
+                  aria-describedby={openTile === "skip-pass" ? "tile-popover-skip-pass" : undefined}
+                  data-testid="skip-pass-badge"
+                  className="flex items-center gap-1.5 rounded-2xl bg-white/10 px-3 py-2 transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
+                >
+                  <Ticket className="h-4 w-4 text-amber-300" aria-hidden="true" />
+                  <p className="text-sm font-semibold text-white">Skip Pass &times;{tokenBalance}</p>
+                </button>
+                {openTile === "skip-pass" ? (
+                  <StatTilePopover
+                    id="tile-popover-skip-pass"
+                    text="Skip Pass — shred a late receipt and it won't count against its week. Earned every 4 consecutive green streak weeks."
+                  />
+                ) : null}
+              </div>
+            ) : null}
           </div>
 
-          {/* Journey path section */}
+          {/* Trail section */}
           <div>
             <div className="mb-3 flex items-center justify-between">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-sand/60">Past 9 weeks</p>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-sand/60">Your trail</p>
               <button
                 type="button"
-                onClick={() => setScoringOpen(true)}
+                onClick={() => setHowToPlayOpen(true)}
                 className="flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-sand/70 transition hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-mint/70"
-                aria-label="How scoring works"
+                aria-label="How to play"
               >
                 <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
-                How it works
+                How to play
               </button>
             </div>
 
-            <JourneyPathBoard slots={weekSlots} />
+            <WeekTrail
+              slots={weekSlots}
+              waterUnits={waterUnitsVal}
+              isDousingPending={isDousingPending}
+              onDouse={onDouse}
+            />
           </div>
         </div>
       </Card>
 
-      <HowScoringWorksDialog
-        open={scoringOpen}
-        onClose={() => setScoringOpen(false)}
+      <HowToPlayDialog
+        open={howToPlayOpen}
+        onClose={() => setHowToPlayOpen(false)}
         avgValidationAgeHours={dashboardData?.summary?.avg_validation_age_hours}
+        rules={dashboardData?.rules}
       />
     </>
   );
@@ -896,7 +1021,7 @@ function ReceiptListItem({
                   </p>
                 ) : (
                   <p className="mt-1 text-xs text-ink/65">
-                    {formatDistanceToNow(new Date(receipt.ingested_at), { addSuffix: true })}
+                    {formatDistanceToNow(parseApiDate(receipt.ingested_at), { addSuffix: true })}
                   </p>
                 )}
               </div>
@@ -1099,43 +1224,41 @@ function QuickSyncPreview({
   );
 }
 
-function WaterSpendModal({ open, waterSpendAmount, setWaterSpendAmount, maxWaterSpend, onSpend, isSpendPending, onClose }: {
-  open: boolean;
-  waterSpendAmount: number;
-  setWaterSpendAmount: (v: number) => void;
-  maxWaterSpend: number;
-  onSpend: (units: number) => void;
-  isSpendPending: boolean;
-  onClose: () => void;
-}) {
+/**
+ * DevtoolsToggleRow — a single toggle row inside DebugPanel that controls
+ * whether the ReactQueryDevtools palm-tree button is shown.  Uses
+ * useSyncExternalStore so the DevtoolsGate in providers.tsx updates live
+ * (without a reload) when the user flips the switch.
+ */
+function DevtoolsToggleRow() {
+  const enabled = useSyncExternalStore(subscribeDevtoolsPref, readDevtoolsPref, () => false);
   return (
-    <Dialog open={open} onClose={onClose} labelledById="water-spend-heading">
-      <Card className="w-full max-w-sm space-y-3 animate-incident-enter border-0 shadow-none">
-        <h2 id="water-spend-heading" className="text-base font-semibold">Spend Water</h2>
-        <p className="text-sm text-ink/70">Choose how much water to spend to extinguish fire.</p>
-        <div>
-          <label htmlFor="water-spend-amount" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink/70">Amount</label>
-          <Input
-            id="water-spend-amount"
-            type="number"
-            min={1}
-            max={Math.max(maxWaterSpend, 1)}
-            value={waterSpendAmount}
-            onChange={(event) => {
-              const next = Number(event.target.value) || 1;
-              setWaterSpendAmount(Math.max(1, Math.min(next, Math.max(maxWaterSpend, 1))));
-            }}
-          />
-          <p className="mt-1 text-xs text-ink/60">Max now: {maxWaterSpend}</p>
-        </div>
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose} disabled={isSpendPending}>Cancel</Button>
-          <Button onClick={() => onSpend(waterSpendAmount)} disabled={isSpendPending || maxWaterSpend <= 0}>
-            {isSpendPending ? "Spending..." : "Extinguish"}
-          </Button>
-        </div>
-      </Card>
-    </Dialog>
+    <div className="flex items-start gap-3 rounded-xl bg-ink/5 px-3 py-2.5">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold text-ink">Show query devtools</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-ink/60">
+          Shows the TanStack Query floating panel (palm-tree button). Off by default — it overlaps the sync bar on mobile.
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        onClick={() => setDevtoolsPref(!enabled)}
+        className={cn(
+          "relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2",
+          enabled ? "bg-mint" : "bg-ink/20",
+        )}
+        aria-label="Toggle query devtools"
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 block h-4 w-4 rounded-full bg-white shadow transition-transform",
+            enabled ? "translate-x-4" : "translate-x-0.5",
+          )}
+        />
+      </button>
+    </div>
   );
 }
 
@@ -1265,6 +1388,9 @@ function DebugPanel({
           </div>
         </section>
 
+        {/* ── Developer tools ─────────────────────────────────────────── */}
+        <DevtoolsToggleRow />
+
         {/* ── Game seed (advanced) ────────────────────────────────────── */}
         <details className="rounded-xl border border-ink/10 px-3 py-2">
           <summary className="cursor-pointer select-none text-sm font-semibold text-ink/80">
@@ -1289,16 +1415,13 @@ function DebugPanel({
             </label>
 
             <div className="grid grid-cols-2 gap-2">
-              {numField("water_units", "Water")}
-              {numField("fire_units", "Fire")}
-              {numField("burn_count", "Burn Count")}
-              {numField("token_balance", "Token Balance")}
-              {numField("token_earned_count", "Token Earned")}
-              {numField("token_spent_count", "Token Spent")}
-              {numField("current_streak", "Current Streak")}
-              {numField("max_streak", "Max Streak")}
-              {numField("active_streak_group_id", "Streak Group", 1)}
+              {numField("water_units", "Droplets")}
+              {numField("current_week_flames", "Current Week Flames")}
+              {numField("token_balance", "Skip Pass Balance")}
+              {numField("token_earned_count", "Skip Passes Earned")}
+              {numField("token_spent_count", "Skip Passes Spent")}
             </div>
+            <p className="text-[11px] text-ink/50">current_week_flames: demo flames on the current week</p>
 
             <label className="inline-flex items-center gap-2 text-xs text-ink/70">
               <input
@@ -1313,7 +1436,7 @@ function DebugPanel({
               <Button
                 variant="outline"
                 onClick={() => {
-                  setDebugForm({ enabled: false, water_units: 0, fire_units: 0, burn_count: 0, token_balance: 0, token_earned_count: 0, token_spent_count: 0, current_streak: 0, max_streak: 0, active_streak_group_id: 1 });
+                  setDebugForm({ enabled: false, water_units: 0, current_week_flames: 0, token_balance: 0, token_earned_count: 0, token_spent_count: 0 });
                   setDebugResetFloors(true);
                 }}
                 disabled={isSaving}
@@ -1391,7 +1514,7 @@ function GameIncidentModal({ incident, incidentWatersSpent, incidentBurnsTrigger
           ) : null}
 
           <div className="flex items-center justify-between text-xs text-ink/60">
-            <span>{formatDistanceToNow(new Date(incident.created_at), { addSuffix: true })}</span>
+            <span>{formatDistanceToNow(parseApiDate(incident.created_at), { addSuffix: true })}</span>
             {incidentWaterEarned > 0 ? (
               <span className="inline-flex items-center gap-1 text-sky-700">
                 <Droplets className="h-3.5 w-3.5" />
@@ -1438,8 +1561,6 @@ export function ReceiptList() {
     setUserName(name);
     try { localStorage.setItem("snappy_user_name", name); } catch { /* ignore */ }
   };
-  const [waterSpendOpen, setWaterSpendOpen] = useState(false);
-  const [waterSpendAmount, setWaterSpendAmount] = useState(1);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
   const [cardMappingPanelOpen, setCardMappingPanelOpen] = useState(false);
   const [debugResetFloors, setDebugResetFloors] = useState(true);
@@ -1449,14 +1570,10 @@ export function ReceiptList() {
   const [debugForm, setDebugForm] = useState<DebugSeedForm>({
     enabled: false,
     water_units: 0,
-    fire_units: 0,
-    burn_count: 0,
+    current_week_flames: 0,
     token_balance: 0,
     token_earned_count: 0,
     token_spent_count: 0,
-    current_streak: 0,
-    max_streak: 0,
-    active_streak_group_id: 1,
   });
   const queryClient = useQueryClient();
 
@@ -1506,14 +1623,10 @@ export function ReceiptList() {
     setDebugForm({
       enabled: debugSeedQuery.data.enabled,
       water_units: debugSeedQuery.data.water_units,
-      fire_units: debugSeedQuery.data.fire_units,
-      burn_count: debugSeedQuery.data.burn_count,
+      current_week_flames: debugSeedQuery.data.current_week_flames ?? 0,
       token_balance: debugSeedQuery.data.token_balance,
       token_earned_count: debugSeedQuery.data.token_earned_count,
       token_spent_count: debugSeedQuery.data.token_spent_count,
-      current_streak: debugSeedQuery.data.current_streak,
-      max_streak: debugSeedQuery.data.max_streak,
-      active_streak_group_id: debugSeedQuery.data.active_streak_group_id,
     });
   }, [debugSeedQuery.data]);
 
@@ -1695,15 +1808,16 @@ export function ReceiptList() {
     },
   });
 
-  const spendWaterMutation = useMutation({
-    mutationFn: (units: number) => spendGameWater(units),
+  // Per-slot douse mutation: POST /api/game/water/spend { units, week_start_at }
+  const douseMutation = useMutation({
+    mutationFn: ({ units, week_start_at }: { units: number; week_start_at: string }) =>
+      spendGameWater(units, week_start_at),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
-      setWaterSpendOpen(false);
     },
     onError: (e) => {
-      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Failed to spend water" });
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Failed to douse flames" });
     },
   });
 
@@ -1725,14 +1839,10 @@ export function ReceiptList() {
       updateGameDebugSeed({
         enabled: debugForm.enabled,
         water_units: debugForm.water_units,
-        fire_units: debugForm.fire_units,
-        burn_count: debugForm.burn_count,
+        current_week_flames: debugForm.current_week_flames,
         token_balance: debugForm.token_balance,
         token_earned_count: debugForm.token_earned_count,
         token_spent_count: debugForm.token_spent_count,
-        current_streak: debugForm.current_streak,
-        max_streak: debugForm.max_streak,
-        active_streak_group_id: debugForm.active_streak_group_id,
         reset_floors_to_now: debugResetFloors,
         apply_to_live_state: true,
       }),
@@ -1769,8 +1879,8 @@ export function ReceiptList() {
 
   const totalCount = receiptsQuery.data?.length ?? 0;
 
-  // Streak milestone: fire once when streak crosses a milestone threshold (every 5)
-  const STREAK_MILESTONE_THRESHOLD = 5;
+  // Streak milestone: fire once when streak crosses a milestone threshold (every 4 green weeks)
+  const STREAK_MILESTONE_THRESHOLD = dashboardQuery.data?.rules?.pass_every_green_weeks ?? 4;
   useEffect(() => {
     const currentStreak = dashboardQuery.data?.momentum?.current_streak ?? 0;
     const prevStreak = prevStreakRef.current;
@@ -1780,13 +1890,13 @@ export function ReceiptList() {
         toast({
           variant: "success",
           title: "Streak milestone!",
-          message: `${currentStreak} in a row — shred pass earned.`,
+          message: `${currentStreak} in a row — Skip Pass earned!`,
         });
         setTimeout(() => setCelebratingStreak(false), 1600);
       }
     }
     prevStreakRef.current = currentStreak;
-  }, [dashboardQuery.data?.momentum?.current_streak, toast]);
+  }, [dashboardQuery.data?.momentum?.current_streak, STREAK_MILESTONE_THRESHOLD, toast]);
 
   const tileByReceiptId = useMemo(() => {
     const map = new Map<string, GameForestTile>();
@@ -1803,28 +1913,16 @@ export function ReceiptList() {
   const incidentBurnsTriggered = toInt(incidentDetails?.burns_triggered);
   const incidentWaterEarned = activeIncident?.incident_type === "water_earned" ? toInt(incidentDetails?.units) : 0;
 
-  const waterUnits = dashboardQuery.data?.correctness?.water_units ?? 0;
-  const fireUnits = dashboardQuery.data?.correctness?.fire_units ?? 0;
-  const fireToBurn = dashboardQuery.data?.correctness?.fires_to_burn ?? Math.max((dashboardQuery.data?.rules?.fire_burn_threshold ?? 0) - fireUnits, 0);
-  const maxWaterSpend = Math.min(waterUnits, fireUnits);
-
   return (
     <main className="relative mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 pb-24 pt-6">
       <ReceiptListHeader
         dashboardData={dashboardQuery.data}
         highlightedCount={highlightedCount}
         totalCount={totalCount}
-        maxWaterSpend={maxWaterSpend}
-        fireUnits={fireUnits}
-        fireToBurn={fireToBurn}
-        isSpendWaterPending={spendWaterMutation.isPending}
-        onOpenWaterSpend={() => {
-          if (maxWaterSpend <= 0) return;
-          setWaterSpendAmount(Math.min(1, maxWaterSpend) || 1);
-          setWaterSpendOpen(true);
-        }}
         celebratingStreak={celebratingStreak}
         userName={userName}
+        isDousingPending={douseMutation.isPending}
+        onDouse={(slot) => douseMutation.mutate({ units: slot.flames, week_start_at: slot.start_at })}
       />
 
       <TabBar
@@ -1897,17 +1995,6 @@ export function ReceiptList() {
           quickSyncMutation.mutate(receiptId);
         }}
         isSyncing={quickSyncMutation.isPending}
-      />
-
-      {/* WaterSpendModal — rendered unconditionally; Dialog handles mount + restore-focus */}
-      <WaterSpendModal
-        open={waterSpendOpen}
-        waterSpendAmount={waterSpendAmount}
-        setWaterSpendAmount={setWaterSpendAmount}
-        maxWaterSpend={maxWaterSpend}
-        onSpend={(units) => spendWaterMutation.mutate(units)}
-        isSpendPending={spendWaterMutation.isPending}
-        onClose={() => setWaterSpendOpen(false)}
       />
 
       {/* DebugPanel — rendered unconditionally; Dialog handles mount + restore-focus */}

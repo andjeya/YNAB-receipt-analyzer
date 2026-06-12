@@ -23,6 +23,7 @@ from app.schemas import (
     GameWaterSpendResponse,
 )
 from app.services.correctness import get_or_create_correctness_state, recompute_correctness_state_from_history, spend_water_to_extinguish
+from app.models import GameWeekFire
 from app.services.debug_seed import apply_debug_seed_to_live_state, get_or_create_debug_seed, mark_debug_seed_floor_now
 from app.services.game import ALLOWED_WINDOWS, get_dashboard_data, rebuild_gamification_state, spend_shred_token
 from app.services.incidents import acknowledge_incident, list_incidents
@@ -151,19 +152,41 @@ def spend_water(
     request: GameWaterSpendRequest,
     db: Session = Depends(db_session),
 ) -> GameWaterSpendResponse:
+    from datetime import timezone as _tz
+    from sqlalchemy import select as _select
+
+    # Validate week_start_at: must match an existing game_week_fires row.
+    week_start_utc = request.week_start_at.replace(microsecond=0)
+    if week_start_utc.tzinfo is None:
+        week_start_utc = week_start_utc.replace(tzinfo=_tz.utc)
+    else:
+        week_start_utc = week_start_utc.astimezone(_tz.utc)
+
+    week_row = db.scalar(_select(GameWeekFire).where(GameWeekFire.week_start_at == week_start_utc))
+    if week_row is None:
+        raise HTTPException(status_code=400, detail="Week not found")
+    if week_row.burnt:
+        raise HTTPException(status_code=400, detail="Cannot douse a burnt week")
+    if week_row.flames_active <= 0:
+        raise HTTPException(status_code=400, detail="No active flames on this week")
+
     result = spend_water_to_extinguish(
         db,
         units=request.units,
         receipt_id=None,
-        idempotency_key=f"manual_water_spend:{request.units}:{uuid4()}",
+        idempotency_key=f"manual_water_spend:{request.week_start_at.isoformat()}:{uuid4()}",
+        week_start_at=week_start_utc,
     )
     state = get_or_create_correctness_state(db)
+    # Refresh week_row after mutation.
+    db.flush()
     db.commit()
+    db.refresh(week_row)
     return GameWaterSpendResponse(
         waters_spent=int(result.get("waters_spent", 0)),
         fires_extinguished=int(result.get("fires_extinguished", 0)),
         water_units=state.water_units,
-        fire_units=state.fire_units,
+        week_flames_active=week_row.flames_active,
     )
 
 
@@ -180,6 +203,7 @@ def _to_debug_seed_schema(row: GameDebugSeed) -> GameDebugSeedOut:
         token_balance=row.token_balance,
         token_earned_count=row.token_earned_count,
         token_spent_count=row.token_spent_count,
+        current_week_flames=row.current_week_flames,
         current_streak=row.current_streak,
         max_streak=row.max_streak,
         active_streak_group_id=row.active_streak_group_id,
@@ -228,6 +252,8 @@ def update_debug_seed(
         seed.token_earned_count = request.token_earned_count
     if request.token_spent_count is not None:
         seed.token_spent_count = request.token_spent_count
+    if request.current_week_flames is not None:
+        seed.current_week_flames = max(request.current_week_flames, 0)
     if request.current_streak is not None:
         seed.current_streak = request.current_streak
     if request.max_streak is not None:

@@ -19,6 +19,11 @@ export interface SnappyPoseInput {
   now?: Date;
   /** Injectable RNG for tests (defaults to Math.random). */
   random?: () => number;
+  /**
+   * Number of active flames across all weeks. When > 0 (and not celebrating),
+   * Snappy switches to "concerned" pose with a fire-dousing nudge.
+   */
+  activeFlames?: number;
 }
 
 /**
@@ -65,10 +70,18 @@ export function deriveSnappyPose({
   userName = "Anna",
   now = new Date(),
   random = Math.random,
+  activeFlames = 0,
 }: SnappyPoseInput): SnappyPoseResult {
   const name = userName.trim() || "Anna";
 
   if (totalCount === 0) {
+    // activeFlames nudge still applies even when queue is empty
+    if (activeFlames > 0) {
+      return {
+        pose: "concerned",
+        line: "A fix-up slipped through to YNAB — tap the flame on your trail to douse it!",
+      };
+    }
     if (random() < QUOTE_CHANCE) {
       const quote = pick(SNAPPY_QUOTES, random);
       return { pose: "asleep", line: quote.text, attribution: quote.author, attributionSource: quote.source };
@@ -77,10 +90,25 @@ export function deriveSnappyPose({
   }
 
   if (needsReviewCount > 0) {
+    // Active flames take priority over generic "needs attention" when both apply
+    if (activeFlames > 0) {
+      return {
+        pose: "concerned",
+        line: "A fix-up slipped through to YNAB — tap the flame on your trail to douse it!",
+      };
+    }
     const noun = needsReviewCount === 1 ? "receipt" : "receipts";
     return {
       pose: "concerned",
       line: `${needsReviewCount} ${noun} need${needsReviewCount === 1 ? "s" : ""} your attention`,
+    };
+  }
+
+  // Queue all reviewed — fire nudge takes priority over greetings/quotes
+  if (activeFlames > 0) {
+    return {
+      pose: "concerned",
+      line: "A fix-up slipped through to YNAB — tap the flame on your trail to douse it!",
     };
   }
 

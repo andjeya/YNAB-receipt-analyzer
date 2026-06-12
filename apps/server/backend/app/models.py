@@ -291,19 +291,39 @@ class GameDebugSeed(Base):
     fire_extinguished_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     burn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    # Momentum baseline.
+    # Momentum / pass token baseline.
     token_balance: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     token_earned_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     token_spent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Streak is now derived from GameReceiptStateModel history; these fields
+    # are kept for legacy reads but no longer written during rebuild.
     current_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     active_streak_group_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     break_reason: Mapped[str | None] = mapped_column(String(32))
 
+    # Demo seeding: current-week flames to inject for UI demoing.
+    current_week_flames: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     # Replay floors so future activity builds from this baseline.
     correctness_event_floor_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     sync_floor_unix_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class GameWeekFire(Base):
+    """Per-week fire tracking for Game v3 week-scoped fire mechanics."""
+
+    __tablename__ = "game_week_fires"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    week_start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, unique=True, index=True)
+    flames_active: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    burnt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_flame_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 

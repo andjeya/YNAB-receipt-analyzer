@@ -222,10 +222,10 @@ export function recomputeCorrectnessState() {
   });
 }
 
-export function spendGameWater(units: number) {
+export function spendGameWater(units: number, week_start_at: string) {
   return request<GameWaterSpendResponse>("/game/water/spend", {
     method: "POST",
-    body: JSON.stringify({ units }),
+    body: JSON.stringify({ units, week_start_at }),
   });
 }
 

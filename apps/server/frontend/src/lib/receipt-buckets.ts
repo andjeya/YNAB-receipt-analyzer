@@ -16,6 +16,7 @@
  */
 
 import type { ReceiptStatus } from "./types.js";
+import { parseApiDate } from "./dates";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -107,10 +108,10 @@ export function partitionReceipts<T extends BucketableReceipt>(
   }
 
   const oldestFirst = (a: T, b: T): number =>
-    new Date(a.ingested_at).getTime() - new Date(b.ingested_at).getTime();
+    parseApiDate(a.ingested_at).getTime() - parseApiDate(b.ingested_at).getTime();
 
   const newestFirst = (a: T, b: T): number =>
-    new Date(b.ingested_at).getTime() - new Date(a.ingested_at).getTime();
+    parseApiDate(b.ingested_at).getTime() - parseApiDate(a.ingested_at).getTime();
 
   actionable.sort(oldestFirst);
   processing.sort(oldestFirst);

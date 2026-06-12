@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -10,8 +9,21 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.enums import GameChallengeStatus, GameEventType, GameReceiptState, YNABSyncStatus
-from app.models import GameEvent, GameReceiptStateModel, GameStreak, GameToken, Receipt, Validation, YNABSync
-from app.services.correctness import fire_breakdown, get_or_create_correctness_state
+from app.models import (
+    GameEvent,
+    GameReceiptStateModel,
+    GameStreak,
+    GameToken,
+    GameWeekFire,
+    Receipt,
+    Validation,
+    YNABSync,
+)
+from app.services.correctness import (
+    get_or_create_correctness_state,
+    get_burnt_week_count,
+    get_total_active_flames,
+)
 from app.services.debug_seed import get_or_create_debug_seed, unix_ms_to_datetime
 from app.services.debug_tools import is_debug_tools_enabled
 from app.utils import utcnow
@@ -163,6 +175,13 @@ def apply_sync_gamification(
     synced_at: datetime,
     settings: Settings,
 ) -> GameReceiptStateModel:
+    """Create a GameReceiptStateModel row for a newly synced receipt.
+
+    In Game v3, streak increments/breaks and per-receipt token earning are
+    removed. The GameReceiptStateModel row is still created (unchanged) and
+    the RECEIPT_CLASSIFIED event is recorded. Streak is now derived from
+    completed-week analysis in get_dashboard_data.
+    """
     existing = db.get(GameReceiptStateModel, receipt.id)
     if existing is not None:
         return existing
@@ -174,63 +193,7 @@ def apply_sync_gamification(
     synced_at_utc = _as_utc(synced_at)
     state, age_hours = classify_receipt_state(transaction_at, synced_at_utc, settings)
     streak = _get_or_create_streak(db)
-    tokens = _get_or_create_tokens(db)
-
-    prior_streak = streak.current_streak
     streak_group_id = streak.active_streak_group_id
-
-    if state == GameReceiptState.GREEN:
-        streak.current_streak += 1
-        streak.max_streak = max(streak.max_streak, streak.current_streak)
-        streak.last_green_at = synced_at_utc
-        streak.break_reason = None
-
-        _record_event(
-            db,
-            GameEventType.STREAK_INCREMENTED,
-            idempotency_key=f"streak_incremented:{receipt.id}",
-            receipt_id=receipt.id,
-            payload={
-                "current_streak": streak.current_streak,
-                "streak_group_id": streak_group_id,
-            },
-            created_at=synced_at_utc,
-        )
-
-        threshold = settings.game_token_earn_every_greens
-        if streak.current_streak % threshold == 0:
-            tokens.earned_count += 1
-            tokens.balance += 1
-            _record_event(
-                db,
-                GameEventType.TOKEN_EARNED,
-                idempotency_key=f"token_earned:{receipt.id}",
-                receipt_id=receipt.id,
-                payload={
-                    "earned_count": tokens.earned_count,
-                    "balance": tokens.balance,
-                    "threshold": threshold,
-                    "streak": streak.current_streak,
-                },
-                created_at=synced_at_utc,
-            )
-    else:
-        streak.current_streak = 0
-        streak.break_reason = state.value
-        streak.active_streak_group_id += 1
-
-        if prior_streak > 0:
-            _record_event(
-                db,
-                GameEventType.STREAK_BROKEN,
-                idempotency_key=f"streak_broken:{receipt.id}",
-                receipt_id=receipt.id,
-                payload={
-                    "reason": state.value,
-                    "prior_streak": prior_streak,
-                },
-                created_at=synced_at_utc,
-            )
 
     state_row = GameReceiptStateModel(
         receipt_id=receipt.id,
@@ -258,6 +221,167 @@ def apply_sync_gamification(
     )
 
     return state_row
+
+
+# ---------------------------------------------------------------------------
+# Derived weekly streak computation
+# ---------------------------------------------------------------------------
+
+def _derive_weekly_streak(
+    all_rows: list[GameReceiptStateModel],
+    week_fires_by_start: dict[str, GameWeekFire],
+    now: datetime,
+    settings: Settings,
+) -> tuple[int, int]:
+    """Compute (current_streak, max_streak) from completed-week history.
+
+    A completed week (end_at <= now) is "clean green" iff:
+    - >= 1 scored non-shredded receipt
+    - worst state is green
+    - flames_active == 0
+    - not burnt
+
+    Empty weeks (no scored receipts) are skipped — neither break nor count.
+
+    Returns (current_streak, max_streak).
+    """
+    if not all_rows:
+        return 0, 0
+
+    # Build the list of completed weeks in chronological order.
+    # Collect all week_start values from receipt history.
+    week_starts: set[datetime] = set()
+    for row in all_rows:
+        ws, _ = _week_bounds_for_timestamp(_as_utc(row.validated_at), settings)
+        week_starts.add(ws)
+
+    # Sort chronologically.
+    sorted_weeks = sorted(week_starts)
+
+    # Determine current week boundary — only completed weeks count.
+    current_week_start, _ = _week_bounds_for_timestamp(now, settings)
+
+    # Build week summaries.
+    # Map week_start -> list of rows.
+    rows_by_week: dict[datetime, list[GameReceiptStateModel]] = {}
+    for row in all_rows:
+        ws, _ = _week_bounds_for_timestamp(_as_utc(row.validated_at), settings)
+        rows_by_week.setdefault(ws, []).append(row)
+
+    current_streak = 0
+    max_streak = 0
+    run = 0
+
+    for ws in sorted_weeks:
+        # Skip in-progress current week.
+        if ws >= current_week_start:
+            continue
+
+        week_rows = rows_by_week.get(ws, [])
+        scored = [r for r in week_rows if r.shredded_at is None]
+
+        if not scored:
+            # Empty week: skip (neither breaks nor counts).
+            continue
+
+        # Check fire state for this week.
+        ws_key = _as_utc(ws).replace(microsecond=0).isoformat()
+        fire_row = week_fires_by_start.get(ws_key)
+        has_flames = fire_row is not None and (fire_row.flames_active > 0 or fire_row.burnt)
+        is_burnt = fire_row is not None and fire_row.burnt
+
+        worst_state_rank = max(
+            {"green": 0, "yellow": 1, "brown": 2}.get(r.state, 0) for r in scored
+        )
+        is_clean_green = worst_state_rank == 0 and not has_flames and not is_burnt
+
+        if is_clean_green:
+            run += 1
+            if run > max_streak:
+                max_streak = run
+        else:
+            run = 0
+
+    current_streak = run
+    return current_streak, max_streak
+
+
+def _evaluate_passes(
+    db: Session,
+    tokens: GameToken,
+    current_streak: int,
+    max_streak: int,
+    all_rows: list[GameReceiptStateModel],
+    week_fires_by_start: dict[str, GameWeekFire],
+    now: datetime,
+    settings: Settings,
+) -> None:
+    """Idempotently award skip passes for completed clean-green week run multiples.
+
+    A pass is awarded when a completed week's position in a consecutive
+    clean-green run is a multiple of game_pass_every_green_weeks (4).
+    Award is idempotent via _record_event; never clawed back.
+    """
+    if not all_rows:
+        return
+
+    threshold = settings.game_pass_every_green_weeks
+
+    week_starts: set[datetime] = set()
+    for row in all_rows:
+        ws, _ = _week_bounds_for_timestamp(_as_utc(row.validated_at), settings)
+        week_starts.add(ws)
+
+    sorted_weeks = sorted(week_starts)
+    current_week_start, _ = _week_bounds_for_timestamp(now, settings)
+
+    rows_by_week: dict[datetime, list[GameReceiptStateModel]] = {}
+    for row in all_rows:
+        ws, _ = _week_bounds_for_timestamp(_as_utc(row.validated_at), settings)
+        rows_by_week.setdefault(ws, []).append(row)
+
+    run = 0
+    for ws in sorted_weeks:
+        if ws >= current_week_start:
+            continue
+
+        week_rows = rows_by_week.get(ws, [])
+        scored = [r for r in week_rows if r.shredded_at is None]
+
+        if not scored:
+            continue
+
+        ws_key = _as_utc(ws).replace(microsecond=0).isoformat()
+        fire_row = week_fires_by_start.get(ws_key)
+        has_flames = fire_row is not None and (fire_row.flames_active > 0 or fire_row.burnt)
+        is_burnt = fire_row is not None and fire_row.burnt
+
+        worst_state_rank = max(
+            {"green": 0, "yellow": 1, "brown": 2}.get(r.state, 0) for r in scored
+        )
+        is_clean_green = worst_state_rank == 0 and not has_flames and not is_burnt
+
+        if is_clean_green:
+            run += 1
+            if run % threshold == 0:
+                week_start_iso = _as_utc(ws).replace(microsecond=0).isoformat()
+                idem_key = f"pass_earned:week:{week_start_iso}"
+                awarded = _record_event(
+                    db,
+                    GameEventType.PASS_EARNED,
+                    idempotency_key=idem_key,
+                    receipt_id=None,
+                    payload={
+                        "run_position": run,
+                        "week_start_at": week_start_iso,
+                        "threshold": threshold,
+                    },
+                )
+                if awarded:
+                    tokens.earned_count += 1
+                    tokens.balance += 1
+        else:
+            run = 0
 
 
 def _window_bounds(window: str, now: datetime, settings: Settings) -> tuple[datetime, datetime]:
@@ -297,7 +421,12 @@ def _slot_state(rows: list[GameReceiptStateModel]) -> str | None:
     return worst.state
 
 
-def _build_weekly_slots(rows: list[GameReceiptStateModel], now: datetime, settings: Settings) -> list[dict[str, Any]]:
+def _build_weekly_slots(
+    rows: list[GameReceiptStateModel],
+    now: datetime,
+    settings: Settings,
+    week_fires_by_start: dict[str, GameWeekFire] | None = None,
+) -> list[dict[str, Any]]:
     tz = _game_tz(settings)
     current_week_start_local = _week_start_sunday(_as_utc(now).astimezone(tz))
     slots: list[dict[str, Any]] = []
@@ -308,14 +437,26 @@ def _build_weekly_slots(rows: list[GameReceiptStateModel], now: datetime, settin
         end_at = end_local.astimezone(timezone.utc)
         slot_rows = [row for row in rows if start_at <= _as_utc(row.validated_at) < end_at]
         state = _slot_state(slot_rows)
+
+        # Look up fire state for this week.
+        week_start_key = start_at.replace(microsecond=0).isoformat()
+        fire_row = (week_fires_by_start or {}).get(week_start_key)
+        flames = fire_row.flames_active if fire_row else 0
+        burnt = fire_row.burnt if fire_row else False
+
+        # If burnt, display_state becomes "burnt" regardless of receipt states.
+        display_state = "burnt" if burnt else state
+
         slots.append(
             {
                 "index": index,
                 "start_at": start_at,
                 "end_at": end_at,
                 "is_empty": state is None,
-                "display_state": state,
+                "display_state": display_state,
                 "receipt_count": len(slot_rows),
+                "flames": flames,
+                "burnt": burnt,
             }
         )
     # Oldest first for left-to-right visual flow.
@@ -342,7 +483,7 @@ def _first_successful_sync_rows(db: Session, *, sync_floor: datetime | None = No
         .where(
             YNABSync.status.in_([YNABSyncStatus.MATCHED_UPDATED.value, YNABSyncStatus.CREATED.value]),
             YNABSync.completed_at.is_not(None),
-            *( [YNABSync.completed_at > sync_floor] if sync_floor is not None else [] ),
+            *([YNABSync.completed_at > sync_floor] if sync_floor is not None else []),
         )
         .order_by(YNABSync.completed_at.asc(), Receipt.id.asc())
     ).all()
@@ -357,7 +498,20 @@ def _first_successful_sync_rows(db: Session, *, sync_floor: datetime | None = No
     return first_rows
 
 
+def _load_week_fires_by_start(db: Session) -> dict[str, GameWeekFire]:
+    """Load all GameWeekFire rows keyed by their week_start_at ISO string."""
+    rows = list(db.scalars(select(GameWeekFire)))
+    return {_as_utc(row.week_start_at).replace(microsecond=0).isoformat(): row for row in rows}
+
+
 def rebuild_gamification_state(db: Session, settings: Settings) -> dict[str, int]:
+    """Rebuild gamification state from scratch.
+
+    In Game v3 the week-fire state must also be reconstructed. We replay
+    FIRE_ADDED / WEEK_BURNED / WATER_SPENT events (those associated with
+    week-scoped fire) after clearing game_week_fires, so that a rebuild
+    produces the same state as live accrual.
+    """
     seed = get_or_create_debug_seed(db)
     sync_floor = unix_ms_to_datetime(seed.sync_floor_unix_ms) if seed.enabled else None
     preserved_shreds = {
@@ -378,23 +532,26 @@ def rebuild_gamification_state(db: Session, settings: Settings) -> dict[str, int
             or 0
         )
 
+    # Clear game state tables (keep GameEvents for replay).
     db.execute(delete(GameReceiptStateModel))
     db.execute(delete(GameStreak))
     db.execute(delete(GameToken))
+    db.execute(delete(GameWeekFire))
     db.flush()
 
     streak = _get_or_create_streak(db)
     tokens = _get_or_create_tokens(db)
     if seed.enabled:
-        streak.current_streak = seed.current_streak
-        streak.max_streak = seed.max_streak
-        streak.break_reason = seed.break_reason
-        streak.active_streak_group_id = max(seed.active_streak_group_id, 1)
-        streak.last_green_at = None
-
         tokens.balance = seed.token_balance
         tokens.earned_count = seed.token_earned_count
         tokens.spent_count = seed.token_spent_count
+        # Seed current_week_flames if set: inject a flame on the current week.
+        if seed.current_week_flames > 0:
+            now = utcnow()
+            from app.services.correctness import _get_or_create_week_fire
+            ws, _ = _week_bounds_for_timestamp(now, settings)
+            week_row = _get_or_create_week_fire(db, ws)
+            week_row.flames_active = min(seed.current_week_flames, settings.game_fire_burn_threshold - 1)
     else:
         tokens.spent_count = preserved_spent
         tokens.balance = 0
@@ -416,6 +573,39 @@ def rebuild_gamification_state(db: Session, settings: Settings) -> dict[str, int
         state_row.shredded_at = preserved_shredded_at
         restored_shreds += 1
 
+    # Replay week-fire events from game_events log.
+    # FIRE_ADDED events with week_start_at in payload → reconstruct game_week_fires.
+    # WEEK_BURNED events → mark week as burnt.
+    # WATER_SPENT events with week_start_at → reduce flames on that week.
+    _replay_week_fire_events(
+        db,
+        settings,
+        event_floor_id=seed.correctness_event_floor_id if seed.enabled else 0,
+    )
+
+    # Re-evaluate skip-pass awards against the replayed state so that awarded
+    # passes survive a rebuild (idempotent: uses pass_earned:week:… keys).
+    db.flush()
+    all_rows_for_passes = list(
+        db.scalars(
+            select(GameReceiptStateModel).order_by(
+                GameReceiptStateModel.validated_at.asc(),
+                GameReceiptStateModel.receipt_id.asc(),
+            )
+        )
+    )
+    week_fires_for_passes = _load_week_fires_by_start(db)
+    _evaluate_passes(
+        db,
+        tokens,
+        current_streak=0,
+        max_streak=0,
+        all_rows=all_rows_for_passes,
+        week_fires_by_start=week_fires_for_passes,
+        now=utcnow(),
+        settings=settings,
+    )
+
     if not seed.enabled:
         tokens.balance = max(tokens.earned_count - tokens.spent_count, 0)
     else:
@@ -425,6 +615,88 @@ def rebuild_gamification_state(db: Session, settings: Settings) -> dict[str, int
         "processed_receipts": processed_count,
         "restored_shreds": restored_shreds,
     }
+
+
+def _replay_week_fire_events(db: Session, settings: Settings, event_floor_id: int = 0) -> None:
+    """Replay FIRE_ADDED / WEEK_BURNED / WATER_SPENT events to reconstruct game_week_fires.
+
+    `event_floor_id` mirrors the debug seed's `correctness_event_floor_id`:
+    when a seed is active, events at or below the floor are masked so seeded
+    demo state (e.g. current_week_flames) isn't cancelled by pre-seed history.
+    """
+    from app.services.correctness import _get_or_create_week_fire
+
+    fire_events = list(
+        db.scalars(
+            select(GameEvent)
+            .where(
+                GameEvent.event_type.in_([
+                    GameEventType.FIRE_ADDED.value,
+                    GameEventType.WEEK_BURNED.value,
+                    GameEventType.WATER_SPENT.value,
+                ]),
+                GameEvent.id > event_floor_id,
+            )
+            .order_by(GameEvent.created_at.asc(), GameEvent.id.asc())
+        )
+    )
+
+    from datetime import datetime as dt
+    week_rows: dict[str, GameWeekFire] = {}
+
+    def _get_week_row(ws_iso: str) -> GameWeekFire | None:
+        if ws_iso in week_rows:
+            return week_rows[ws_iso]
+        try:
+            ws_dt = dt.fromisoformat(ws_iso)
+        except ValueError:
+            return None
+        row = _get_or_create_week_fire(db, ws_dt)
+        week_rows[ws_iso] = row
+        return row
+
+    for event in fire_events:
+        payload = event.payload_json or {}
+        ws_iso = payload.get("week_start_at")
+        if not ws_iso:
+            continue
+
+        if event.event_type == GameEventType.FIRE_ADDED.value:
+            already_burnt = payload.get("week_already_burnt", False)
+            if already_burnt:
+                continue
+            row = _get_week_row(ws_iso)
+            if row is None or row.burnt:
+                continue
+            # Determine if this was a forced-douse fire (water was spent, flame not added to count).
+            # Forced-douse fires have a companion WATER_SPENT event; they don't increment flames_active.
+            # We skip them if there's a forced_douse water event for the same idempotency_key.
+            forced_douse_key = event.idempotency_key + ":forced_douse:water"
+            if db.scalar(select(GameEvent.id).where(GameEvent.idempotency_key == forced_douse_key)) is not None:
+                # This was a forced-douse: no flame increment.
+                row.last_flame_at = event.created_at
+                continue
+            row.flames_active += 1
+            row.last_flame_at = event.created_at
+
+        elif event.event_type == GameEventType.WEEK_BURNED.value:
+            row = _get_week_row(ws_iso)
+            if row is None:
+                continue
+            row.burnt = True
+
+        elif event.event_type == GameEventType.WATER_SPENT.value:
+            # Only week-scoped water spends have week_start_at in payload.
+            # Skip forced-douse events: these prevented a flame from being added
+            # (the companion FIRE_ADDED was already skipped above), so subtracting
+            # here would remove a flame that was never counted.
+            if payload.get("reason") == "forced_prevent_week_burn":
+                continue
+            row = _get_week_row(ws_iso)
+            if row is None:
+                continue
+            units = int(payload.get("units", 1))
+            row.flames_active = max(row.flames_active - units, 0)
 
 
 def spend_shred_token(
@@ -495,24 +767,51 @@ def get_dashboard_data(
 
     now = utcnow()
 
-    streak = db.get(GameStreak, 1)
     tokens = db.get(GameToken, 1)
-
-    current_streak = streak.current_streak if streak else 0
-    max_streak = streak.max_streak if streak else 0
-    last_green_at = streak.last_green_at if streak else None
-    break_reason = streak.break_reason if streak else None
 
     token_balance = tokens.balance if tokens else 0
     token_earned_count = tokens.earned_count if tokens else 0
     token_spent_count = tokens.spent_count if tokens else 0
+
     correctness = get_or_create_correctness_state(db)
-    small_fires, medium_fires, large_fires = fire_breakdown(correctness.fire_units)
 
-    token_threshold = settings.game_token_earn_every_greens
-    token_progress_current = current_streak % token_threshold
-    next_token_in = token_threshold if token_progress_current == 0 else token_threshold - token_progress_current
+    # Load all week fire rows.
+    week_fires_by_start = _load_week_fires_by_start(db)
 
+    # Load full receipt state history for streak derivation.
+    all_receipt_rows = list(
+        db.scalars(
+            select(GameReceiptStateModel).order_by(
+                GameReceiptStateModel.validated_at.asc(),
+                GameReceiptStateModel.receipt_id.asc(),
+            )
+        )
+    )
+
+    # Ensure tokens row exists.
+    tokens_row = _get_or_create_tokens(db)
+
+    # Pass awards are persisted by the post-sync bookkeeping path (ynab.py)
+    # and by rebuild_gamification_state — both sessions commit. This GET path
+    # never commits (get_db closes → rollback), so calling _evaluate_passes here
+    # would appear to award passes in-memory but roll them back on session close,
+    # allowing the same pass to be "awarded" on every GET without ever persisting.
+    # Dashboard reads the already-committed balance from tokens_row.
+    token_balance = tokens_row.balance
+    token_earned_count = tokens_row.earned_count
+    token_spent_count = tokens_row.spent_count
+
+    # Derive weekly streak.
+    current_streak, max_streak = _derive_weekly_streak(
+        all_receipt_rows, week_fires_by_start, now, settings
+    )
+
+    # Compute next_pass_in_weeks.
+    pass_every = settings.game_pass_every_green_weeks
+    streak_mod = current_streak % pass_every
+    next_pass_in_weeks = pass_every if streak_mod == 0 and current_streak > 0 else (pass_every - streak_mod)
+
+    # Forest tiles.
     forest_rows = list(
         db.scalars(
             select(GameReceiptStateModel)
@@ -557,7 +856,7 @@ def get_dashboard_data(
             )
         )
     )
-    weekly_slots = _build_weekly_slots(weekly_slots_rows, now, settings)
+    weekly_slots = _build_weekly_slots(weekly_slots_rows, now, settings, week_fires_by_start=week_fires_by_start)
 
     window_start, window_end = _window_bounds(window, now, settings)
     window_rows = list(
@@ -607,8 +906,8 @@ def get_dashboard_data(
         },
         {
             "key": "green_streak",
-            "title": f"Build a {streak_target}-Green Streak",
-            "description": "Consecutive greens mint shred tokens and compound momentum",
+            "title": f"Build a {streak_target}-Week Streak",
+            "description": "Consecutive clean-green weeks earn skip passes",
             "status": (
                 GameChallengeStatus.COMPLETED.value
                 if current_streak >= streak_target
@@ -616,7 +915,7 @@ def get_dashboard_data(
             ),
             "target": float(streak_target),
             "current": float(current_streak),
-            "unit": "greens",
+            "unit": "weeks",
             "progress": min(current_streak / streak_target, 1.0),
         },
         {
@@ -640,6 +939,9 @@ def get_dashboard_data(
         day_start, day_end = _day_bounds(now, settings)
         spendable_now = spendable_now and _spent_in_window(db, day_start, day_end) < settings.game_shred_daily_spend_cap
 
+    total_active_flames = get_total_active_flames(db)
+    burnt_week_count = get_burnt_week_count(db)
+
     return {
         "generated_at": now,
         "window": window,
@@ -647,23 +949,19 @@ def get_dashboard_data(
         "rules": {
             "green_hours_threshold": settings.game_green_hours_threshold,
             "brown_hours_threshold": settings.game_brown_hours_threshold,
-            "token_earn_every_greens": settings.game_token_earn_every_greens,
             "shred_daily_spend_cap": settings.game_shred_daily_spend_cap,
             "water_capacity": settings.game_water_capacity,
-            "bucket_capacity": settings.game_bucket_capacity,
             "fire_burn_threshold": settings.game_fire_burn_threshold,
+            "pass_every_green_weeks": settings.game_pass_every_green_weeks,
         },
         "momentum": {
             "current_streak": current_streak,
             "max_streak": max_streak,
-            "last_green_at": last_green_at,
-            "break_reason": break_reason,
             "token_balance": token_balance,
             "token_earned_count": token_earned_count,
             "token_spent_count": token_spent_count,
-            "token_threshold": token_threshold,
-            "token_progress_current": token_progress_current,
-            "next_token_in": next_token_in,
+            "pass_every_green_weeks": pass_every,
+            "next_pass_in_weeks": next_pass_in_weeks,
             "spendable_now": spendable_now,
         },
         "forest": {
@@ -675,18 +973,9 @@ def get_dashboard_data(
         "correctness": {
             "water_units": correctness.water_units,
             "water_capacity": settings.game_water_capacity,
-            "bucket_capacity": settings.game_bucket_capacity,
-            "buckets_filled": int(math.ceil(correctness.water_units / settings.game_bucket_capacity))
-            if correctness.water_units
-            else 0,
-            "fire_units": correctness.fire_units,
-            "fires_to_burn": max(settings.game_fire_burn_threshold - correctness.fire_units, 0),
-            "small_fires": small_fires,
-            "medium_fires": medium_fires,
-            "large_fires": large_fires,
-            "burn_count": correctness.burn_count,
-            "last_burned_at": correctness.last_burned_at,
             "last_reconciled_at": correctness.last_reconciled_at,
+            "total_active_flames": total_active_flames,
+            "burnt_week_count": burnt_week_count,
         },
         "summary": {
             "window": window,

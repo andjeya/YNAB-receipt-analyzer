@@ -16,10 +16,15 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.config import Settings
 from app.enums import ReceiptStatus, YNABCacheEntityType, YNABSyncStatus
 from app.utils import utcnow
-from app.models import Receipt, ReceiptCorrection, ReceiptTwin, TimingMetric, Validation, YNABCache, YNABSync
+from app.models import GameReceiptStateModel, Receipt, ReceiptCorrection, ReceiptTwin, TimingMetric, Validation, YNABCache, YNABSync
 from app.services.card_mapping import upsert_card_mapping
 from app.services.duplicates import apply_semantic_duplicate_state
-from app.services.game import apply_sync_gamification
+from app.services.game import (
+    _evaluate_passes,
+    _get_or_create_tokens,
+    _load_week_fires_by_start,
+    apply_sync_gamification,
+)
 from app.services.incidents import record_incident
 from app.services.validation import UNKNOWN_ACCOUNT_ID
 from receipt_shared.money import dollars_to_milliunits, milliunits_to_dollars
@@ -989,6 +994,30 @@ def _apply_post_sync(
             synced_at=finished_at,
             settings=settings,
         )
+
+        # Evaluate skip-pass awards in this committing context so they persist.
+        # Using the bookkeeping path (which calls db.commit() below) guarantees
+        # idempotent awards survive process restart; the dashboard GET merely
+        # reads the already-committed balance.
+        try:
+            _now = utcnow()
+            _tokens = _get_or_create_tokens(db)
+            _all_rows = list(db.scalars(select(GameReceiptStateModel)))
+            _week_fires = _load_week_fires_by_start(db)
+            _evaluate_passes(
+                db,
+                _tokens,
+                current_streak=0,
+                max_streak=0,
+                all_rows=_all_rows,
+                week_fires_by_start=_week_fires,
+                now=_now,
+                settings=settings,
+            )
+        except Exception:
+            logger.exception(
+                "Pass evaluation failed for receipt %s (non-fatal)", receipt.id
+            )
 
         unresolved_corrections = list(
             db.scalars(

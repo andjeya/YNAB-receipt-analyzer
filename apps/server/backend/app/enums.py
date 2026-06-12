@@ -47,6 +47,8 @@ class GameEventType(str, Enum):
     FIRE_ADDED = "fire_added"
     FIRE_EXTINGUISHED = "fire_extinguished"
     BOARD_BURNED = "board_burned"
+    WEEK_BURNED = "week_burned"
+    PASS_EARNED = "pass_earned"
     CORRECTION_DETECTED = "correction_detected"
     RESYNC_REQUIRED = "resync_required"
 

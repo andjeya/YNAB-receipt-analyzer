@@ -259,24 +259,20 @@ class StatsSummary(BaseModel):
 class GameRulesOut(BaseModel):
     green_hours_threshold: float
     brown_hours_threshold: float
-    token_earn_every_greens: int
     shred_daily_spend_cap: int
     water_capacity: int
-    bucket_capacity: int
     fire_burn_threshold: int
+    pass_every_green_weeks: int
 
 
 class GameMomentumOut(BaseModel):
     current_streak: int
     max_streak: int
-    last_green_at: datetime | None = None
-    break_reason: str | None = None
     token_balance: int
     token_earned_count: int
     token_spent_count: int
-    token_threshold: int
-    token_progress_current: int
-    next_token_in: int
+    pass_every_green_weeks: int
+    next_pass_in_weeks: int
     spendable_now: bool
 
 
@@ -305,6 +301,8 @@ class GameWeeklySlotOut(BaseModel):
     is_empty: bool
     display_state: str | None = None
     receipt_count: int = 0
+    flames: int = 0
+    burnt: bool = False
 
 
 class GameSummaryOut(BaseModel):
@@ -334,16 +332,9 @@ class GameChallengeOut(BaseModel):
 class GameCorrectnessOut(BaseModel):
     water_units: int
     water_capacity: int
-    bucket_capacity: int
-    buckets_filled: int
-    fire_units: int
-    fires_to_burn: int
-    small_fires: int
-    medium_fires: int
-    large_fires: int
-    burn_count: int
-    last_burned_at: datetime | None = None
     last_reconciled_at: datetime | None = None
+    total_active_flames: int = 0
+    burnt_week_count: int = 0
 
 
 class GameDashboardOut(BaseModel):
@@ -384,19 +375,20 @@ class GameReconcileResponse(BaseModel):
 class GameCorrectnessRecomputeResponse(BaseModel):
     correction_count: int
     water_units: int
-    fire_units: int
-    burn_count: int
+    fire_units: int = 0
+    burn_count: int = 0
 
 
 class GameWaterSpendRequest(BaseModel):
     units: int = Field(ge=1, default=1)
+    week_start_at: datetime
 
 
 class GameWaterSpendResponse(BaseModel):
     waters_spent: int
     fires_extinguished: int
     water_units: int
-    fire_units: int
+    week_flames_active: int
 
 
 class GameIncidentOut(BaseModel):
@@ -422,6 +414,8 @@ class GameDebugSeedOut(BaseModel):
     token_balance: int
     token_earned_count: int
     token_spent_count: int
+    current_week_flames: int = 0
+    # Streak is now derived; these fields kept for legacy reads.
     current_streak: int
     max_streak: int
     active_streak_group_id: int
@@ -442,6 +436,8 @@ class GameDebugSeedUpdateRequest(BaseModel):
     token_balance: int | None = None
     token_earned_count: int | None = None
     token_spent_count: int | None = None
+    current_week_flames: int | None = None
+    # Streak fields kept for legacy/migration compat — no longer actively used.
     current_streak: int | None = None
     max_streak: int | None = None
     active_streak_group_id: int | None = None

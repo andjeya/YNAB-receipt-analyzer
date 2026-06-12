@@ -504,8 +504,8 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
 
     if detected_mistakes > 0 or waters_spent_total > 0 or burns_triggered_total > 0:
         if burns_triggered_total > 0:
-            severity = "critical"
-            title = "Board Burn Triggered"
+            severity = "warning"
+            title = "A week burned"
         elif waters_spent_total > 0:
             severity = "warning"
             title = "Fires Added and Water Spent"
@@ -518,10 +518,10 @@ def run_ynab_reconciliation(db: Session, settings: Settings) -> dict[str, Any]:
             f"{fires_added_total} fire{'s' if fires_added_total != 1 else ''} added.",
         ]
         if waters_spent_total > 0:
-            message_parts.append(f"{waters_spent_total} water spent to prevent board burn.")
+            message_parts.append(f"{waters_spent_total} water spent to prevent a week burn.")
         if burns_triggered_total > 0:
             message_parts.append(
-                f"Board burned {burns_triggered_total} time{'s' if burns_triggered_total != 1 else ''}."
+                f"{'A week' if burns_triggered_total == 1 else str(burns_triggered_total) + ' weeks'} burned."
             )
 
         record_incident(

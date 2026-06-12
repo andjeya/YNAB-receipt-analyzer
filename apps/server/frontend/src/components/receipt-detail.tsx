@@ -45,6 +45,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ReceiptTwinViewer } from "@/components/receipt-twin-viewer";
 import { AllocationBoard } from "@/components/allocation-board";
 import { SnappyCelebration } from "@/components/snappy/celebration";
+import { parseApiDate } from "@/lib/dates";
 
 const UNKNOWN_ACCOUNT_ID = "__unknown__";
 const PAYEE_SUGGESTION_LIMIT = 12;
@@ -313,7 +314,7 @@ function ScanPanel({ receiptId, mimeType, originalFilename }: {
       </a>
       <a
         href={downloadUrl}
-        className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-white hover:bg-ink/90"
+        className="hidden md:inline-flex rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-white hover:bg-ink/90"
         download
       >
         Download
@@ -331,7 +332,7 @@ function ScanPanel({ receiptId, mimeType, originalFilename }: {
             Open ↗
           </a>
           <a href={downloadUrl} download
-             className="rounded-md border border-ink/20 bg-white/80 px-2 py-1 text-xs font-medium text-ink/80 hover:bg-white transition">
+             className="hidden md:inline-flex rounded-md border border-ink/20 bg-white/80 px-2 py-1 text-xs font-medium text-ink/80 hover:bg-white transition">
             Download ↓
           </a>
         </div>
@@ -797,7 +798,7 @@ function ValidationStatusSection({ isAutosaving, dirty, lockWarnings, correction
           <p className="font-semibold">Correction history</p>
           {correctionHistory.slice(0, 3).map((item) => (
             <p key={item.id} className="mt-1 text-[11px] text-slate-200">
-              {new Date(item.detected_at).toLocaleDateString()}: {item.note?.split("| sig=", 1)[0] ?? "Category corrected in YNAB"}
+              {parseApiDate(item.detected_at).toLocaleDateString()}: {item.note?.split("| sig=", 1)[0] ?? "Category corrected in YNAB"}
             </p>
           ))}
         </section>
@@ -913,10 +914,10 @@ function ActionButtonBar({ isSyncing, onReset, canReset, isAutosaving, onSync, c
         </div>
       ) : null}
       <div className="mx-auto flex max-w-6xl items-center gap-2">
-        <Button variant="outline" className="flex-1" onClick={onReset} disabled={!canReset || isAutosaving}>
+        <Button variant="outline" className="shrink-0 px-5" onClick={onReset} disabled={!canReset || isAutosaving}>
           Reset
         </Button>
-        <Button className="flex-1" variant={isSyncing ? "outline" : "solid"} onClick={onSync} disabled={!canSync || isSyncing} data-testid="sync-button">
+        <Button className="flex-1 whitespace-nowrap" variant={isSyncing ? "outline" : "solid"} onClick={onSync} disabled={!canSync || isSyncing} data-testid="sync-button">
           {syncButtonLabel}
         </Button>
       </div>
@@ -1585,7 +1586,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             <section className="animate-reveal rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900" style={{ animationDelay: "95ms" }}>
               <p className="inline-flex items-center gap-1 font-semibold">
                 <Droplets className="h-3.5 w-3.5" />
-                Not sure about a category? Picking the right one earns water
+                Not sure about a category? Picking the right one earns a droplet
               </p>
               {ambiguityFlags.slice(0, 3).map((flag, index) => (
                 <p key={`${flag.line_item}-${index}`} className="mt-1 text-[11px] text-sky-800">

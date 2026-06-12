@@ -255,6 +255,94 @@ export const SYNC_ENQUEUE_RESPONSE: Record<string, unknown> = {
 };
 
 // ---------------------------------------------------------------------------
+// Game dashboard fixture (new v3 backend contract)
+// ---------------------------------------------------------------------------
+
+function makeWeekSlot(index: number, opts: {
+  display_state?: "green" | "yellow" | "brown" | null;
+  receipt_count?: number;
+  flames?: number;
+  burnt?: boolean;
+  is_empty?: boolean;
+} = {}): Record<string, unknown> {
+  const base = new Date("2026-06-01T00:00:00Z");
+  const start = new Date(base.getTime() + (index - 8) * 7 * 24 * 3600 * 1000);
+  const end = new Date(start.getTime() + 7 * 24 * 3600 * 1000);
+  return {
+    index,
+    start_at: start.toISOString(),
+    end_at: end.toISOString(),
+    is_empty: opts.is_empty ?? (opts.receipt_count === 0),
+    display_state: opts.display_state ?? null,
+    receipt_count: opts.receipt_count ?? 0,
+    flames: opts.flames ?? 0,
+    burnt: opts.burnt ?? false,
+  };
+}
+
+/** Full game dashboard in v3 shape — includes a slot with flames for coverage. */
+export const GAME_DASHBOARD_V3: Record<string, unknown> = {
+  generated_at: "2026-06-12T20:00:00Z",
+  window: "week",
+  debug_tools_enabled: false,
+  rules: {
+    green_hours_threshold: 24,
+    brown_hours_threshold: 72,
+    shred_daily_spend_cap: 1,
+    water_capacity: 5,
+    fire_burn_threshold: 3,
+    pass_every_green_weeks: 4,
+  },
+  momentum: {
+    current_streak: 3,
+    max_streak: 5,
+    token_balance: 0,
+    token_earned_count: 1,
+    token_spent_count: 1,
+    pass_every_green_weeks: 4,
+    next_pass_in_weeks: 1,
+    spendable_now: true,
+  },
+  correctness: {
+    water_units: 2,
+    water_capacity: 5,
+    last_reconciled_at: "2026-06-12T10:00:00Z",
+    total_active_flames: 1,
+    burnt_week_count: 0,
+  },
+  forest: {
+    latest_receipt_id: null,
+    counts: { green: 3, yellow: 1, brown: 0, shredded: 0, burnt: 0 },
+    receipts: [],
+    weekly_slots: [
+      makeWeekSlot(0, { is_empty: true }),
+      makeWeekSlot(1, { display_state: "green", receipt_count: 2 }),
+      makeWeekSlot(2, { display_state: "green", receipt_count: 1 }),
+      makeWeekSlot(3, { is_empty: true }),
+      makeWeekSlot(4, { display_state: "yellow", receipt_count: 3 }),
+      // Week with active flames — key coverage item
+      makeWeekSlot(5, { display_state: "green", receipt_count: 2, flames: 1 }),
+      makeWeekSlot(6, { display_state: "green", receipt_count: 1 }),
+      makeWeekSlot(7, { display_state: "green", receipt_count: 2 }),
+      // Current week (hero tile) — in progress
+      makeWeekSlot(8, { display_state: null, receipt_count: 0, is_empty: true }),
+    ],
+  },
+  summary: {
+    window: "week",
+    window_start: "2026-06-08T00:00:00Z",
+    window_end: "2026-06-15T00:00:00Z",
+    total_validated: 9,
+    green_count: 3,
+    yellow_count: 1,
+    brown_count: 0,
+    shredded_count: 0,
+    green_percent: 75.0,
+    avg_validation_age_hours: 8.5,
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Route-mounting helpers
 // ---------------------------------------------------------------------------
 
@@ -400,8 +488,13 @@ export function buildStandardRouter(options: {
     }
 
     // --- Game dashboard (may be fetched by layout/header) ---
-    if (method === "GET" && pathname.startsWith("/api/game/")) {
-      void jsonOk(route, {});
+    if (method === "GET" && pathname === "/api/game/dashboard") {
+      void jsonOk(route, GAME_DASHBOARD_V3);
+      return true;
+    }
+    // --- Game incidents (layout polls for incidents) ---
+    if (method === "GET" && pathname === "/api/game/incidents") {
+      void jsonOk(route, []);
       return true;
     }
 
