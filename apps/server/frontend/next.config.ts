@@ -5,6 +5,9 @@ const internalApiOrigin = (process.env.INTERNAL_API_ORIGIN ?? "http://host.docke
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   output: "standalone",
+  // The floating "N" dev badge confuses the (non-developer) end user; dev-only
+  // affordances live behind the in-app debug panel instead.
+  devIndicators: false,
   async rewrites() {
     return [
       {

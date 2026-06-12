@@ -1,12 +1,16 @@
 /**
  * receipt-buckets.ts
  *
- * Pure client-side logic for bucketing and sorting receipts into the three
- * primary queue tabs: "review", "processing", and "history".
+ * Pure client-side logic for bucketing and sorting receipts into the two
+ * primary queue tabs: "review" (To Review) and "done" (synced receipts).
+ *
+ * Processing receipts (ingested / extracting / syncing) live INSIDE the
+ * To Review tab: they are sorted below the actionable receipts and rendered
+ * with a "Processing" label, so there is no separate tab to check.
  *
  * No React / API imports — keeps this fully testable with node:test.
  *
- * NOTE: The "history" bucket (synced receipts) is rendered newest-first and
+ * NOTE: The "done" bucket (synced receipts) is rendered newest-first and
  * could be paginated at scale (e.g. cursor-based pagination on ingested_at).
  * For now counts are small so we load all receipts in a single fetch.
  */
@@ -17,7 +21,7 @@ import type { ReceiptStatus } from "./types.js";
 // Types
 // ---------------------------------------------------------------------------
 
-export type ReceiptBucket = "review" | "processing" | "history";
+export type ReceiptBucket = "review" | "done";
 
 /** Minimal receipt shape required for bucketing + sorting. */
 export interface BucketableReceipt {
@@ -27,21 +31,29 @@ export interface BucketableReceipt {
 
 export interface PartitionResult<T extends BucketableReceipt> {
   review: T[];
-  processing: T[];
-  history: T[];
+  done: T[];
 }
 
 // ---------------------------------------------------------------------------
-// Status → bucket mapping
+// Status classification
 // ---------------------------------------------------------------------------
+
+/**
+ * Statuses that mean the app (not the user) is currently working on the
+ * receipt. These render inside To Review with a "Processing" label, below
+ * everything the user can act on.
+ */
+export function isProcessingStatus(status: string): boolean {
+  return status === "ingested" || status === "extracting" || status === "syncing";
+}
 
 /**
  * Returns the bucket for a given ReceiptStatus, or null for unknown values.
  *
  * Bucket membership:
- *   review     — needs_review, duplicate_review, error_extract, error_sync
- *   processing — ingested, extracting, syncing
- *   history    — synced
+ *   review — needs_review, duplicate_review, error_extract, error_sync,
+ *            plus the processing statuses (ingested, extracting, syncing)
+ *   done   — synced
  */
 export function bucketForStatus(status: string): ReceiptBucket | null {
   switch (status) {
@@ -49,15 +61,13 @@ export function bucketForStatus(status: string): ReceiptBucket | null {
     case "duplicate_review":
     case "error_extract":
     case "error_sync":
-      return "review";
-
     case "ingested":
     case "extracting":
     case "syncing":
-      return "processing";
+      return "review";
 
     case "synced":
-      return "history";
+      return "done";
 
     default:
       return null;
@@ -69,27 +79,30 @@ export function bucketForStatus(status: string): ReceiptBucket | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Partitions a flat array of receipts into the three buckets and sorts each
+ * Partitions a flat array of receipts into the two buckets and sorts each
  * bucket by the fixed sort rule for that bucket:
  *
- *   review     → oldest-first by ingested_at (longest-waiting on top)
- *   processing → oldest-first by ingested_at
- *   history    → newest-first by ingested_at
+ *   review → actionable receipts oldest-first (longest-waiting on top),
+ *            then processing receipts oldest-first at the bottom
+ *   done   → newest-first by ingested_at
  *
  * Receipts with an unknown status are silently excluded (bucket === null).
  */
 export function partitionReceipts<T extends BucketableReceipt>(
   receipts: T[],
 ): PartitionResult<T> {
-  const review: T[] = [];
+  const actionable: T[] = [];
   const processing: T[] = [];
-  const history: T[] = [];
+  const done: T[] = [];
 
   for (const receipt of receipts) {
     const bucket = bucketForStatus(receipt.status);
-    if (bucket === "review") review.push(receipt);
-    else if (bucket === "processing") processing.push(receipt);
-    else if (bucket === "history") history.push(receipt);
+    if (bucket === "review") {
+      if (isProcessingStatus(receipt.status)) processing.push(receipt);
+      else actionable.push(receipt);
+    } else if (bucket === "done") {
+      done.push(receipt);
+    }
     // null → excluded
   }
 
@@ -99,9 +112,9 @@ export function partitionReceipts<T extends BucketableReceipt>(
   const newestFirst = (a: T, b: T): number =>
     new Date(b.ingested_at).getTime() - new Date(a.ingested_at).getTime();
 
-  review.sort(oldestFirst);
+  actionable.sort(oldestFirst);
   processing.sort(oldestFirst);
-  history.sort(newestFirst);
+  done.sort(newestFirst);
 
-  return { review, processing, history };
+  return { review: [...actionable, ...processing], done };
 }

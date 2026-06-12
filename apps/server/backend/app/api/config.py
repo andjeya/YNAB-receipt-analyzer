@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import app_settings, db_session
 from app.config import Settings
 from app.schemas import AppConfigOut
+from app.services.debug_tools import is_debug_tools_enabled
 from receipt_shared.ynab_client import YNABClient
 
 router = APIRouter(prefix="/config", tags=["config"])
@@ -65,4 +66,5 @@ def get_app_config(
         ynab_budget_name=budget_name,
         new_transaction_flag_color=settings.ynab_new_transaction_flag_color,
         updated_transaction_flag_color=settings.ynab_updated_transaction_flag_color,
+        debug_tools_enabled=is_debug_tools_enabled(settings),
     )

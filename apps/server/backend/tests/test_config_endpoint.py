@@ -150,3 +150,14 @@ def test_budget_id_none_when_not_configured(db_session):
     settings = _make_settings(ynab_budget_id=None)
     result = _call_endpoint(db_session, settings)
     assert result.ynab_budget_id is None
+
+
+def test_debug_tools_enabled_reflects_flag_file(db_session, tmp_path):
+    """debug_tools_enabled mirrors the flag-file toggle (file present → True)."""
+    flag = tmp_path / "debug_tools_enabled.flag"
+
+    settings = _make_settings(debug_tools_flag_file=flag)
+    assert _call_endpoint(db_session, settings).debug_tools_enabled is False
+
+    flag.touch()
+    assert _call_endpoint(db_session, settings).debug_tools_enabled is True

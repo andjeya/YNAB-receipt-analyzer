@@ -33,6 +33,7 @@ export interface AppConfig {
   ynab_budget_name: string | null;
   new_transaction_flag_color: string;
   updated_transaction_flag_color: string;
+  debug_tools_enabled: boolean;
 }
 
 export interface YNABSyncRecord {

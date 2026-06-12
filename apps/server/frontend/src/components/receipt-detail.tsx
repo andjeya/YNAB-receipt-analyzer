@@ -22,6 +22,7 @@ import {
   saveDraft,
 } from "@/lib/api";
 import { AllocationWorkspace, ReceiptDetail, ValidationPayloadInput } from "@/lib/types";
+import { toDraftFromPayload } from "@/lib/validation-draft";
 import { shouldSkipPreview } from "@/lib/sync-skip";
 import { formatSignedDollarsWithDirection, formatDollarsMagnitude, signedDollars } from "@/lib/money";
 import { useToast } from "@/components/ui/toast";
@@ -152,59 +153,6 @@ function CategorySearchSelect({
       ) : null}
     </div>
   );
-}
-
-function toDraftFromPayload(payload: Record<string, unknown>, fallbackPayee: string): ValidationPayloadInput {
-  const splitsSource = Array.isArray(payload.splits) ? payload.splits : [];
-  const parsedSplits = splitsSource.flatMap((split) => {
-    if (!split || typeof split !== "object") {
-      return [];
-    }
-    const record = split as Record<string, unknown>;
-    const amount = Number(record.amount ?? 0);
-    return {
-      category_id: String(record.category_id ?? ""),
-      amount: Number.isFinite(amount) ? amount : 0,
-      memo: String(record.memo ?? ""),
-    };
-  });
-
-  let categoryId = String(payload.category_id ?? "");
-  const splits = parsedSplits;
-
-  if (splits.length > 0) {
-    categoryId = "";
-  }
-
-  const transactionTimeRaw = String(payload.transaction_time ?? "").trim();
-  const transactionTime = transactionTimeRaw ? transactionTimeRaw.slice(0, 5) : "";
-
-  return {
-    payee_name: String(payload.payee_name ?? fallbackPayee ?? ""),
-    account_id: String(payload.account_id ?? ""),
-    transaction_date: String(payload.transaction_date ?? ""),
-    transaction_time: transactionTime,
-    memo: String(payload.memo ?? ""),
-    total_amount: Number(payload.total_amount ?? 0),
-    transaction_kind: payload.transaction_kind === "refund" ? "refund" : "purchase",
-    category_id: categoryId,
-    splits,
-    // Provenance survives saves so the "remembered from card" hint stays
-    // truthful across validation versions; cleared on manual account change.
-    ...(payload.account_source === "card_mapping" ? { account_source: "card_mapping" } : {}),
-    // Provenance survives saves so the "remembered from store" hint stays
-    // truthful across validation versions; cleared on any manual category/split change.
-    ...(payload.category_source === "payee_memory" ? { category_source: "payee_memory" } : {}),
-    // Date guess provenance: drives the orange "confirm the date" bubble and the
-    // sync gate. Cleared when the user confirms or edits the date.
-    ...(payload.date_source === "ai_guess"
-      ? {
-          date_source: "ai_guess",
-          date_confidence: payload.date_confidence ? String(payload.date_confidence) : undefined,
-          date_note: payload.date_note ? String(payload.date_note) : undefined,
-        }
-      : {}),
-  };
 }
 
 function parseCategoryAmbiguityFlags(payload: Record<string, unknown> | null | undefined): CategoryAmbiguityFlag[] {
@@ -341,6 +289,14 @@ function ScanPanel({ receiptId, mimeType, originalFilename }: {
   const downloadUrl = receiptFileUrl(receiptId, false);
   const [imageError, setImageError] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(true);
+  // Headless/plugin-less browsers never fire onLoad for <object> PDFs, which
+  // left "Loading PDF…" stacked on top of the fallback message. Time the veil
+  // out so only one state shows.
+  useEffect(() => {
+    if (!pdfLoading) return;
+    const timer = setTimeout(() => setPdfLoading(false), 4000);
+    return () => clearTimeout(timer);
+  }, [pdfLoading]);
 
   const isImage = isInlineImageMimeType(mimeType);
   const isPdf = isPdfMimeType(mimeType);
@@ -1325,8 +1281,8 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   }, [receiptId, dateTimeConfirmed, totalConfirmed]);
   const twinConfirmationErrors = useMemo(() => {
     const errors: string[] = [];
-    if (!dateTimeConfirmed) errors.push("Confirm Date + Time in Receipt Twin before syncing");
-    if (!totalConfirmed) errors.push("Confirm Total in Receipt Twin before syncing");
+    if (!dateTimeConfirmed) errors.push("Confirm the date & time in Receipt details before syncing");
+    if (!totalConfirmed) errors.push("Confirm the total in Receipt details before syncing");
     return errors;
   }, [dateTimeConfirmed, totalConfirmed]);
 
@@ -1568,7 +1524,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
                 disabled={deleteMutation.isPending}
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                Forget it
+                Delete receipt
               </Button>
             ) : null}
             <StatusBadge status={receipt.status} />
@@ -1629,12 +1585,11 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             <section className="animate-reveal rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900" style={{ animationDelay: "95ms" }}>
               <p className="inline-flex items-center gap-1 font-semibold">
                 <Droplets className="h-3.5 w-3.5" />
-                Extra water opportunity: category ambiguity detected
+                Not sure about a category? Picking the right one earns water
               </p>
               {ambiguityFlags.slice(0, 3).map((flag, index) => (
                 <p key={`${flag.line_item}-${index}`} className="mt-1 text-[11px] text-sky-800">
-                  {flag.line_item || "Item"} ({Math.round(flag.confidence * 100)}%):{" "}
-                  {flag.note || "Could belong to multiple categories."}
+                  {flag.line_item || "Item"}: {flag.note || "Could belong to multiple categories."}
                 </p>
               ))}
             </section>

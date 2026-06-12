@@ -12,13 +12,12 @@ import {
   Droplets,
   Flame,
   HelpCircle,
-  Menu,
-  RefreshCcw,
-  ScanSearch,
   Scissors,
+  Search,
   Sparkles,
   Trash2,
   Waves,
+  Wrench,
 } from "lucide-react";
 
 import {
@@ -26,8 +25,11 @@ import {
   deleteReceipt,
   enqueueSync,
   fetchYnabUpdates,
+  getAppConfig,
   getGameDebugSeed,
   getGameDashboard,
+  getReceiptDetail,
+  getYnabCache,
   listGameIncidents,
   listReceipts,
   rebuildGameState,
@@ -44,7 +46,7 @@ import { formatSignedDollars, signedDollars } from "@/lib/money";
 import { deriveSnappyPose, isStreakMilestone } from "@/lib/snappy-pose";
 import { useToast } from "@/components/ui/toast";
 import { extractReceiptIdFromText } from "@/lib/receipt-id";
-import { partitionReceipts, type ReceiptBucket } from "@/lib/receipt-buckets";
+import { isProcessingStatus, partitionReceipts, type ReceiptBucket } from "@/lib/receipt-buckets";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
@@ -53,20 +55,34 @@ import { Input } from "@/components/ui/input";
 import { ReceiptStateIcon } from "@/components/receipt-state-icon";
 import { Snappy } from "@/components/snappy/snappy";
 import { CardMappingPanel } from "@/components/card-mapping-panel";
+import { SyncPreviewDialog } from "@/components/sync-preview-dialog";
+import { toDraftFromPayload } from "@/lib/validation-draft";
 
-// Tab definitions — each maps to a ReceiptBucket (see src/lib/receipt-buckets.ts)
+// Tab definitions — each maps to a ReceiptBucket (see src/lib/receipt-buckets.ts).
+// Processing receipts live at the bottom of To Review with a "working" label,
+// so there are only two places to look: what needs you, and what's done.
 const TABS: Array<{ label: string; bucket: ReceiptBucket; testid: string }> = [
-  { label: "To Review", bucket: "review",     testid: "tab-review"     },
-  { label: "Processing", bucket: "processing", testid: "tab-processing" },
-  { label: "History",    bucket: "history",    testid: "tab-history"    },
+  { label: "To Review", bucket: "review", testid: "tab-review" },
+  { label: "Done",      bucket: "done",   testid: "tab-done"   },
 ];
 
+// Whole, friendly units — "7 days", not "7.4d" (dev shorthand reads as jargon).
 function formatWaitTime(value: number | null | undefined): string {
-  if (value == null) return "Not scored";
-  if (value < 1) return `${Math.max(Math.round(value * 60), 1)}m`;
-  if (value < 24) return `${Math.round(value)}h`;
-  if (value > 24 * 30) return `~${Math.round(value / 24 / 30)}mo`;
-  return `${(value / 24).toFixed(1)}d`;
+  if (value == null) return "—";
+  if (value < 1) {
+    const minutes = Math.max(Math.round(value * 60), 1);
+    return `${minutes} min`;
+  }
+  if (value < 24) {
+    const hours = Math.round(value);
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  if (value > 24 * 30) {
+    const months = Math.round(value / 24 / 30);
+    return `~${months} month${months === 1 ? "" : "s"}`;
+  }
+  const days = Math.round(value / 24);
+  return `${days} day${days === 1 ? "" : "s"}`;
 }
 
 /**
@@ -79,7 +95,7 @@ function formatWallWait(ingestedAt: string): string {
   const totalHours = elapsedMs / (1000 * 60 * 60);
   if (totalMinutes < 60) return `${totalMinutes}m`;
   if (totalHours < 24) return `${Math.round(totalHours)}h`;
-  return `${(totalHours / 24).toFixed(1)}d`;
+  return `${Math.max(Math.round(totalHours / 24), 1)}d`;
 }
 
 function deriveIconState(
@@ -124,107 +140,80 @@ type DebugSeedForm = {
   active_streak_group_id: number;
 };
 
-function ActionMenu({
-  menuRef, menuOpen, setMenuOpen,
-  onScan, isScanPending,
-  onFetchUpdates, isFetchUpdatesPending,
-  onRebuild, isRebuildPending,
-  onRecompute, isRecomputePending,
-  debugToolsEnabled, onOpenDebugPanel, onOpenCardMappingPanel,
-  onNavigate,
-}: {
-  menuRef: { current: HTMLDivElement | null };
-  menuOpen: boolean;
-  setMenuOpen: (v: boolean | ((prev: boolean) => boolean)) => void;
-  onScan: () => void; isScanPending: boolean;
-  onFetchUpdates: () => void; isFetchUpdatesPending: boolean;
-  onRebuild: () => void; isRebuildPending: boolean;
-  onRecompute: () => void; isRecomputePending: boolean;
-  debugToolsEnabled: boolean;
-  onOpenDebugPanel: () => void;
-  onOpenCardMappingPanel: () => void;
-  onNavigate: (path: string) => void;
-}) {
-  const [receiptLookupInput, setReceiptLookupInput] = useState("");
-  const [receiptLookupError, setReceiptLookupError] = useState<string | null>(null);
+/**
+ * ReceiptLookup — the only always-visible utility control (a search icon in
+ * the tab row). Opens a small popover to jump to a receipt by pasting its ID
+ * or the memo line copied from YNAB. Everything maintenance-flavored lives in
+ * the debug panel instead.
+ */
+function ReceiptLookup({ onNavigate }: { onNavigate: (path: string) => void }) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
-  const openReceiptById = () => {
-    const parsedId = extractReceiptIdFromText(receiptLookupInput.trim());
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const openReceipt = () => {
+    const parsedId = extractReceiptIdFromText(value.trim());
     if (!parsedId) {
-      setReceiptLookupError("Enter a valid receipt ID (UUID) or memo token containing one.");
+      setError("Hmm, that doesn't look like a receipt ID. Paste the whole memo line from YNAB and I'll find it.");
       return;
     }
-    setReceiptLookupError(null);
-    setMenuOpen(false);
+    setError(null);
+    setOpen(false);
+    setValue("");
     onNavigate(`/receipts/${parsedId}`);
   };
 
   return (
-    <div ref={menuRef} className="absolute right-4 top-3 z-30">
+    <div ref={wrapRef} className="relative shrink-0">
       <button
         type="button"
-        className="rounded-full border border-ink/20 bg-white/90 p-2 text-ink shadow-float transition hover:bg-white focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
-        onClick={() => setMenuOpen((current) => !current)}
-        aria-label="Open actions menu"
+        data-testid="receipt-lookup-toggle"
+        className="rounded-full p-2 text-ink/60 transition hover:bg-ink/10 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        aria-label="Find a receipt"
+        title="Find a receipt"
       >
-        <Menu className="h-5 w-5" />
+        <Search className="h-5 w-5" />
       </button>
-      {menuOpen ? (
-        <Card className="absolute right-0 mt-2 w-[22rem] rounded-2xl p-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Actions</p>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <Button variant="outline" size="sm" className="justify-start gap-1" onClick={onScan} disabled={isScanPending}>
-              <ScanSearch className="h-3.5 w-3.5" />
-              {isScanPending ? "Checking" : "Check ingestion queue"}
-            </Button>
-            <Button variant="outline" size="sm" className="justify-start gap-1" onClick={onFetchUpdates} disabled={isFetchUpdatesPending}>
-              <RefreshCcw className="h-3.5 w-3.5" />
-              {isFetchUpdatesPending ? "Fetching" : "Fetch YNAB updates"}
-            </Button>
-            <Button variant="outline" size="sm" className="justify-start gap-1" onClick={onRebuild} disabled={isRebuildPending}>
-              <RefreshCcw className="h-3.5 w-3.5" />
-              {isRebuildPending ? "Rebuilding" : "Rebuild game"}
-            </Button>
-            <Button variant="outline" size="sm" className="justify-start gap-1" onClick={onRecompute} disabled={isRecomputePending}>
-              {isRecomputePending ? "Recomputing" : "Recompute correctness"}
-            </Button>
-            {debugToolsEnabled ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="justify-start gap-1 sm:col-span-2"
-                onClick={() => { setMenuOpen(false); onOpenDebugPanel(); }}
-              >
-                Debug panel
-              </Button>
-            ) : null}
-            {debugToolsEnabled ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="justify-start gap-1 sm:col-span-2"
-                onClick={() => { setMenuOpen(false); onOpenCardMappingPanel(); }}
-              >
-                Card mappings
-              </Button>
-            ) : null}
+      {open ? (
+        <Card className="absolute right-0 top-full z-30 mt-2 w-[20rem] rounded-2xl p-3">
+          <p className="text-xs font-semibold text-ink">Find a receipt</p>
+          <p className="mt-0.5 text-[11px] text-ink/60">
+            Paste the memo line from a YNAB transaction (or a receipt ID).
+          </p>
+          <div className="mt-2 flex gap-2">
+            <Input
+              autoFocus
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") { event.preventDefault(); openReceipt(); }
+              }}
+              placeholder="e.g. [receipt_id:62da5ad1…]"
+              className="h-10"
+              aria-label="Receipt ID or YNAB memo line"
+            />
+            <Button size="sm" onClick={openReceipt}>Open</Button>
           </div>
-          <div className="mt-3 border-t border-ink/10 pt-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Open by ID</p>
-            <div className="mt-2 flex gap-2">
-              <Input
-                value={receiptLookupInput}
-                onChange={(event) => setReceiptLookupInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") { event.preventDefault(); openReceiptById(); }
-                }}
-                placeholder="Receipt UUID or memo token"
-                className="h-10"
-              />
-              <Button size="sm" onClick={openReceiptById}>Open</Button>
-            </div>
-            {receiptLookupError ? <p className="mt-1 text-xs text-red-700">{receiptLookupError}</p> : null}
-          </div>
+          {error ? <p className="mt-1 text-xs text-red-700">{error}</p> : null}
         </Card>
       ) : null}
     </div>
@@ -269,7 +258,7 @@ function HowScoringWorksDialog({
   return (
     <Dialog open={open} onClose={onClose} labelledById="how-scoring-heading">
       <Card className="w-full max-w-sm space-y-4 border-0 shadow-none">
-        <h2 id="how-scoring-heading" className="text-base font-semibold">How scoring works</h2>
+        <h2 id="how-scoring-heading" className="text-base font-semibold">How it works</h2>
 
         <section className="space-y-2 text-sm text-ink/80">
           <p className="font-semibold text-ink">Weekly score</p>
@@ -314,8 +303,10 @@ function HowScoringWorksDialog({
         </section>
 
         <section className="rounded-xl bg-ink/5 px-3 py-2 text-sm">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink/50">Your current validation wait</p>
-          <p className="mt-1 text-lg font-bold text-ink">{formatWaitTime(avgValidationAgeHours)}</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/50">Your average review time</p>
+          <p className="mt-1 text-lg font-bold text-ink">
+            {avgValidationAgeHours == null ? "No reviews yet" : formatWaitTime(avgValidationAgeHours)}
+          </p>
           <p className="text-xs text-ink/60">Average time between a receipt arriving and you reviewing it.</p>
         </section>
 
@@ -381,7 +372,8 @@ function JourneyPathBoard({ slots }: { slots: WeekSlot[] }) {
       <div className="relative flex items-center justify-between gap-0">
         {slots.map((slot, arrayIndex) => {
           const isCurrentWeek = arrayIndex === slots.length - 1;
-          const slotLabel = `${isCurrentWeek ? "Current week — " : ""}${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} | scored receipts: ${slot.receipt_count}`;
+          const receiptsPart = slot.receipt_count === 0 ? "no receipts yet" : `${slot.receipt_count} receipt${slot.receipt_count === 1 ? "" : "s"} scored`;
+          const slotLabel = `${isCurrentWeek ? "Current week — " : ""}${format(new Date(slot.start_at), "MMM d")} - ${format(new Date(slot.end_at), "MMM d")} · ${receiptsPart}`;
           const hasState = slot.display_state !== null;
           const fill = hasState ? NODE_FILL[slot.display_state!] : undefined;
           const isOpen = openNode === arrayIndex;
@@ -458,7 +450,7 @@ function JourneyPathBoard({ slots }: { slots: WeekSlot[] }) {
 
 function ReceiptListHeader({
   dashboardData, highlightedCount, totalCount, maxWaterSpend, fireUnits, fireToBurn, isSpendWaterPending, onOpenWaterSpend,
-  celebratingStreak,
+  celebratingStreak, userName,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   dashboardData: any;
@@ -470,8 +462,27 @@ function ReceiptListHeader({
   isSpendWaterPending: boolean;
   onOpenWaterSpend: () => void;
   celebratingStreak: boolean;
+  userName: string;
 }) {
-  const derived = deriveSnappyPose({ needsReviewCount: highlightedCount, totalCount });
+  const isEmpty = totalCount === 0;
+  // Two-pass render for the speech bubble: the line is randomized (greetings/
+  // quotes use Math.random + the local clock), which would make the server-
+  // rendered HTML differ from the client's first paint → hydration error.
+  // Until mounted we pin random/clock to fixed values so SSR and the first
+  // client render agree; after mount we re-pick freely. The memo also stops
+  // the bubble flickering on every 7s poll.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  const derived = useMemo(
+    () =>
+      deriveSnappyPose({
+        needsReviewCount: highlightedCount,
+        totalCount: isEmpty ? 0 : 1,
+        userName,
+        ...(mounted ? {} : { random: () => 0.5, now: new Date(2026, 0, 1, 12, 0, 0) }),
+      }),
+    [mounted, highlightedCount, isEmpty, userName],
+  );
   const pose = celebratingStreak ? "celebrating" : derived.pose;
 
   // Which stat chip currently has its popover open (null = none)
@@ -529,15 +540,15 @@ function ReceiptListHeader({
 
   const toggleTile = (id: StatTileId) => setOpenTile((prev) => (prev === id ? null : id));
 
-  const streak = dashboardData?.momentum.current_streak ?? 0;
-  const waterUnitsVal = dashboardData?.correctness.water_units ?? 0;
-  const waterCapacity = dashboardData?.correctness.water_capacity ?? 0;
+  const streak = dashboardData?.momentum?.current_streak ?? 0;
+  const waterUnitsVal = dashboardData?.correctness?.water_units ?? 0;
+  const waterCapacity = dashboardData?.correctness?.water_capacity ?? 0;
 
-  const weekSlots: WeekSlot[] = dashboardData?.forest.weekly_slots ?? [];
+  const weekSlots: WeekSlot[] = dashboardData?.forest?.weekly_slots ?? [];
 
   // ── Chip render helpers ────────────────────────────────────────────────────
 
-  const streakLabel = streak === 0 ? "start a streak" : "day streak";
+  const streakLabel = streak === 0 ? "start a streak" : "week streak";
   const fireLabel = fireToBurn === 0 ? "nothing to burn \u{1F389}" : `${fireToBurn} to burn`;
 
   return (
@@ -560,7 +571,7 @@ function ReceiptListHeader({
           <div className="min-w-0 flex-1">
             {/* Eyebrow label */}
             <p className="truncate whitespace-nowrap text-[10px] font-bold uppercase tracking-[0.18em] text-mint/70" aria-hidden="true">
-              SNAPPY · RECEIPT &rarr; YNAB
+              SNAPPY<span className="hidden sm:inline"> · RECEIPT &rarr; YNAB</span>
             </p>
 
             {/* Speech bubble */}
@@ -579,8 +590,13 @@ function ReceiptListHeader({
                 className="w-fit max-w-full rounded-2xl bg-white/10 px-3 py-2"
               >
                 <p className="text-sm font-semibold leading-snug text-sand">
-                  {derived.line}
+                  {derived.attribution ? <>&ldquo;{derived.line}&rdquo;</> : derived.line}
                 </p>
+                {derived.attribution ? (
+                  <p className="mt-1 text-[11px] text-sand/60" title={derived.attributionSource}>
+                    — {derived.attribution}
+                  </p>
+                ) : null}
               </div>
             </div>
           </div>
@@ -691,7 +707,7 @@ function ReceiptListHeader({
             <div className="flex items-center gap-1.5 rounded-2xl bg-white/10 px-3 py-2">
               <Scissors className="h-4 w-4 text-amber-300" aria-hidden="true" />
               <div className="text-left">
-                <p className="text-xl font-bold leading-none text-white">{dashboardData?.momentum.token_balance ?? 0}</p>
+                <p className="text-xl font-bold leading-none text-white">{dashboardData?.momentum?.token_balance ?? 0}</p>
                 <p className="mt-0.5 text-[11px] font-medium text-sand/70">shred tokens</p>
               </div>
             </div>
@@ -737,24 +753,24 @@ function TabBar({
   activeTab,
   setActiveTab,
   reviewCount,
-  processingCount,
-  historyCount,
+  doneCount,
+  lookupSlot,
 }: {
   activeTab: ReceiptBucket;
   setActiveTab: (tab: ReceiptBucket) => void;
   reviewCount: number;
-  processingCount: number;
-  historyCount: number;
+  doneCount: number;
+  /** Right-aligned slot for the receipt-lookup (search) affordance. */
+  lookupSlot?: React.ReactNode;
 }) {
   const counts: Record<ReceiptBucket, number> = {
-    review:     reviewCount,
-    processing: processingCount,
-    history:    historyCount,
+    review: reviewCount,
+    done:   doneCount,
   };
 
   return (
-    <section className="animate-reveal rounded-3xl bg-white/85 p-3 shadow-float" style={{ animationDelay: "90ms" }}>
-      <div role="tablist" aria-label="Receipt queue tabs" className="flex gap-2">
+    <section className="animate-reveal flex items-center gap-2 rounded-3xl bg-white/85 p-3 shadow-float" style={{ animationDelay: "90ms" }}>
+      <div role="tablist" aria-label="Receipt queue tabs" className="flex flex-1 gap-2">
         {TABS.map((tab) => {
           const isActive = activeTab === tab.bucket;
           const count = counts[tab.bucket];
@@ -787,6 +803,7 @@ function TabBar({
           );
         })}
       </div>
+      {lookupSlot}
     </section>
   );
 }
@@ -811,6 +828,7 @@ function ReceiptListItem({
   showWaiting?: boolean;
 }) {
   const { tone, shredded } = deriveIconState(tile);
+  const isProcessing = isProcessingStatus(receipt.status);
   const correctionOpacity = receipt.correction_shade_opacity ?? 0;
   const correctionVisible = correctionOpacity > 0.01;
   const correctionColor = `rgba(15, 23, 42, ${Math.max(0.16, Math.min(0.2 + correctionOpacity * 0.75, 1))})`;
@@ -837,6 +855,7 @@ function ReceiptListItem({
             : receipt.status === "duplicate_review"
               ? "border-orange-300 bg-orange-50/70"
               : undefined,
+          isProcessing ? "opacity-80" : undefined,
         )}
         style={{ animationDelay: `${120 + index * 28}ms` }}
       >
@@ -867,7 +886,11 @@ function ReceiptListItem({
                 <p className="truncate text-sm font-semibold">
                   {receipt.display_payee_name ?? receipt.original_filename}
                 </p>
-                {showWaiting ? (
+                {isProcessing ? (
+                  <p className="mt-1 text-xs font-medium text-ink/55">
+                    Snappy is working on this one — no action needed
+                  </p>
+                ) : showWaiting ? (
                   <p className="mt-1 text-xs font-semibold text-amber-700">
                     {formatWallWait(receipt.ingested_at)} waiting
                   </p>
@@ -879,7 +902,7 @@ function ReceiptListItem({
               </div>
               {(tile?.age_hours_at_validation != null || !showWaiting) ? (
                 <div className="text-right text-xs">
-                  <p className="uppercase tracking-wide text-ink/70">Validation wait</p>
+                  <p className="uppercase tracking-wide text-ink/70">Review time</p>
                   <p className="mt-1 font-semibold">{formatWaitTime(tile?.age_hours_at_validation)}</p>
                 </div>
               ) : null}
@@ -964,6 +987,118 @@ function ReceiptListItem({
   );
 }
 
+/**
+ * QuickSyncPreview — the confirm gate for "Looks right — Sync" on the list.
+ * Fetches the receipt's full detail on demand and shows the SAME bank-register
+ * preview the detail page uses (account, date, total, category splits, memo),
+ * so the user always sees exactly what will land in YNAB before approving.
+ * Cancel returns to the list; nothing is sent until Confirm.
+ */
+function QuickSyncPreview({
+  receiptId, onClose, onConfirm, isSyncing,
+}: {
+  receiptId: string | null;
+  onClose: () => void;
+  onConfirm: (receiptId: string) => void;
+  isSyncing: boolean;
+}) {
+  const open = receiptId !== null;
+
+  const detailQuery = useQuery({
+    queryKey: ["receipt", receiptId],
+    queryFn: () => getReceiptDetail(receiptId as string),
+    enabled: open,
+  });
+  const cacheQuery = useQuery({
+    queryKey: ["ynab-cache"],
+    queryFn: () => getYnabCache(),
+    staleTime: 20_000,
+    enabled: open,
+  });
+  const configQuery = useQuery({
+    queryKey: ["config"],
+    queryFn: () => getAppConfig(),
+    staleTime: 60_000,
+    enabled: open,
+  });
+
+  const accounts = useMemo(
+    () =>
+      (cacheQuery.data ?? [])
+        .filter((item) => item.entity_type === "account")
+        .map((item) => ({
+          entity_id: String(item.entity_id ?? "").trim(),
+          name: String(item.name ?? "").trim() || "Unknown account",
+        }))
+        .filter((item) => item.entity_id.length > 0),
+    [cacheQuery.data],
+  );
+  const categories = useMemo(
+    () =>
+      (cacheQuery.data ?? [])
+        .filter((item) => item.entity_type === "category")
+        .map((item) => ({
+          entity_id: String(item.entity_id ?? "").trim(),
+          name: String(item.name ?? "").trim(),
+          group_name: item.group_name == null ? null : String(item.group_name),
+        }))
+        .filter((item) => item.entity_id.length > 0 && item.name.length > 0),
+    [cacheQuery.data],
+  );
+
+  if (!open) return null;
+
+  const receipt = detailQuery.data;
+  if (!receipt) {
+    return (
+      <Dialog open onClose={onClose} labelledById="quick-sync-loading-heading">
+        <Card className="w-full max-w-sm border-0 p-4 shadow-none">
+          <h2 id="quick-sync-loading-heading" className="text-sm font-semibold">Review transaction</h2>
+          <p className="mt-2 text-sm text-ink/60">
+            {detailQuery.isError ? "Couldn't load the receipt — try again from its page." : "Getting the details…"}
+          </p>
+        </Card>
+      </Dialog>
+    );
+  }
+
+  const payload = (receipt.latest_validation?.payload ?? {}) as Record<string, unknown>;
+  const draft = toDraftFromPayload(payload, receipt.display_payee_name ?? "");
+  const latestSync = receipt.latest_sync;
+  const lastDryRunTransaction: Record<string, unknown> | null = (() => {
+    if (!latestSync || latestSync.status !== "dry_run" || !latestSync.raw_request) return null;
+    const txn = (latestSync.raw_request as Record<string, unknown>).transaction;
+    return txn && typeof txn === "object" ? (txn as Record<string, unknown>) : null;
+  })();
+  const config = configQuery.data;
+
+  return (
+    <SyncPreviewDialog
+      open
+      onClose={onClose}
+      draft={draft}
+      accounts={accounts}
+      categories={categories}
+      hasSuccessfulSync={receipt.has_successful_sync}
+      mode={{
+        dryRun: config?.ynab_dry_run ?? true,
+        syncEnabled: config?.ynab_sync_enabled ?? false,
+        budgetName: config?.ynab_budget_name ?? null,
+        budgetId: config?.ynab_budget_id ?? null,
+        newFlagColor: config?.new_transaction_flag_color ?? "green",
+        updatedFlagColor: config?.updated_transaction_flag_color ?? "blue",
+      }}
+      lastDryRunTransaction={lastDryRunTransaction}
+      isConfirmDisabled={false}
+      isSyncing={isSyncing}
+      dateTimeConfirmed={receipt.latest_twin?.confirmed_sections.date_time ?? false}
+      totalConfirmed={receipt.latest_twin?.confirmed_sections.total ?? false}
+      onConfirm={() => onConfirm(receipt.id)}
+      showSkipPreviewOption={false}
+    />
+  );
+}
+
 function WaterSpendModal({ open, waterSpendAmount, setWaterSpendAmount, maxWaterSpend, onSpend, isSpendPending, onClose }: {
   open: boolean;
   waterSpendAmount: number;
@@ -1004,8 +1139,31 @@ function WaterSpendModal({ open, waterSpendAmount, setWaterSpendAmount, maxWater
   );
 }
 
-function DebugPanel({ open, debugForm, setDebugForm, debugResetFloors, setDebugResetFloors, isSeedLoading, isSeedError, isSaving, onSave, onClose }: {
+/**
+ * DebugPanel — the developer's drawer. Every maintenance action the old
+ * hamburger menu exposed lives here now, each with a plain-language
+ * explanation of what it does and why you'd run it. Normal use of the app
+ * never requires opening this panel (refresh happens automatically).
+ */
+function DebugPanel({
+  open, onClose,
+  userName, onUserNameChange,
+  onScan, isScanPending,
+  onFetchUpdates, isFetchUpdatesPending,
+  onRebuild, isRebuildPending,
+  onRecompute, isRecomputePending,
+  onOpenCardMappings,
+  debugForm, setDebugForm, debugResetFloors, setDebugResetFloors, isSeedLoading, isSeedError, isSaving, onSave,
+}: {
   open: boolean;
+  onClose: () => void;
+  userName: string;
+  onUserNameChange: (name: string) => void;
+  onScan: () => void; isScanPending: boolean;
+  onFetchUpdates: () => void; isFetchUpdatesPending: boolean;
+  onRebuild: () => void; isRebuildPending: boolean;
+  onRecompute: () => void; isRecomputePending: boolean;
+  onOpenCardMappings: () => void;
   debugForm: DebugSeedForm;
   setDebugForm: (v: DebugSeedForm) => void;
   debugResetFloors: boolean;
@@ -1014,7 +1172,6 @@ function DebugPanel({ open, debugForm, setDebugForm, debugResetFloors, setDebugR
   isSeedError: boolean;
   isSaving: boolean;
   onSave: () => void;
-  onClose: () => void;
 }) {
   const numField = (key: keyof DebugSeedForm, label: string, min = 0) => (
     <label className="text-xs font-semibold text-ink/70">
@@ -1027,63 +1184,151 @@ function DebugPanel({ open, debugForm, setDebugForm, debugResetFloors, setDebugR
     </label>
   );
 
+  const maintenanceRow = (
+    label: string,
+    description: string,
+    onClick: () => void,
+    pending: boolean,
+    pendingLabel: string,
+  ) => (
+    <div className="flex items-start gap-3 rounded-xl bg-ink/5 px-3 py-2.5">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold text-ink">{label}</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-ink/60">{description}</p>
+      </div>
+      <Button variant="outline" size="sm" className="shrink-0" onClick={onClick} disabled={pending}>
+        {pending ? pendingLabel : "Run"}
+      </Button>
+    </div>
+  );
+
   return (
-    <Dialog open={open} onClose={onClose} labelledById="debug-seed-heading" data-testid="debug-panel">
-      <Card className="w-full max-w-lg space-y-3 animate-incident-enter border-0 shadow-none">
-        <div className="flex items-center justify-between">
-          <h2 id="debug-seed-heading" className="text-base font-semibold">Debug Seed Panel</h2>
-          <span className="text-xs text-ink/60">Enabled via terminal toggle</span>
-        </div>
-        {isSeedLoading ? <p className="text-sm text-ink/70">Loading seed...</p> : null}
-        {isSeedError ? (
-          <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">Debug tools are disabled or unavailable.</p>
-        ) : null}
-
-        <label className="inline-flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={debugForm.enabled}
-            onChange={(event) => setDebugForm({ ...debugForm, enabled: event.target.checked })}
-          />
-          Seed enabled
-        </label>
-
-        <div className="grid grid-cols-2 gap-2">
-          {numField("water_units", "Water")}
-          {numField("fire_units", "Fire")}
-          {numField("burn_count", "Burn Count")}
-          {numField("token_balance", "Token Balance")}
-          {numField("token_earned_count", "Token Earned")}
-          {numField("token_spent_count", "Token Spent")}
-          {numField("current_streak", "Current Streak")}
-          {numField("max_streak", "Max Streak")}
-          {numField("active_streak_group_id", "Streak Group", 1)}
+    <Dialog open={open} onClose={onClose} labelledById="debug-panel-heading" data-testid="debug-panel">
+      <Card className="max-h-[85vh] w-full max-w-lg space-y-4 overflow-y-auto animate-incident-enter border-0 shadow-none">
+        <div>
+          <h2 id="debug-panel-heading" className="text-base font-semibold">Debug panel</h2>
+          <p className="mt-0.5 text-xs text-ink/60">
+            Developer tools. Everyday use never needs this — checking for new receipts and
+            pulling YNAB updates happen automatically.
+          </p>
         </div>
 
-        <label className="inline-flex items-center gap-2 text-xs text-ink/70">
-          <input
-            type="checkbox"
-            checked={debugResetFloors}
-            onChange={(event) => setDebugResetFloors(event.target.checked)}
+        {/* ── Profile ─────────────────────────────────────────────────── */}
+        <section className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/50">Profile</p>
+          <label htmlFor="debug-user-name" className="block text-sm font-semibold text-ink">
+            Your name
+          </label>
+          <Input
+            id="debug-user-name"
+            value={userName}
+            onChange={(event) => onUserNameChange(event.target.value)}
+            placeholder="Anna"
+            className="h-10"
           />
-          Reset replay floors to now on save
-        </label>
+          <p className="text-xs text-ink/60">Snappy uses this to say hi. (Stored on this device only.)</p>
+        </section>
 
-        <div className="flex flex-wrap justify-end gap-2">
+        {/* ── Maintenance ─────────────────────────────────────────────── */}
+        <section className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/50">Maintenance</p>
+          {maintenanceRow(
+            "Check for new receipts",
+            "Scans the receipt inbox folder right now. Runs automatically when the app is opened or revisited.",
+            onScan, isScanPending, "Checking…",
+          )}
+          {maintenanceRow(
+            "Pull YNAB updates",
+            "Refreshes categories, accounts, and recent transactions from YNAB. Also runs automatically.",
+            onFetchUpdates, isFetchUpdatesPending, "Pulling…",
+          )}
+          {maintenanceRow(
+            "Rebuild game board",
+            "Recalculates streaks, water, fire, and the weekly board from scratch. Safe to run anytime; fixes a board that looks wrong.",
+            onRebuild, isRebuildPending, "Rebuilding…",
+          )}
+          {maintenanceRow(
+            "Re-check YNAB corrections",
+            "Looks at synced receipts for category changes made in YNAB, then updates water and fire. Normally happens on its own.",
+            onRecompute, isRecomputePending, "Checking…",
+          )}
+          <div className="flex items-start gap-3 rounded-xl bg-ink/5 px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-ink">Card mappings</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-ink/60">
+                Which card (last 4 digits) belongs to which YNAB account. Learned automatically on sync; edit here.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" className="shrink-0" onClick={onOpenCardMappings}>
+              Open
+            </Button>
+          </div>
+        </section>
+
+        {/* ── Game seed (advanced) ────────────────────────────────────── */}
+        <details className="rounded-xl border border-ink/10 px-3 py-2">
+          <summary className="cursor-pointer select-none text-sm font-semibold text-ink/80">
+            Game seed (advanced)
+          </summary>
+          <div className="mt-3 space-y-3">
+            <p className="text-xs text-ink/60">
+              Overrides the game&apos;s internal counters for testing. Saving applies the values to the live board.
+            </p>
+            {isSeedLoading ? <p className="text-sm text-ink/70">Loading seed...</p> : null}
+            {isSeedError ? (
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">Debug tools are disabled or unavailable.</p>
+            ) : null}
+
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={debugForm.enabled}
+                onChange={(event) => setDebugForm({ ...debugForm, enabled: event.target.checked })}
+              />
+              Seed enabled
+            </label>
+
+            <div className="grid grid-cols-2 gap-2">
+              {numField("water_units", "Water")}
+              {numField("fire_units", "Fire")}
+              {numField("burn_count", "Burn Count")}
+              {numField("token_balance", "Token Balance")}
+              {numField("token_earned_count", "Token Earned")}
+              {numField("token_spent_count", "Token Spent")}
+              {numField("current_streak", "Current Streak")}
+              {numField("max_streak", "Max Streak")}
+              {numField("active_streak_group_id", "Streak Group", 1)}
+            </div>
+
+            <label className="inline-flex items-center gap-2 text-xs text-ink/70">
+              <input
+                type="checkbox"
+                checked={debugResetFloors}
+                onChange={(event) => setDebugResetFloors(event.target.checked)}
+              />
+              Reset replay floors to now on save
+            </label>
+
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setDebugForm({ enabled: false, water_units: 0, fire_units: 0, burn_count: 0, token_balance: 0, token_earned_count: 0, token_spent_count: 0, current_streak: 0, max_streak: 0, active_streak_group_id: 1 });
+                  setDebugResetFloors(true);
+                }}
+                disabled={isSaving}
+              >
+                Zero Form
+              </Button>
+              <Button onClick={onSave} disabled={isSaving || isSeedError}>
+                {isSaving ? "Saving..." : "Save Seed"}
+              </Button>
+            </div>
+          </div>
+        </details>
+
+        <div className="flex justify-end">
           <Button variant="outline" onClick={onClose} disabled={isSaving}>Close</Button>
-          <Button
-            variant="outline"
-            onClick={() => {
-              setDebugForm({ enabled: false, water_units: 0, fire_units: 0, burn_count: 0, token_balance: 0, token_earned_count: 0, token_spent_count: 0, current_streak: 0, max_streak: 0, active_streak_group_id: 1 });
-              setDebugResetFloors(true);
-            }}
-            disabled={isSaving}
-          >
-            Zero Form
-          </Button>
-          <Button onClick={onSave} disabled={isSaving || isSeedError}>
-            {isSaving ? "Saving..." : "Save Seed"}
-          </Button>
         </div>
       </Card>
     </Dialog>
@@ -1178,10 +1423,21 @@ function GameIncidentModal({ incident, incidentWatersSpent, incidentBurnsTrigger
 export function ReceiptList() {
   const router = useRouter();
   const { toast } = useToast();
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
   // Active queue tab — defaults to "review" so unreviewed receipts are shown first
   const [activeTab, setActiveTab] = useState<ReceiptBucket>("review");
+  // Display name for Snappy's greetings — single-user for now, set in the
+  // debug panel and stored on-device. Defaults to "Anna".
+  const [userName, setUserName] = useState("Anna");
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("snappy_user_name");
+      if (stored) setUserName(stored);
+    } catch { /* ignore */ }
+  }, []);
+  const handleUserNameChange = (name: string) => {
+    setUserName(name);
+    try { localStorage.setItem("snappy_user_name", name); } catch { /* ignore */ }
+  };
   const [waterSpendOpen, setWaterSpendOpen] = useState(false);
   const [waterSpendAmount, setWaterSpendAmount] = useState(1);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
@@ -1239,30 +1495,6 @@ export function ReceiptList() {
   });
 
   useEffect(() => {
-    if (!menuOpen) return;
-
-    const onPointerDown = (event: MouseEvent) => {
-      if (!menuRef.current) return;
-      if (!menuRef.current.contains(event.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setMenuOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [menuOpen]);
-
-  useEffect(() => {
     if (!debugToolsEnabled) {
       setDebugPanelOpen(false);
       setCardMappingPanelOpen(false);
@@ -1285,35 +1517,46 @@ export function ReceiptList() {
     });
   }, [debugSeedQuery.data]);
 
+  // Scan + YNAB pull run in two modes: silent (automatic refresh — only speak
+  // up when something new arrived) and manual (debug panel — always report).
   const scanMutation = useMutation({
-    mutationFn: triggerScan,
-    onSuccess: (data) => {
+    mutationFn: (_opts?: { silent?: boolean }) => triggerScan(),
+    onSuccess: (data, opts) => {
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
-      setMenuOpen(false);
-      toast({
-        variant: "success",
-        message: `${data.ingested_count} ingested, ${data.duplicate_count} duplicate, ${data.skipped_count} skipped`,
-        title: "Scan complete",
-      });
+      if (data.ingested_count > 0) {
+        const noun = data.ingested_count === 1 ? "receipt" : "receipts";
+        toast({
+          variant: "success",
+          title: "New receipts!",
+          message: `Found ${data.ingested_count} new ${noun} in the inbox.`,
+        });
+      } else if (!opts?.silent) {
+        toast({
+          variant: "success",
+          title: "Checked the inbox",
+          message: `Nothing new (${data.duplicate_count} duplicate, ${data.skipped_count} skipped).`,
+        });
+      }
     },
-    onError: (e) => {
-      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Scan failed" });
+    onError: (e, opts) => {
+      if (opts?.silent) return; // don't nag on automatic background refresh
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Couldn't check for new receipts" });
     },
   });
 
   const fetchUpdatesMutation = useMutation({
-    mutationFn: fetchYnabUpdates,
+    mutationFn: (_opts?: { silent?: boolean }) => fetchYnabUpdates(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ynab-cache"] });
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
       queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
-      setMenuOpen(false);
     },
-    onError: (e) => {
+    onError: (e, opts) => {
+      if (opts?.silent) return;
       toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Failed to fetch YNAB updates" });
     },
   });
@@ -1324,7 +1567,6 @@ export function ReceiptList() {
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
-      setMenuOpen(false);
     },
     onError: (e) => {
       toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Rebuild failed" });
@@ -1336,12 +1578,44 @@ export function ReceiptList() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["game-incidents"] });
-      setMenuOpen(false);
     },
     onError: (e) => {
       toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Recompute failed" });
     },
   });
+
+  // ── Automatic refresh ──────────────────────────────────────────────────
+  // When the user OPENS the page (first load) or COMES BACK to a tab that's
+  // been idle for a while, check the inbox + pull YNAB updates automatically.
+  // A page just sitting there does nothing extra (the regular query polling
+  // already keeps the list fresh); the localStorage timestamp is the
+  // staleness gate, shared across tabs.
+  const scanMutationRef = useRef(scanMutation);
+  scanMutationRef.current = scanMutation;
+  const fetchUpdatesMutationRef = useRef(fetchUpdatesMutation);
+  fetchUpdatesMutationRef.current = fetchUpdatesMutation;
+
+  useEffect(() => {
+    const REFRESH_STALE_MS = 5 * 60_000;
+
+    const maybeRefresh = () => {
+      if (document.visibilityState !== "visible") return;
+      let last = 0;
+      try { last = Number(localStorage.getItem("snappy_last_refresh") ?? 0); } catch { /* ignore */ }
+      if (Date.now() - last < REFRESH_STALE_MS) return;
+      try { localStorage.setItem("snappy_last_refresh", String(Date.now())); } catch { /* ignore */ }
+      if (!scanMutationRef.current.isPending) scanMutationRef.current.mutate({ silent: true });
+      if (!fetchUpdatesMutationRef.current.isPending) fetchUpdatesMutationRef.current.mutate({ silent: true });
+    };
+
+    maybeRefresh(); // page open / reload
+    document.addEventListener("visibilitychange", maybeRefresh);
+    window.addEventListener("focus", maybeRefresh);
+    return () => {
+      document.removeEventListener("visibilitychange", maybeRefresh);
+      window.removeEventListener("focus", maybeRefresh);
+    };
+  }, []);
 
   const shredMutation = useMutation({
     mutationFn: (receiptId: string) => shredGameReceipt(receiptId),
@@ -1356,19 +1630,30 @@ export function ReceiptList() {
   });
 
   const [quickSyncingId, setQuickSyncingId] = useState<string | null>(null);
+  // Receipt whose quick-sync preview dialog is open (null = closed).
+  // "Looks right — Sync" NEVER fires the sync directly: it opens this preview
+  // (account, date, total, category splits) and only Confirm enqueues.
+  const [quickSyncPreviewId, setQuickSyncPreviewId] = useState<string | null>(null);
+
+  // Friendly label for toasts — never show raw IDs to the user.
+  const receiptLabel = (receiptId: string): string => {
+    const match = (receiptsQuery.data ?? []).find((r) => r.id === receiptId);
+    return match?.display_payee_name ?? match?.original_filename ?? "Receipt";
+  };
 
   const quickSyncMutation = useMutation({
     mutationFn: (receiptId: string) => enqueueSync(receiptId),
     onSuccess: (_data, receiptId) => {
       setQuickSyncingId(null);
+      setQuickSyncPreviewId(null);
       queryClient.invalidateQueries({ queryKey: ["receipts"] });
       queryClient.invalidateQueries({ queryKey: ["stats"] });
       queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
-      toast({ variant: "success", title: "Synced to YNAB ✓", message: `Receipt ${receiptId.slice(0, 8)}… queued for sync.` });
+      toast({ variant: "success", title: "Sent to YNAB ✓", message: `${receiptLabel(receiptId)} is on its way.` });
     },
     onError: (e, receiptId) => {
       setQuickSyncingId(null);
-      const message = e instanceof Error && e.message ? e.message : `Sync failed for ${receiptId.slice(0, 8)}…`;
+      const message = e instanceof Error && e.message ? e.message : `Sync failed for ${receiptLabel(receiptId)}`;
       toast({ variant: "error", message });
     },
   });
@@ -1405,7 +1690,7 @@ export function ReceiptList() {
     onError: (e, receiptId) => {
       setDeletingId(null);
       const message =
-        e instanceof Error && e.message ? e.message : `Couldn’t delete receipt ${receiptId.slice(0, 8)}…`;
+        e instanceof Error && e.message ? e.message : `Couldn’t delete ${receiptLabel(receiptId)}`;
       toast({ variant: "error", message });
     },
   });
@@ -1469,7 +1754,7 @@ export function ReceiptList() {
   // Client-side partition: bucket + sort in one pass.
   // Counts come from the partition (not from /stats/summary), so they stay
   // in sync with the displayed list without a second fetch.
-  const { review: reviewReceipts, processing: processingReceipts, history: historyReceipts } = useMemo(
+  const { review: reviewReceipts, done: doneReceipts } = useMemo(
     () => partitionReceipts(receiptsQuery.data ?? []),
     [receiptsQuery.data],
   );
@@ -1487,7 +1772,7 @@ export function ReceiptList() {
   // Streak milestone: fire once when streak crosses a milestone threshold (every 5)
   const STREAK_MILESTONE_THRESHOLD = 5;
   useEffect(() => {
-    const currentStreak = dashboardQuery.data?.momentum.current_streak ?? 0;
+    const currentStreak = dashboardQuery.data?.momentum?.current_streak ?? 0;
     const prevStreak = prevStreakRef.current;
     if (prevStreak !== null && prevStreak !== currentStreak) {
       if (isStreakMilestone(currentStreak, STREAK_MILESTONE_THRESHOLD)) {
@@ -1501,44 +1786,30 @@ export function ReceiptList() {
       }
     }
     prevStreakRef.current = currentStreak;
-  }, [dashboardQuery.data?.momentum.current_streak, toast]);
+  }, [dashboardQuery.data?.momentum?.current_streak, toast]);
 
   const tileByReceiptId = useMemo(() => {
     const map = new Map<string, GameForestTile>();
-    for (const tile of dashboardQuery.data?.forest.receipts ?? []) {
+    for (const tile of dashboardQuery.data?.forest?.receipts ?? []) {
       map.set(tile.receipt_id, tile);
     }
     return map;
-  }, [dashboardQuery.data?.forest.receipts]);
+  }, [dashboardQuery.data?.forest?.receipts]);
 
-  const currentWeekSlot = dashboardQuery.data?.forest.weekly_slots[dashboardQuery.data.forest.weekly_slots.length - 1];
+  const currentWeekSlot = dashboardQuery.data?.forest?.weekly_slots?.at(-1);
   const activeIncident = incidentsQuery.data?.[0] ?? null;
   const incidentDetails = (activeIncident?.details_json ?? null) as Record<string, unknown> | null;
   const incidentWatersSpent = toInt(incidentDetails?.waters_spent);
   const incidentBurnsTriggered = toInt(incidentDetails?.burns_triggered);
   const incidentWaterEarned = activeIncident?.incident_type === "water_earned" ? toInt(incidentDetails?.units) : 0;
 
-  const waterUnits = dashboardQuery.data?.correctness.water_units ?? 0;
-  const fireUnits = dashboardQuery.data?.correctness.fire_units ?? 0;
-  const fireToBurn = dashboardQuery.data?.correctness.fires_to_burn ?? Math.max((dashboardQuery.data?.rules.fire_burn_threshold ?? 0) - fireUnits, 0);
+  const waterUnits = dashboardQuery.data?.correctness?.water_units ?? 0;
+  const fireUnits = dashboardQuery.data?.correctness?.fire_units ?? 0;
+  const fireToBurn = dashboardQuery.data?.correctness?.fires_to_burn ?? Math.max((dashboardQuery.data?.rules?.fire_burn_threshold ?? 0) - fireUnits, 0);
   const maxWaterSpend = Math.min(waterUnits, fireUnits);
 
   return (
-    <main className="relative mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 pb-24 pt-14">
-      <ActionMenu
-        menuRef={menuRef}
-        menuOpen={menuOpen}
-        setMenuOpen={setMenuOpen}
-        onScan={() => scanMutation.mutate()} isScanPending={scanMutation.isPending}
-        onFetchUpdates={() => fetchUpdatesMutation.mutate()} isFetchUpdatesPending={fetchUpdatesMutation.isPending}
-        onRebuild={() => rebuildMutation.mutate()} isRebuildPending={rebuildMutation.isPending}
-        onRecompute={() => recomputeMutation.mutate()} isRecomputePending={recomputeMutation.isPending}
-        debugToolsEnabled={debugToolsEnabled}
-        onOpenDebugPanel={() => setDebugPanelOpen(true)}
-        onOpenCardMappingPanel={() => setCardMappingPanelOpen(true)}
-        onNavigate={(path) => router.push(path)}
-      />
-
+    <main className="relative mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 pb-24 pt-6">
       <ReceiptListHeader
         dashboardData={dashboardQuery.data}
         highlightedCount={highlightedCount}
@@ -1553,14 +1824,31 @@ export function ReceiptList() {
           setWaterSpendOpen(true);
         }}
         celebratingStreak={celebratingStreak}
+        userName={userName}
       />
 
       <TabBar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         reviewCount={reviewReceipts.length}
-        processingCount={processingReceipts.length}
-        historyCount={historyReceipts.length}
+        doneCount={doneReceipts.length}
+        lookupSlot={
+          <div className="flex items-center gap-1">
+            <ReceiptLookup onNavigate={(path) => router.push(path)} />
+            {debugToolsEnabled ? (
+              <button
+                type="button"
+                data-testid="open-debug-panel"
+                className="rounded-full p-2 text-ink/60 transition hover:bg-ink/10 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70"
+                onClick={() => setDebugPanelOpen(true)}
+                aria-label="Open debug panel"
+                title="Debug panel"
+              >
+                <Wrench className="h-5 w-5" />
+              </button>
+            ) : null}
+          </div>
+        }
       />
 
       <section className="space-y-3" role="tabpanel" aria-label={TABS.find((t) => t.bucket === activeTab)?.label}>
@@ -1574,28 +1862,22 @@ export function ReceiptList() {
             <p className="text-sm text-ink/60">No receipts need review right now.</p>
           </Card>
         ) : null}
-        {!receiptsQuery.isLoading && activeTab === "processing" && processingReceipts.length === 0 ? (
-          <p className="py-4 text-center text-sm text-ink/60">Nothing processing.</p>
-        ) : null}
-        {!receiptsQuery.isLoading && activeTab === "history" && historyReceipts.length === 0 ? (
+        {!receiptsQuery.isLoading && activeTab === "done" && doneReceipts.length === 0 ? (
           <p className="py-4 text-center text-sm text-ink/60">No synced receipts yet.</p>
         ) : null}
 
         {/* Active tab receipts */}
-        {(activeTab === "review" ? reviewReceipts : activeTab === "processing" ? processingReceipts : historyReceipts).map(
+        {(activeTab === "review" ? reviewReceipts : doneReceipts).map(
           (receipt, index) => (
             <ReceiptListItem
               key={receipt.id}
               receipt={receipt}
               tile={tileByReceiptId.get(receipt.id)}
               currentWeekSlot={currentWeekSlot}
-              spendableNow={Boolean(dashboardQuery.data?.momentum.spendable_now)}
+              spendableNow={Boolean(dashboardQuery.data?.momentum?.spendable_now)}
               onShred={(receiptId) => shredMutation.mutate(receiptId)}
               isShredPending={shredMutation.isPending}
-              onQuickSync={(receiptId) => {
-                setQuickSyncingId(receiptId);
-                quickSyncMutation.mutate(receiptId);
-              }}
+              onQuickSync={(receiptId) => setQuickSyncPreviewId(receiptId)}
               isQuickSyncPending={quickSyncingId === receipt.id}
               onDelete={(receiptId) => deleteMutation.mutate(receiptId)}
               isDeletePending={deletingId === receipt.id}
@@ -1605,6 +1887,17 @@ export function ReceiptList() {
           ),
         )}
       </section>
+
+      {/* Quick-sync preview — always shown before a sync fires from the list */}
+      <QuickSyncPreview
+        receiptId={quickSyncPreviewId}
+        onClose={() => setQuickSyncPreviewId(null)}
+        onConfirm={(receiptId) => {
+          setQuickSyncingId(receiptId);
+          quickSyncMutation.mutate(receiptId);
+        }}
+        isSyncing={quickSyncMutation.isPending}
+      />
 
       {/* WaterSpendModal — rendered unconditionally; Dialog handles mount + restore-focus */}
       <WaterSpendModal
@@ -1620,6 +1913,14 @@ export function ReceiptList() {
       {/* DebugPanel — rendered unconditionally; Dialog handles mount + restore-focus */}
       <DebugPanel
         open={debugToolsEnabled && debugPanelOpen}
+        onClose={() => setDebugPanelOpen(false)}
+        userName={userName}
+        onUserNameChange={handleUserNameChange}
+        onScan={() => scanMutation.mutate({ silent: false })} isScanPending={scanMutation.isPending}
+        onFetchUpdates={() => fetchUpdatesMutation.mutate({ silent: false })} isFetchUpdatesPending={fetchUpdatesMutation.isPending}
+        onRebuild={() => rebuildMutation.mutate()} isRebuildPending={rebuildMutation.isPending}
+        onRecompute={() => recomputeMutation.mutate()} isRecomputePending={recomputeMutation.isPending}
+        onOpenCardMappings={() => { setDebugPanelOpen(false); setCardMappingPanelOpen(true); }}
         debugForm={debugForm}
         setDebugForm={setDebugForm}
         debugResetFloors={debugResetFloors}
@@ -1628,7 +1929,6 @@ export function ReceiptList() {
         isSeedError={debugSeedQuery.isError}
         isSaving={saveDebugSeedMutation.isPending}
         onSave={() => saveDebugSeedMutation.mutate()}
-        onClose={() => setDebugPanelOpen(false)}
       />
 
       {/* CardMappingPanel — rendered unconditionally; Dialog handles mount + restore-focus */}

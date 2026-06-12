@@ -7,7 +7,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { bucketForStatus, partitionReceipts } from "./receipt-buckets.js";
+import { bucketForStatus, isProcessingStatus, partitionReceipts } from "./receipt-buckets.js";
 import type { BucketableReceipt } from "./receipt-buckets.js";
 
 // ---------------------------------------------------------------------------
@@ -31,25 +31,46 @@ describe("bucketForStatus", () => {
     assert.strictEqual(bucketForStatus("error_sync"), "review");
   });
 
-  it("ingested → processing", () => {
-    assert.strictEqual(bucketForStatus("ingested"), "processing");
+  it("ingested → review (processing lives inside To Review)", () => {
+    assert.strictEqual(bucketForStatus("ingested"), "review");
   });
 
-  it("extracting → processing", () => {
-    assert.strictEqual(bucketForStatus("extracting"), "processing");
+  it("extracting → review (processing lives inside To Review)", () => {
+    assert.strictEqual(bucketForStatus("extracting"), "review");
   });
 
-  it("syncing → processing", () => {
-    assert.strictEqual(bucketForStatus("syncing"), "processing");
+  it("syncing → review (processing lives inside To Review)", () => {
+    assert.strictEqual(bucketForStatus("syncing"), "review");
   });
 
-  it("synced → history", () => {
-    assert.strictEqual(bucketForStatus("synced"), "history");
+  it("synced → done", () => {
+    assert.strictEqual(bucketForStatus("synced"), "done");
   });
 
   it("unknown status → null (does not crash)", () => {
     assert.strictEqual(bucketForStatus("totally_unknown_status"), null);
     assert.strictEqual(bucketForStatus(""), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isProcessingStatus
+// ---------------------------------------------------------------------------
+
+describe("isProcessingStatus", () => {
+  it("true for ingested / extracting / syncing", () => {
+    assert.strictEqual(isProcessingStatus("ingested"), true);
+    assert.strictEqual(isProcessingStatus("extracting"), true);
+    assert.strictEqual(isProcessingStatus("syncing"), true);
+  });
+
+  it("false for actionable + done statuses", () => {
+    assert.strictEqual(isProcessingStatus("needs_review"), false);
+    assert.strictEqual(isProcessingStatus("duplicate_review"), false);
+    assert.strictEqual(isProcessingStatus("error_extract"), false);
+    assert.strictEqual(isProcessingStatus("error_sync"), false);
+    assert.strictEqual(isProcessingStatus("synced"), false);
+    assert.strictEqual(isProcessingStatus("ghost"), false);
   });
 });
 
@@ -74,11 +95,10 @@ describe("partitionReceipts — bucketing", () => {
       makeReceipt("synced",          "2026-01-03T10:00:00Z"),
     ];
 
-    const { review, processing, history } = partitionReceipts(receipts);
+    const { review, done } = partitionReceipts(receipts);
 
-    assert.strictEqual(review.length, 4);
-    assert.strictEqual(processing.length, 3);
-    assert.strictEqual(history.length, 1);
+    assert.strictEqual(review.length, 7); // 4 actionable + 3 processing
+    assert.strictEqual(done.length, 1);
   });
 
   it("excludes unknown statuses without crashing", () => {
@@ -88,18 +108,16 @@ describe("partitionReceipts — bucketing", () => {
       makeReceipt("synced",       "2026-01-01T12:00:00Z"),
     ];
 
-    const { review, processing, history } = partitionReceipts(receipts);
+    const { review, done } = partitionReceipts(receipts);
 
     assert.strictEqual(review.length, 1);
-    assert.strictEqual(processing.length, 0);
-    assert.strictEqual(history.length, 1);
+    assert.strictEqual(done.length, 1);
   });
 
   it("handles empty array", () => {
-    const { review, processing, history } = partitionReceipts([]);
+    const { review, done } = partitionReceipts([]);
     assert.strictEqual(review.length, 0);
-    assert.strictEqual(processing.length, 0);
-    assert.strictEqual(history.length, 0);
+    assert.strictEqual(done.length, 0);
   });
 });
 
@@ -108,7 +126,7 @@ describe("partitionReceipts — bucketing", () => {
 // ---------------------------------------------------------------------------
 
 describe("partitionReceipts — sort order", () => {
-  it("review bucket is sorted oldest-first", () => {
+  it("actionable receipts are sorted oldest-first", () => {
     const receipts: BucketableReceipt[] = [
       makeReceipt("needs_review", "2026-01-03T10:00:00Z"), // newest
       makeReceipt("needs_review", "2026-01-01T10:00:00Z"), // oldest
@@ -122,32 +140,48 @@ describe("partitionReceipts — sort order", () => {
     assert.strictEqual(review[2].ingested_at, "2026-01-03T10:00:00Z");
   });
 
-  it("processing bucket is sorted oldest-first", () => {
+  it("processing receipts always sink BELOW actionable receipts", () => {
+    const receipts: BucketableReceipt[] = [
+      makeReceipt("extracting",   "2026-01-01T00:00:00Z"), // older than every actionable
+      makeReceipt("needs_review", "2026-01-05T00:00:00Z"),
+      makeReceipt("ingested",     "2026-01-02T00:00:00Z"),
+      makeReceipt("error_sync",   "2026-01-06T00:00:00Z"),
+    ];
+
+    const { review } = partitionReceipts(receipts);
+
+    assert.deepStrictEqual(
+      review.map((r) => r.status),
+      ["needs_review", "error_sync", "extracting", "ingested"],
+    );
+  });
+
+  it("processing receipts are themselves sorted oldest-first", () => {
     const receipts: BucketableReceipt[] = [
       makeReceipt("extracting", "2026-01-05T00:00:00Z"),
       makeReceipt("ingested",   "2026-01-01T00:00:00Z"),
       makeReceipt("syncing",    "2026-01-03T00:00:00Z"),
     ];
 
-    const { processing } = partitionReceipts(receipts);
+    const { review } = partitionReceipts(receipts);
 
-    assert.strictEqual(processing[0].ingested_at, "2026-01-01T00:00:00Z");
-    assert.strictEqual(processing[1].ingested_at, "2026-01-03T00:00:00Z");
-    assert.strictEqual(processing[2].ingested_at, "2026-01-05T00:00:00Z");
+    assert.strictEqual(review[0].ingested_at, "2026-01-01T00:00:00Z");
+    assert.strictEqual(review[1].ingested_at, "2026-01-03T00:00:00Z");
+    assert.strictEqual(review[2].ingested_at, "2026-01-05T00:00:00Z");
   });
 
-  it("history bucket is sorted newest-first", () => {
+  it("done bucket is sorted newest-first", () => {
     const receipts: BucketableReceipt[] = [
       makeReceipt("synced", "2026-01-01T00:00:00Z"), // oldest
       makeReceipt("synced", "2026-01-10T00:00:00Z"), // newest
       makeReceipt("synced", "2026-01-05T00:00:00Z"), // middle
     ];
 
-    const { history } = partitionReceipts(receipts);
+    const { done } = partitionReceipts(receipts);
 
-    assert.strictEqual(history[0].ingested_at, "2026-01-10T00:00:00Z");
-    assert.strictEqual(history[1].ingested_at, "2026-01-05T00:00:00Z");
-    assert.strictEqual(history[2].ingested_at, "2026-01-01T00:00:00Z");
+    assert.strictEqual(done[0].ingested_at, "2026-01-10T00:00:00Z");
+    assert.strictEqual(done[1].ingested_at, "2026-01-05T00:00:00Z");
+    assert.strictEqual(done[2].ingested_at, "2026-01-01T00:00:00Z");
   });
 
   it("review sort is stable: error statuses also sorted oldest-first", () => {
@@ -170,7 +204,7 @@ describe("partitionReceipts — sort order", () => {
 // ---------------------------------------------------------------------------
 
 describe("partitionReceipts — counts", () => {
-  it("total count preserved: review + processing + history === inputs minus unknowns", () => {
+  it("total count preserved: review + done === inputs minus unknowns", () => {
     const receipts: BucketableReceipt[] = [
       makeReceipt("needs_review",    "2026-01-01T00:00:00Z"),
       makeReceipt("synced",          "2026-01-02T00:00:00Z"),
@@ -179,8 +213,8 @@ describe("partitionReceipts — counts", () => {
       makeReceipt("duplicate_review","2026-01-05T00:00:00Z"),
     ];
 
-    const { review, processing, history } = partitionReceipts(receipts);
+    const { review, done } = partitionReceipts(receipts);
 
-    assert.strictEqual(review.length + processing.length + history.length, 4); // 5 minus 1 unknown
+    assert.strictEqual(review.length + done.length, 4); // 5 minus 1 unknown
   });
 });

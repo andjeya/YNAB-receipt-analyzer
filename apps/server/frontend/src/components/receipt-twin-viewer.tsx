@@ -147,7 +147,7 @@ export function ReceiptTwinViewer({
     return (
       <Card className="space-y-3">
         <div>
-          <h2 className="font-semibold">Receipt Twin</h2>
+          <h2 className="font-semibold">Receipt details</h2>
           <p className="mt-1 text-xs text-ink/70">Twin unavailable for this receipt.</p>
         </div>
         <Button
@@ -222,7 +222,7 @@ export function ReceiptTwinViewer({
     <Card className="space-y-4" data-testid="twin-viewer">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-semibold">Receipt Twin</h2>
+          <h2 className="font-semibold">Receipt details</h2>
           <p className="text-sm text-ink/70">{draft.store_name || "Unknown store"}</p>
           {draft.store_address ? <p className="text-xs text-ink/60">{draft.store_address}</p> : null}
         </div>
@@ -523,14 +523,13 @@ export function ReceiptTwinViewer({
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <p className="font-medium">{item.translated_text || item.raw_text || `Line ${item.index + 1}`}</p>
-                    {item.raw_text && item.raw_text !== item.translated_text ? (
-                      <p className="text-[11px] text-ink/50 font-mono">{item.raw_text}</p>
-                    ) : null}
                   </div>
                   <div className="text-right text-[11px] text-ink/70">
-                    <p>
-                      {item.quantity ?? "--"} × {item.unit_price ?? "--"}
-                    </p>
+                    {item.quantity != null && item.unit_price != null ? (
+                      <p>
+                        {item.quantity} × {formatCurrency(item.unit_price)}
+                      </p>
+                    ) : null}
                     <p className="font-semibold">{item.line_total == null ? "?" : formatCurrency(item.line_total)}</p>
                     {item.tax_code ? <p>{item.tax_code}</p> : null}
                   </div>
@@ -545,7 +544,9 @@ export function ReceiptTwinViewer({
       <section className="rounded-xl bg-sand/60 p-2 text-xs text-ink/70">
         <p>Subtotal: {formatCurrency(draft.subtotal)}</p>
         <p>Tax total: {formatCurrency(draft.tax_total)}</p>
-        <p>Payment: {draft.payment_method || "--"}</p>
+        {draft.payment_method && draft.payment_method.toLowerCase() !== "unknown" ? (
+          <p>Payment: {draft.payment_method}</p>
+        ) : null}
       </section>
 
       {warnings.length > 0 ? (

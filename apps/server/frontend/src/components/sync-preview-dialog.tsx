@@ -80,6 +80,12 @@ export interface SyncPreviewDialogProps {
   dateTimeConfirmed: boolean;
   totalConfirmed: boolean;
   onConfirm: () => void;
+  /**
+   * Whether to offer the "skip this preview" checkbox. The quick-sync flow on
+   * the receipt list always previews (that's its whole point), so it hides
+   * the option to avoid implying this dialog can be skipped.
+   */
+  showSkipPreviewOption?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +107,7 @@ export function SyncPreviewDialog({
   dateTimeConfirmed,
   totalConfirmed,
   onConfirm,
+  showSkipPreviewOption = true,
 }: SyncPreviewDialogProps) {
   const kind = draft.transaction_kind;
   const signed = signedDollars(draft.total_amount, kind);
@@ -302,6 +309,7 @@ export function SyncPreviewDialog({
 
       {/* Footer */}
       <div className="border-t border-ink/10 px-4 py-3">
+        {showSkipPreviewOption ? (
         <div className="flex items-center gap-2 border-b border-ink/10 pb-3 mb-3">
           <input
             type="checkbox"
@@ -322,6 +330,7 @@ export function SyncPreviewDialog({
             Skip this preview for future clean syncs
           </label>
         </div>
+        ) : null}
         <div className="flex items-center gap-2">
           <Button
             variant="outline"

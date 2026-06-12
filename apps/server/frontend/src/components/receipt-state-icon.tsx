@@ -32,11 +32,20 @@ export function ReceiptStateIcon({
   const style = TONE_STYLES[tone];
 
   if (shredded) {
+    // Shredding is a reward (spending an earned token), so the icon is
+    // celebratory confetti — deliberately multicolored and circle-free so it
+    // can't be mistaken for the brown "very late" dot. `tone` is ignored.
     return (
       <svg viewBox="0 0 24 24" className={cn("h-5 w-5", className)} aria-hidden="true">
-        <path d="M4 3h4a1 1 0 0 1 1 1v13l-1-0.8-1 0.8-1-0.8-1 0.8V4a1 1 0 0 1 1-1Z" fill={style.fill} stroke={style.stroke} strokeWidth="1.25" />
-        <path d="M10 4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v13l-1-0.8-1 0.8-1-0.8-1 0.8V4Z" fill={style.fill} stroke={style.stroke} strokeWidth="1.25" />
-        <path d="M17 4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v13l-0.7-0.6-0.7 0.6-0.6-0.6-0.6 0.6V4Z" fill={style.fill} stroke={style.stroke} strokeWidth="1.25" />
+        <rect x="3" y="4" width="6" height="3" rx="0.75" fill="#34d399" transform="rotate(-24 6 5.5)" />
+        <rect x="14" y="3" width="6" height="3" rx="0.75" fill="#f59e0b" transform="rotate(28 17 4.5)" />
+        <rect x="4" y="15" width="6" height="3" rx="0.75" fill="#38bdf8" transform="rotate(18 7 16.5)" />
+        <rect x="14" y="16" width="6" height="3" rx="0.75" fill="#f472b6" transform="rotate(-30 17 17.5)" />
+        <rect x="9.5" y="9.5" width="5" height="3" rx="0.75" fill="#a78bfa" transform="rotate(12 12 11)" />
+        <circle cx="12" cy="4.5" r="1.4" fill="#f472b6" />
+        <circle cx="3.8" cy="10.5" r="1.4" fill="#f59e0b" />
+        <circle cx="20.2" cy="10.5" r="1.4" fill="#34d399" />
+        <circle cx="12" cy="19.5" r="1.4" fill="#38bdf8" />
       </svg>
     );
   }

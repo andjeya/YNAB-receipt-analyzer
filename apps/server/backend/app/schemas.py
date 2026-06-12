@@ -41,6 +41,7 @@ class AppConfigOut(BaseModel):
     ynab_budget_name: str | None = None
     new_transaction_flag_color: str
     updated_transaction_flag_color: str
+    debug_tools_enabled: bool = False
 
 
 class ExtractionRunOut(BaseModel):

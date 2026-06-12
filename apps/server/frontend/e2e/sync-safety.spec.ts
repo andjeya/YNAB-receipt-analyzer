@@ -69,7 +69,7 @@ test("twin unconfirmed → sync button disabled, strip shows reason, no sync POS
   // Status strip must be visible and contain the twin reason
   const strip = page.getByTestId("sync-status-strip");
   await expect(strip).toBeVisible();
-  await expect(strip).toContainText("Confirm Date + Time");
+  await expect(strip).toContainText("Confirm the date & time");
 
   // Clicking the disabled button does NOT open the dialog and does NOT POST
   await syncButton.click({ force: true });

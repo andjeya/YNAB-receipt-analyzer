@@ -128,7 +128,7 @@ export function reconcileWorkspaceToDraft(
 
   const warnings = [...(workspace.warnings ?? [])];
   if ((workspace.twin_version ?? 0) !== (twin?.version ?? 0)) {
-    warnings.push("Line items changed in Receipt Twin. Refreshing allocation is recommended.");
+    warnings.push("Line items changed in Receipt details. Refreshing allocation is recommended.");
   }
 
   return {

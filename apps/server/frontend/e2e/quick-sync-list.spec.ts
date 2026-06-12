@@ -3,8 +3,10 @@
  *
  * Covers:
  * 1. A list card with sync_ready=true shows the "Looks right — Sync" button.
- * 2. Clicking the button does NOT navigate (card Link is not triggered).
- * 3. sync_ready=false cards do NOT show the button.
+ * 2. Clicking the button opens the sync PREVIEW dialog (categories visible)
+ *    and nothing is sent until Confirm; Confirm fires exactly one sync.
+ * 3. Cancelling the preview never fires a sync.
+ * 4. sync_ready=false cards do NOT show the button.
  *
  * All API traffic is intercepted at the browser layer — no real backend.
  */
@@ -12,7 +14,9 @@
 import { test, expect } from "@playwright/test";
 import {
   RECEIPT_ID,
+  RECEIPT_SYNC_READY,
   SYNC_ENQUEUE_RESPONSE,
+  YNAB_CACHE,
   mountApiMocks,
   jsonOk,
 } from "./fixtures";
@@ -130,7 +134,25 @@ function buildListRouter(
       return true;
     }
     if (method === "GET" && pathname === "/api/config") {
-      void jsonOk(route, { ynab_sync_enabled: true, ynab_dry_run: true, ynab_budget_id: null, ynab_budget_name: null, new_transaction_flag_color: "blue", updated_transaction_flag_color: "blue" });
+      void jsonOk(route, { ynab_sync_enabled: true, ynab_dry_run: true, ynab_budget_id: null, ynab_budget_name: null, new_transaction_flag_color: "blue", updated_transaction_flag_color: "blue", debug_tools_enabled: false });
+      return true;
+    }
+    // Quick-sync preview fetches the receipt detail + ynab cache on demand
+    if (method === "GET" && pathname === `/api/receipts/${RECEIPT_ID}`) {
+      void jsonOk(route, RECEIPT_SYNC_READY);
+      return true;
+    }
+    if (method === "GET" && pathname === "/api/ynab/cache") {
+      void jsonOk(route, YNAB_CACHE);
+      return true;
+    }
+    // Automatic refresh on page open
+    if (method === "POST" && pathname === "/api/ingest/scan") {
+      void jsonOk(route, { ingested_count: 0, duplicate_count: 0, skipped_count: 0, error_count: 0 });
+      return true;
+    }
+    if (method === "POST" && pathname === "/api/ynab/updates/fetch") {
+      void jsonOk(route, { fetched_count: 0 });
       return true;
     }
     return false;
@@ -159,7 +181,7 @@ test("sync_ready card shows 'Looks right — Sync' button", async ({ page }) => 
 // Test 2 — clicking the button does NOT navigate away
 // ---------------------------------------------------------------------------
 
-test("clicking quick-sync button does not navigate to receipt detail", async ({ page }) => {
+test("clicking quick-sync opens the preview dialog and does NOT sync until confirmed", async ({ page }) => {
   const syncPosts: { url: string }[] = [];
 
   await mountApiMocks(page, buildListRouter([SUMMARY_SYNC_READY], syncPosts));
@@ -172,8 +194,33 @@ test("clicking quick-sync button does not navigate to receipt detail", async ({ 
 
   await quickSyncBtn.click();
 
-  // Should still be on the list page (URL unchanged)
+  // Still on the list page (URL unchanged), preview dialog open, NO sync yet
   expect(page.url()).not.toContain(`/receipts/${RECEIPT_ID}`);
+  await expect(page.getByTestId("sync-preview-dialog")).toBeVisible({ timeout: 15_000 });
+  expect(syncPosts).toHaveLength(0);
+
+  // The preview must show the category breakdown before approval
+  await expect(page.getByTestId("sync-preview-dialog")).toContainText("Categor");
+
+  // Confirm → the sync fires
+  await page.getByTestId("sync-preview-confirm").click();
+  await expect.poll(() => syncPosts.length, { timeout: 10_000 }).toBe(1);
+});
+
+test("cancelling the quick-sync preview never fires a sync", async ({ page }) => {
+  const syncPosts: { url: string }[] = [];
+
+  await mountApiMocks(page, buildListRouter([SUMMARY_SYNC_READY], syncPosts));
+
+  await page.goto(LIST_URL);
+  await expect(page.getByText("Quick Mart").first()).toBeVisible({ timeout: 15_000 });
+
+  await page.getByTestId("quick-sync-button").click();
+  await expect(page.getByTestId("sync-preview-dialog")).toBeVisible({ timeout: 15_000 });
+
+  await page.getByTestId("sync-preview-cancel").click();
+  await expect(page.getByTestId("sync-preview-dialog")).not.toBeVisible();
+  expect(syncPosts).toHaveLength(0);
 });
 
 // ---------------------------------------------------------------------------
