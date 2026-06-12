@@ -216,7 +216,7 @@ export function ReceiptTwinViewer({
   };
 
   return (
-    <Card className="space-y-4">
+    <Card className="space-y-4" data-testid="twin-viewer">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="font-semibold">Receipt Twin</h2>

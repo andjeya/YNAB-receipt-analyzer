@@ -18,13 +18,13 @@ describe("deriveSnappyPose", () => {
   it("returns concerned with singular when needsReviewCount is 1", () => {
     const result = deriveSnappyPose({ needsReviewCount: 1, totalCount: 3 });
     assert.equal(result.pose, "concerned");
-    assert.equal(result.line, "1 receipt need your eyes");
+    assert.equal(result.line, "1 receipt needs your attention");
   });
 
   it("returns concerned with plural when needsReviewCount > 1", () => {
     const result = deriveSnappyPose({ needsReviewCount: 4, totalCount: 7 });
     assert.equal(result.pose, "concerned");
-    assert.equal(result.line, "4 receipts need your eyes");
+    assert.equal(result.line, "4 receipts need your attention");
   });
 
   it("returns idle when totalCount > 0 and needsReviewCount is 0", () => {

@@ -1431,7 +1431,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 pb-28 pt-4">
       <header className="animate-reveal rounded-3xl bg-white/90 p-4 shadow-float">
-        <Link href="/" className="inline-flex items-center gap-1.5 rounded-xl border border-ink/20 bg-white/80 px-3 py-2 text-sm font-medium text-ink/80 hover:bg-white transition shadow-sm">
+        <Link href="/" className="inline-flex items-center gap-1.5 rounded-full border border-ink/20 bg-white/80 px-4 py-2 text-sm font-medium text-ink/80 hover:bg-white transition shadow-sm">
           <ArrowLeft className="h-4 w-4" />
           Back
         </Link>
