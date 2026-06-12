@@ -278,25 +278,29 @@ export function ReceiptTwinViewer({
                 <Button
                   variant={dateTimeConfirmed ? "outline" : "solid"}
                   size="sm"
-                  className="h-7 px-2"
+                  className="h-7 gap-1 px-2 text-xs"
                   data-testid="confirm-date-time"
+                  aria-label={dateTimeConfirmed ? "Date and time confirmed" : "Confirm date and time"}
                   onClick={() => {
                     void handleConfirm("date_time");
                   }}
                   disabled={!draft.transaction_date || confirmMutation.isPending || saveMutation.isPending}
                 >
                   <Check className="h-3.5 w-3.5" />
+                  {!dateTimeConfirmed ? <span className="hidden sm:inline">Looks right</span> : null}
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 px-2"
+                  className="h-7 gap-1 px-2 text-xs"
+                  aria-label="Edit date and time"
                   onClick={() => {
                     void handleNeedsEdit("date_time");
                   }}
                   disabled={confirmMutation.isPending || saveMutation.isPending}
                 >
                   <X className="h-3.5 w-3.5" />
+                  {!dateTimeConfirmed ? <span className="hidden sm:inline">Edit</span> : null}
                 </Button>
               </>
             ) : (
@@ -356,25 +360,29 @@ export function ReceiptTwinViewer({
                 <Button
                   variant={totalConfirmed ? "outline" : "solid"}
                   size="sm"
-                  className="h-7 px-2"
+                  className="h-7 gap-1 px-2 text-xs"
                   data-testid="confirm-total"
+                  aria-label={totalConfirmed ? "Total confirmed" : "Confirm total"}
                   onClick={() => {
                     void handleConfirm("total");
                   }}
                   disabled={!(draft.total_amount > 0) || confirmMutation.isPending || saveMutation.isPending}
                 >
                   <Check className="h-3.5 w-3.5" />
+                  {!totalConfirmed ? <span className="hidden sm:inline">Looks right</span> : null}
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 px-2"
+                  className="h-7 gap-1 px-2 text-xs"
+                  aria-label="Edit total"
                   onClick={() => {
                     void handleNeedsEdit("total");
                   }}
                   disabled={confirmMutation.isPending || saveMutation.isPending}
                 >
                   <X className="h-3.5 w-3.5" />
+                  {!totalConfirmed ? <span className="hidden sm:inline">Edit</span> : null}
                 </Button>
               </>
             ) : (
@@ -493,9 +501,9 @@ export function ReceiptTwinViewer({
               ) : (
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <p>{item.raw_text || item.translated_text || `Line ${item.index + 1}`}</p>
-                    {item.translated_text && item.translated_text !== item.raw_text ? (
-                      <p className="text-[11px] text-ink/60">{item.translated_text}</p>
+                    <p className="font-medium">{item.translated_text || item.raw_text || `Line ${item.index + 1}`}</p>
+                    {item.raw_text && item.raw_text !== item.translated_text ? (
+                      <p className="text-[11px] text-ink/50 font-mono">{item.raw_text}</p>
                     ) : null}
                   </div>
                   <div className="text-right text-[11px] text-ink/70">
