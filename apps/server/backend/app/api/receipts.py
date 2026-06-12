@@ -955,6 +955,13 @@ def save_draft(
         receipt.status = ReceiptStatus.NEEDS_REVIEW.value
         receipt.status_reason = None
 
+    # Manual recovery: a valid draft saved on an extraction-errored receipt
+    # rescues it into the normal review flow (extraction never produced an
+    # editable validation, so there was nothing to fix from until now).
+    if is_valid and receipt.status == ReceiptStatus.ERROR_EXTRACT.value:
+        receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+        receipt.status_reason = None
+
     if is_valid:
         apply_semantic_duplicate_state(
             db,

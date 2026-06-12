@@ -124,6 +124,47 @@ def test_save_draft_manual_correction_with_prior_user_validation_succeeds():
         assert latest.payload["category_id"] == "cat-2"
 
 
+def test_save_draft_rescues_error_extract_receipt_into_needs_review():
+    """A valid manual draft saved on an extraction-errored receipt recovers it.
+
+    error_extract receipts have no validation to edit from, so this is the
+    manual-resolution path: fill the fields, save, and the receipt rejoins the
+    normal review flow instead of being a dead end.
+    """
+    settings = Settings(_env_file=None, ynab_budget_id="budget-1")
+
+    with _memory_session() as db:
+        _add_cache_entities(db, settings.ynab_budget_id or "")
+
+        receipt = Receipt(
+            id="99999999-2222-4333-8444-555555555555",
+            storage_key="receipts/99999999-2222-4333-8444-555555555555.jpg",
+            original_filename="receipt.jpg",
+            file_hash="hash-receipt-err",
+            file_ext=".jpg",
+            mime_type="image/jpeg",
+            file_size_bytes=1234,
+            status=ReceiptStatus.ERROR_EXTRACT.value,
+            status_reason="unified: ynab_critical: something failed",
+            latest_validation_version=0,
+            extraction_completed_at=datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc),
+        )
+        db.add(receipt)
+        db.commit()
+
+        response = save_draft(
+            receipt_id=receipt.id,
+            request=SaveDraftRequest(payload=_payload("cat-1"), source="user"),
+            db=db,
+            settings=settings,
+        )
+
+        db.refresh(receipt)
+        assert receipt.status == ReceiptStatus.NEEDS_REVIEW.value
+        assert receipt.status_reason is None
+        assert response.can_sync is True
+
+
 def test_manual_correction_ignores_split_parent_category_and_memo_only_changes():
     model_payload = {
         "category_id": "parent-cat-model",

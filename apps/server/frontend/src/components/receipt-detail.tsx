@@ -1527,6 +1527,11 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
           <StatusBadge status={receipt.status} />
         </div>
         {receipt.status_reason ? <p className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700">{receipt.status_reason}</p> : null}
+        {receipt.status === "error_extract" ? (
+          <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            Something went wrong reading this receipt. Fix the fields below (the edits save automatically) to recover it — or delete it if it’s not worth keeping.
+          </p>
+        ) : null}
         {receipt.correction_message ? (
           <p className="mt-2 inline-flex items-start gap-1 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs text-slate-800">
             <Flame className="mt-0.5 h-3.5 w-3.5 text-slate-500" />
