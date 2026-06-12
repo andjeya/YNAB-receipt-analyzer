@@ -21,6 +21,7 @@ import { GripVertical } from "lucide-react";
 
 import { AllocationItem, AllocationLane, AllocationWorkspace } from "@/lib/types";
 import { setWorkspaceLanePinnedAmount } from "@/lib/allocation-workspace";
+import { isSelectionFullyInLane } from "@/lib/allocation-board-helpers";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
@@ -149,6 +150,7 @@ function LaneColumn({
   dollarTotal,
   items,
   selectedItemIds,
+  assignments,
   onToggleItem,
   onUnpin,
   onMoveItems,
@@ -158,12 +160,14 @@ function LaneColumn({
   dollarTotal: number | null;
   items: AllocationItem[];
   selectedItemIds: Set<string>;
+  assignments: { item_id: string; lane_id: string }[];
   onToggleItem: (itemId: string) => void;
   onUnpin: (laneId: string) => void;
   onMoveItems: (itemIds: string[], laneId: string) => void;
 }) {
   const { isOver, setNodeRef } = useDroppable({ id: lane.lane_id });
   const colorClass = getLaneColorClass(lane.lane_id);
+  const selectionAlreadyHere = isSelectionFullyInLane(selectedItemIds, lane.lane_id, assignments);
 
   return (
     <div
@@ -181,7 +185,7 @@ function LaneColumn({
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          {selectedItemIds.size > 0 ? (
+          {selectedItemIds.size > 0 && !selectionAlreadyHere ? (
             <button
               type="button"
               className="text-[10px] font-semibold text-sky-700 hover:underline focus-visible:ring-1 focus-visible:ring-sky-400 rounded px-1"
@@ -320,8 +324,12 @@ export function AllocationBoard({
   const onDragEnd = (event: DragEndEvent) => {
     const laneId = event.over ? String(event.over.id) : "";
     if (laneId && activeDragItemIds.length > 0) {
-      offerUndo(workspace);
-      onMoveItems(activeDragItemIds, laneId);
+      const dragSet = new Set(activeDragItemIds);
+      const isNoop = isSelectionFullyInLane(dragSet, laneId, workspace.assignments);
+      if (!isNoop) {
+        offerUndo(workspace);
+        onMoveItems(activeDragItemIds, laneId);
+      }
     }
     setActiveDragItemIds([]);
   };
@@ -391,6 +399,7 @@ export function AllocationBoard({
               items={itemsByLane.get(lane.lane_id) ?? []}
               dollarTotal={laneDollarTotal(lane.lane_id, workspace.items, workspace.assignments)}
               selectedItemIds={selectedItemIds}
+              assignments={workspace.assignments}
               onToggleItem={onToggleItem}
               onUnpin={handleUnpinLane}
               onMoveItems={(itemIds, laneId) => {

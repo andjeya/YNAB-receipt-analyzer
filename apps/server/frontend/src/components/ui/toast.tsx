@@ -11,15 +11,21 @@ import { cn } from "@/lib/utils";
 
 export type ToastVariant = "success" | "error";
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface ToastItem {
   id: string;
   variant: ToastVariant;
   message: string;
   title?: string;
+  action?: ToastAction;
 }
 
 interface ToastContextValue {
-  toast: (options: { variant: ToastVariant; message: string; title?: string }) => void;
+  toast: (options: { variant: ToastVariant; message: string; title?: string; action?: ToastAction }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,9 +58,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const toast = useCallback(
-    ({ variant, message, title }: { variant: ToastVariant; message: string; title?: string }) => {
+    ({ variant, message, title, action }: { variant: ToastVariant; message: string; title?: string; action?: ToastAction }) => {
       const id = nextId();
-      const item: ToastItem = { id, variant, message, title };
+      const item: ToastItem = { id, variant, message, title, action };
       setToasts((prev) => [...prev, item]);
 
       const delay = variant === "error" ? 5000 : 3000;
@@ -105,6 +111,21 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <p className={cn("leading-snug", item.title ? "mt-0.5 text-xs opacity-85" : "font-medium")}>
                 {item.message}
               </p>
+              {item.action ? (
+                <button
+                  type="button"
+                  className={cn(
+                    "mt-1.5 text-xs font-semibold underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1",
+                    item.variant === "success" ? "text-emerald-800 focus-visible:ring-emerald-600" : "text-red-800 focus-visible:ring-red-600",
+                  )}
+                  onClick={() => {
+                    item.action!.onClick();
+                    dismiss(item.id);
+                  }}
+                >
+                  {item.action.label}
+                </button>
+              ) : null}
             </div>
             <button
               type="button"

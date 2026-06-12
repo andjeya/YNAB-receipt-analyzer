@@ -420,13 +420,14 @@ function ScanPanel({ receiptId, mimeType, originalFilename }: {
   );
 }
 
-function TwinAndScanSection({ receiptId, receipt, mobileView, setMobileView, mobilePanelRef, onTwinUpdated }: {
+function TwinAndScanSection({ receiptId, receipt, mobileView, setMobileView, mobilePanelRef, onTwinUpdated, autoConfirmed }: {
   receiptId: string;
   receipt: ReceiptDetail;
   mobileView: "twin" | "scan";
   setMobileView: (v: "twin" | "scan") => void;
   mobilePanelRef: { current: HTMLDivElement | null };
   onTwinUpdated: () => void;
+  autoConfirmed: boolean;
 }) {
   const scanPanel = (
     <ScanPanel
@@ -438,7 +439,7 @@ function TwinAndScanSection({ receiptId, receipt, mobileView, setMobileView, mob
   return (
     <section className="animate-reveal space-y-3" style={{ animationDelay: "55ms" }}>
       <div className="hidden gap-3 md:grid md:grid-cols-2">
-        <ReceiptTwinViewer receiptId={receiptId} twin={receipt.latest_twin} onUpdated={onTwinUpdated} />
+        <ReceiptTwinViewer receiptId={receiptId} twin={receipt.latest_twin} onUpdated={onTwinUpdated} autoConfirmed={autoConfirmed} />
         {scanPanel}
       </div>
       <div className="space-y-2 md:hidden">
@@ -460,7 +461,7 @@ function TwinAndScanSection({ receiptId, receipt, mobileView, setMobileView, mob
         </div>
         <div ref={mobilePanelRef} className="max-h-[32rem] overflow-auto">
           {mobileView === "twin" ? (
-            <ReceiptTwinViewer receiptId={receiptId} twin={receipt.latest_twin} onUpdated={onTwinUpdated} />
+            <ReceiptTwinViewer receiptId={receiptId} twin={receipt.latest_twin} onUpdated={onTwinUpdated} autoConfirmed={autoConfirmed} />
           ) : (
             scanPanel
           )}
@@ -1261,6 +1262,16 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   );
   const dateTimeConfirmed = receiptQuery.data?.latest_twin?.confirmed_sections.date_time ?? false;
   const totalConfirmed = receiptQuery.data?.latest_twin?.confirmed_sections.total ?? false;
+  // autoConfirmed: true when the localStorage marker exists for this receipt AND both sections still confirmed.
+  // Using useMemo so it recomputes whenever the twin confirmation state changes.
+  const autoConfirmed = useMemo(() => {
+    if (!dateTimeConfirmed || !totalConfirmed) return false;
+    try {
+      return typeof window !== "undefined" && window.localStorage.getItem(`snappy_auto_confirm_done:${receiptId}`) === "true";
+    } catch {
+      return false;
+    }
+  }, [receiptId, dateTimeConfirmed, totalConfirmed]);
   const twinConfirmationErrors = useMemo(() => {
     const errors: string[] = [];
     if (!dateTimeConfirmed) errors.push("Confirm Date + Time in Receipt Twin before syncing");
@@ -1520,6 +1531,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             setMobileView={setMobileView}
             mobilePanelRef={mobilePanelRef}
             onTwinUpdated={() => { setDirty(false); refreshReceiptContext(); }}
+            autoConfirmed={autoConfirmed}
           />
 
           <PayeeAccountCard
@@ -1627,6 +1639,22 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
               }
               if (shouldSkipPreview({ stripReasons, lockWarnings, ambiguityFlags, skipEnabled })) {
                 syncMutation.mutate();
+                toast({
+                  variant: "success",
+                  message: "Synced without preview",
+                  action: {
+                    label: "Show previews again",
+                    onClick: () => {
+                      try {
+                        if (typeof window !== "undefined") {
+                          window.localStorage.removeItem("snappy_skip_preview");
+                        }
+                      } catch {
+                        // SSR or privacy mode
+                      }
+                    },
+                  },
+                });
               } else {
                 setPreviewOpen(true);
               }

@@ -224,6 +224,27 @@ function ActionMenu({
   );
 }
 
+// Tile IDs for the tap-popover system
+type StatTileId = "streak" | "wait" | "water" | "fire";
+
+const STAT_TILE_TOOLTIPS: Record<Exclude<StatTileId, "water">, string> = {
+  streak: "Streak: consecutive weeks with at least one synced receipt. Milestones every 5 earn a shred token.",
+  wait: "Average hours between a receipt landing in the inbox and you reviewing it. Lower is better — affects your weekly score.",
+  fire: "Fire: earned when you wait too long to review receipts. Too much fire burns your weekly score.",
+};
+
+function StatTilePopover({ text, id }: { text: string; id: string }) {
+  return (
+    <div
+      role="status"
+      id={id}
+      className="absolute left-0 top-full z-20 mt-1 w-max max-w-[16rem] rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
+    >
+      {text}
+    </div>
+  );
+}
+
 function ReceiptListHeader({
   dashboardData, highlightedCount, totalCount, maxWaterSpend, fireUnits, fireToBurn, isSpendWaterPending, onOpenWaterSpend,
   celebratingStreak,
@@ -241,6 +262,38 @@ function ReceiptListHeader({
 }) {
   const derived = deriveSnappyPose({ needsReviewCount: highlightedCount, totalCount });
   const pose = celebratingStreak ? "celebrating" : derived.pose;
+
+  // Which stat tile currently has its popover open (null = none)
+  const [openTile, setOpenTile] = useState<StatTileId | null>(null);
+
+  // Close on Escape key
+  useEffect(() => {
+    if (!openTile) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenTile(null);
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [openTile]);
+
+  // Close on outside click
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!openTile) return;
+    const handler = (e: MouseEvent | TouchEvent) => {
+      if (headerRef.current && !headerRef.current.contains(e.target as Node)) {
+        setOpenTile(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
+  }, [openTile]);
+
+  const toggleTile = (id: StatTileId) => setOpenTile((prev) => (prev === id ? null : id));
 
   return (
     <Card className="animate-reveal space-y-3 bg-ink p-4 text-sand">
@@ -262,42 +315,105 @@ function ReceiptListHeader({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-        <div className="rounded-xl bg-white/10 px-3 py-2" title="Streak: consecutive weeks with at least one synced receipt. Milestones every 5 earn a shred token.">
-          <p className="text-sand/80">Streak</p>
-          <p className="mt-1 text-base font-semibold">{dashboardData?.momentum.current_streak ?? 0}</p>
+      <div ref={headerRef} className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+        {/* Streak tile */}
+        <div className="relative">
+          <button
+            type="button"
+            className="w-full rounded-xl bg-white/10 px-3 py-2 text-left transition hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
+            onClick={() => toggleTile("streak")}
+            aria-describedby={openTile === "streak" ? "tile-popover-streak" : undefined}
+            title={STAT_TILE_TOOLTIPS.streak}
+            data-testid="stat-tile-streak"
+          >
+            <p className="text-sand/80">Streak</p>
+            <p className="mt-1 text-base font-semibold">{dashboardData?.momentum.current_streak ?? 0}</p>
+          </button>
+          {openTile === "streak" ? (
+            <StatTilePopover id="tile-popover-streak" text={STAT_TILE_TOOLTIPS.streak} />
+          ) : null}
         </div>
-        <div className="rounded-xl bg-white/10 px-3 py-2" title="Average hours between a receipt landing in the inbox and you reviewing it. Lower is better — affects your weekly score.">
-          <p className="text-sand/80">Validation wait</p>
-          <p className="mt-1 text-base font-semibold">{formatWaitTime(dashboardData?.summary.avg_validation_age_hours)}</p>
+
+        {/* Validation wait tile */}
+        <div className="relative">
+          <button
+            type="button"
+            className="w-full rounded-xl bg-white/10 px-3 py-2 text-left transition hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
+            onClick={() => toggleTile("wait")}
+            aria-describedby={openTile === "wait" ? "tile-popover-wait" : undefined}
+            title={STAT_TILE_TOOLTIPS.wait}
+            data-testid="stat-tile-wait"
+          >
+            <p className="text-sand/80">Validation wait</p>
+            <p className="mt-1 text-base font-semibold">{formatWaitTime(dashboardData?.summary.avg_validation_age_hours)}</p>
+          </button>
+          {openTile === "wait" ? (
+            <StatTilePopover id="tile-popover-wait" text={STAT_TILE_TOOLTIPS.wait} />
+          ) : null}
         </div>
-        <button
-          type="button"
-          className={cn(
-            "rounded-xl bg-white/10 px-3 py-2 text-left transition focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2",
-            maxWaterSpend > 0 ? "hover:bg-white/20" : "cursor-not-allowed opacity-80",
-            isSpendWaterPending ? "animate-water-pulse" : undefined,
-          )}
-          onClick={onOpenWaterSpend}
-          disabled={maxWaterSpend <= 0 || isSpendWaterPending}
-          title={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "Water: earned by correcting categories in YNAB. Spend water to extinguish fire."}
-          aria-label={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
-        >
-          <p className="text-sand/80">Water</p>
-          <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
-            <Waves className="h-3.5 w-3.5 text-sky-300" />
-            {dashboardData ? `${dashboardData.correctness.water_units}/${dashboardData.correctness.water_capacity}` : "0/0"}
-          </p>
-        </button>
-        <div className="rounded-xl bg-white/10 px-3 py-2" title="Fire: earned when you wait too long to review receipts. Too much fire burns your weekly score.">
-          <p className="text-sand/80">Fire</p>
-          <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
-            <Flame className="h-3.5 w-3.5 text-rose-300" />
-            {fireUnits}
-          </p>
-          <p className="mt-1 text-[11px] text-sand/80">
-            {fireToBurn > 0 ? `${fireToBurn} to burn` : "Burn threshold reached"}
-          </p>
+
+        {/* Water tile — opens spend modal; "?" affordance shows info popover */}
+        <div className="relative">
+          <button
+            type="button"
+            className={cn(
+              "w-full rounded-xl bg-white/10 px-3 py-2 text-left transition focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2",
+              maxWaterSpend > 0 ? "hover:bg-white/20" : "cursor-not-allowed opacity-80",
+              isSpendWaterPending ? "animate-water-pulse" : undefined,
+            )}
+            onClick={onOpenWaterSpend}
+            disabled={maxWaterSpend <= 0 || isSpendWaterPending}
+            title={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "Water: earned by correcting categories in YNAB. Spend water to extinguish fire."}
+            aria-label={maxWaterSpend > 0 ? "Click to spend water and extinguish fire" : "No fire to extinguish"}
+            data-testid="stat-tile-water"
+          >
+            <p className="text-sand/80">Water</p>
+            <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
+              <Waves className="h-3.5 w-3.5 text-sky-300" />
+              {dashboardData ? `${dashboardData.correctness.water_units}/${dashboardData.correctness.water_capacity}` : "0/0"}
+            </p>
+          </button>
+          {/* "?" info affordance for the water tile so touch users can read the description without triggering the modal */}
+          <button
+            type="button"
+            className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-white/20 text-[10px] font-bold text-sand/80 hover:bg-white/30 focus-visible:ring-2 focus-visible:ring-mint/70"
+            onClick={(e) => { e.stopPropagation(); toggleTile("water"); }}
+            aria-label="Water tile info"
+            aria-describedby={openTile === "water" ? "tile-popover-water" : undefined}
+            data-testid="stat-tile-water-info"
+          >
+            ?
+          </button>
+          {openTile === "water" ? (
+            <StatTilePopover
+              id="tile-popover-water"
+              text={maxWaterSpend > 0 ? "Tap the tile to spend water and extinguish fire. Water is earned by correcting categories in YNAB." : "Water: earned by correcting categories in YNAB. Spend water to extinguish fire."}
+            />
+          ) : null}
+        </div>
+
+        {/* Fire tile */}
+        <div className="relative">
+          <button
+            type="button"
+            className="w-full rounded-xl bg-white/10 px-3 py-2 text-left transition hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
+            onClick={() => toggleTile("fire")}
+            aria-describedby={openTile === "fire" ? "tile-popover-fire" : undefined}
+            title={STAT_TILE_TOOLTIPS.fire}
+            data-testid="stat-tile-fire"
+          >
+            <p className="text-sand/80">Fire</p>
+            <p className="mt-1 inline-flex items-center gap-1 text-base font-semibold">
+              <Flame className="h-3.5 w-3.5 text-rose-300" />
+              {fireUnits}
+            </p>
+            <p className="mt-1 text-[11px] text-sand/80">
+              {fireToBurn > 0 ? `${fireToBurn} to burn` : "Burn threshold reached"}
+            </p>
+          </button>
+          {openTile === "fire" ? (
+            <StatTilePopover id="tile-popover-fire" text={STAT_TILE_TOOLTIPS.fire} />
+          ) : null}
         </div>
       </div>
 
@@ -331,10 +447,28 @@ function ReceiptListHeader({
             );
           })}
         </div>
-        <div className="mt-2 flex items-center gap-3 text-[10px] text-sand/60">
-          <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-400/80" />On time</span>
-          <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-400/80" />Late</span>
-          <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-full bg-stone-400/80" />Very late</span>
+        {/* Legend: colors match TONE_STYLES in receipt-state-icon.tsx exactly */}
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-[10px] text-sand/60">
+          <span className="flex items-center gap-1">
+            {/* green fill: #34d399 */}
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#34d399" }} />
+            On time
+          </span>
+          <span className="flex items-center gap-1">
+            {/* yellow fill: #facc15 */}
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#facc15" }} />
+            Late
+          </span>
+          <span className="flex items-center gap-1">
+            {/* brown fill: #a16207 */}
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#a16207" }} />
+            Very late
+          </span>
+          <span className="flex items-center gap-1">
+            {/* shredded = brown icon with shredded=true; same #a16207 fill, distinct icon rendered in board */}
+            <ReceiptStateIcon tone="brown" shredded className="h-2.5 w-2.5" />
+            Shredded
+          </span>
         </div>
       </div>
     </Card>

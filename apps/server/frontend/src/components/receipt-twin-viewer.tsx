@@ -55,10 +55,13 @@ export function ReceiptTwinViewer({
   receiptId,
   twin,
   onUpdated,
+  autoConfirmed,
 }: {
   receiptId: string;
   twin: ReceiptTwin | null;
   onUpdated: () => void;
+  /** True when both sections were auto-confirmed for this receipt and are still confirmed. */
+  autoConfirmed?: boolean;
 }) {
   const { toast } = useToast();
   const [editMode, setEditMode] = useState(false);
@@ -265,6 +268,12 @@ export function ReceiptTwinViewer({
         </div>
       </div>
 
+      {autoConfirmed && dateTimeConfirmed && totalConfirmed ? (
+        <p className="text-xs text-ink/55 -mb-1">
+          ✓ Checked automatically — tap ✗ if something looks off
+        </p>
+      ) : null}
+
       <section
         className={`rounded-xl border p-3 ${
           dateTimeConfirmed ? "border-emerald-300 bg-emerald-50/50" : "border-amber-300 bg-amber-50 shadow-[0_0_0_1px_rgba(245,158,11,0.35)]"
@@ -278,7 +287,7 @@ export function ReceiptTwinViewer({
                 <Button
                   variant={dateTimeConfirmed ? "outline" : "solid"}
                   size="sm"
-                  className="h-7 gap-1 px-2 text-xs"
+                  className={dateTimeConfirmed ? "h-9 min-w-[36px] gap-1 px-2 text-xs" : "h-9 gap-1.5 px-3 text-xs"}
                   data-testid="confirm-date-time"
                   aria-label={dateTimeConfirmed ? "Date and time confirmed" : "Confirm date and time"}
                   onClick={() => {
@@ -287,12 +296,12 @@ export function ReceiptTwinViewer({
                   disabled={!draft.transaction_date || confirmMutation.isPending || saveMutation.isPending}
                 >
                   <Check className="h-3.5 w-3.5" />
-                  {!dateTimeConfirmed ? <span className="hidden sm:inline">Looks right</span> : null}
+                  {!dateTimeConfirmed ? <span>Looks right</span> : null}
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 gap-1 px-2 text-xs"
+                  className={dateTimeConfirmed ? "h-9 min-w-[36px] gap-1 px-2 text-xs" : "h-9 gap-1.5 px-3 text-xs"}
                   aria-label="Edit date and time"
                   onClick={() => {
                     void handleNeedsEdit("date_time");
@@ -300,7 +309,7 @@ export function ReceiptTwinViewer({
                   disabled={confirmMutation.isPending || saveMutation.isPending}
                 >
                   <X className="h-3.5 w-3.5" />
-                  {!dateTimeConfirmed ? <span className="hidden sm:inline">Edit</span> : null}
+                  {!dateTimeConfirmed ? <span>Edit</span> : null}
                 </Button>
               </>
             ) : (
@@ -360,7 +369,7 @@ export function ReceiptTwinViewer({
                 <Button
                   variant={totalConfirmed ? "outline" : "solid"}
                   size="sm"
-                  className="h-7 gap-1 px-2 text-xs"
+                  className={totalConfirmed ? "h-9 min-w-[36px] gap-1 px-2 text-xs" : "h-9 gap-1.5 px-3 text-xs"}
                   data-testid="confirm-total"
                   aria-label={totalConfirmed ? "Total confirmed" : "Confirm total"}
                   onClick={() => {
@@ -369,12 +378,12 @@ export function ReceiptTwinViewer({
                   disabled={!(draft.total_amount > 0) || confirmMutation.isPending || saveMutation.isPending}
                 >
                   <Check className="h-3.5 w-3.5" />
-                  {!totalConfirmed ? <span className="hidden sm:inline">Looks right</span> : null}
+                  {!totalConfirmed ? <span>Looks right</span> : null}
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 gap-1 px-2 text-xs"
+                  className={totalConfirmed ? "h-9 min-w-[36px] gap-1 px-2 text-xs" : "h-9 gap-1.5 px-3 text-xs"}
                   aria-label="Edit total"
                   onClick={() => {
                     void handleNeedsEdit("total");
@@ -382,7 +391,7 @@ export function ReceiptTwinViewer({
                   disabled={confirmMutation.isPending || saveMutation.isPending}
                 >
                   <X className="h-3.5 w-3.5" />
-                  {!totalConfirmed ? <span className="hidden sm:inline">Edit</span> : null}
+                  {!totalConfirmed ? <span>Edit</span> : null}
                 </Button>
               </>
             ) : (
