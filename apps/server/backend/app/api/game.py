@@ -106,8 +106,8 @@ def recompute_correctness(
     return GameCorrectnessRecomputeResponse(
         correction_count=correction_count,
         water_units=values["water_units"],
-        fire_units=values["fire_units"],
-        burn_count=values["burn_count"],
+        total_active_flames=values["total_active_flames"],
+        burnt_week_count=values["burnt_week_count"],
     )
 
 
@@ -196,18 +196,10 @@ def _to_debug_seed_schema(row: GameDebugSeed) -> GameDebugSeedOut:
         water_units=row.water_units,
         water_earned_count=row.water_earned_count,
         water_spent_count=row.water_spent_count,
-        fire_units=row.fire_units,
-        fire_added_count=row.fire_added_count,
-        fire_extinguished_count=row.fire_extinguished_count,
-        burn_count=row.burn_count,
         token_balance=row.token_balance,
         token_earned_count=row.token_earned_count,
         token_spent_count=row.token_spent_count,
         current_week_flames=row.current_week_flames,
-        current_streak=row.current_streak,
-        max_streak=row.max_streak,
-        active_streak_group_id=row.active_streak_group_id,
-        break_reason=row.break_reason,
         correctness_event_floor_id=row.correctness_event_floor_id,
         sync_floor_unix_ms=row.sync_floor_unix_ms,
     )
@@ -227,6 +219,7 @@ def update_debug_seed(
     request: GameDebugSeedUpdateRequest,
     _: None = Depends(require_debug_tools_enabled),
     db: Session = Depends(db_session),
+    settings: Settings = Depends(app_settings),
 ) -> GameDebugSeedOut:
     seed = get_or_create_debug_seed(db)
 
@@ -238,14 +231,6 @@ def update_debug_seed(
         seed.water_earned_count = request.water_earned_count
     if request.water_spent_count is not None:
         seed.water_spent_count = request.water_spent_count
-    if request.fire_units is not None:
-        seed.fire_units = request.fire_units
-    if request.fire_added_count is not None:
-        seed.fire_added_count = request.fire_added_count
-    if request.fire_extinguished_count is not None:
-        seed.fire_extinguished_count = request.fire_extinguished_count
-    if request.burn_count is not None:
-        seed.burn_count = request.burn_count
     if request.token_balance is not None:
         seed.token_balance = request.token_balance
     if request.token_earned_count is not None:
@@ -254,20 +239,12 @@ def update_debug_seed(
         seed.token_spent_count = request.token_spent_count
     if request.current_week_flames is not None:
         seed.current_week_flames = max(request.current_week_flames, 0)
-    if request.current_streak is not None:
-        seed.current_streak = request.current_streak
-    if request.max_streak is not None:
-        seed.max_streak = request.max_streak
-    if request.active_streak_group_id is not None:
-        seed.active_streak_group_id = max(request.active_streak_group_id, 1)
-    if request.break_reason is not None:
-        seed.break_reason = request.break_reason or None
 
     if request.reset_floors_to_now:
         mark_debug_seed_floor_now(db, seed)
 
     if request.apply_to_live_state:
-        apply_debug_seed_to_live_state(db, seed)
+        apply_debug_seed_to_live_state(db, seed, settings)
 
     db.commit()
     db.refresh(seed)

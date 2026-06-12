@@ -1586,7 +1586,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             <section className="animate-reveal rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900" style={{ animationDelay: "95ms" }}>
               <p className="inline-flex items-center gap-1 font-semibold">
                 <Droplets className="h-3.5 w-3.5" />
-                Not sure about a category? Picking the right one earns a droplet
+                Not sure about a category? Fixing one Snappy guessed wrong earns a droplet
               </p>
               {ambiguityFlags.slice(0, 3).map((flag, index) => (
                 <p key={`${flag.line_item}-${index}`} className="mt-1 text-[11px] text-sky-800">

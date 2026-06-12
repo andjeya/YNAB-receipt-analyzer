@@ -292,6 +292,7 @@ export const GAME_DASHBOARD_V3: Record<string, unknown> = {
     water_capacity: 5,
     fire_burn_threshold: 3,
     pass_every_green_weeks: 4,
+    timezone: "UTC",
   },
   momentum: {
     current_streak: 3,

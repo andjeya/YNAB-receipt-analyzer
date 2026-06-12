@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -8,6 +9,9 @@ from sqlalchemy.orm import Session
 from app.enums import YNABSyncStatus
 from app.models import GameCorrectnessState, GameDebugSeed, GameStreak, GameToken, YNABSync
 from app.utils import utcnow
+
+if TYPE_CHECKING:
+    from app.config import Settings
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -80,23 +84,27 @@ def _get_or_create_streak(db: Session) -> GameStreak:
     return row
 
 
-def apply_debug_seed_to_live_state(db: Session, seed: GameDebugSeed) -> None:
+def apply_debug_seed_to_live_state(db: Session, seed: GameDebugSeed, settings: "Settings") -> None:
     correctness = _get_or_create_correctness_state(db)
-    # Clamp water_units to the new capacity (5).
-    correctness.water_units = min(max(seed.water_units, 0), 5)
+    correctness.water_units = min(max(seed.water_units, 0), settings.game_water_capacity)
     correctness.water_earned_count = max(seed.water_earned_count, 0)
     correctness.water_spent_count = max(seed.water_spent_count, 0)
-    # fire_units / burn_count are legacy in the correctness state; week-scoped fire
-    # lives in game_week_fires. Keep writing for audit trail compatibility.
-    correctness.fire_units = max(seed.fire_units, 0)
-    correctness.fire_added_count = max(seed.fire_added_count, 0)
-    correctness.fire_extinguished_count = max(seed.fire_extinguished_count, 0)
-    correctness.burn_count = max(seed.burn_count, 0)
 
     tokens = _get_or_create_tokens(db)
     tokens.balance = max(seed.token_balance, 0)
     tokens.earned_count = max(seed.token_earned_count, 0)
     tokens.spent_count = max(seed.token_spent_count, 0)
+
+    # Demo flames take effect immediately (not only on the next rebuild):
+    # mirror rebuild_gamification_state's injection on the current week.
+    if seed.enabled and seed.current_week_flames > 0:
+        from app.services.correctness import _get_or_create_week_fire
+        from app.services.game import _week_bounds_for_timestamp
+
+        week_start, _ = _week_bounds_for_timestamp(utcnow(), settings)
+        week_row = _get_or_create_week_fire(db, week_start)
+        if not week_row.burnt:
+            week_row.flames_active = min(seed.current_week_flames, settings.game_fire_burn_threshold - 1)
 
     # Streak is now derived from GameReceiptStateModel history; do not write GameStreak.
     # Keep GameStreak row but don't overwrite it — the legacy streak fields are read-only

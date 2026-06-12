@@ -131,9 +131,11 @@ def add_fire(
     burns_triggered = 0
 
     for i in range(units):
-        # If already burnt, record the fire event but don't change week state.
+        # If already burnt, record the fire event for the audit trail but don't
+        # change week state — and don't count it as an added fire, so incident
+        # copy ("N fires added") stays truthful.
         if week_row.burnt:
-            recorded = _record_event(
+            _record_event(
                 db,
                 event_type=GameEventType.FIRE_ADDED,
                 idempotency_key=f"{idempotency_key}:unit:{i}:burnt_week",
@@ -146,8 +148,6 @@ def add_fire(
                 },
                 created_at=now,
             )
-            if recorded:
-                fires_added += 1
             continue
 
         # Would this flame reach the threshold?
@@ -504,17 +504,6 @@ def recompute_correctness_state_from_history(db: Session, settings: Settings) ->
 
     return {
         "water_units": state.water_units,
-        "fire_units": get_total_active_flames(db),
-        "burn_count": get_burnt_week_count(db),
+        "total_active_flames": get_total_active_flames(db),
+        "burnt_week_count": get_burnt_week_count(db),
     }
-
-
-def fire_breakdown(fire_units: int) -> tuple[int, int, int]:
-    """Legacy helper kept for backwards compatibility. Returns (small, medium, large)."""
-    if fire_units <= 0:
-        return 0, 0, 0
-    large_fires = fire_units // 3
-    remainder = fire_units % 3
-    small_fires = 1 if remainder == 1 else 0
-    medium_fires = 1 if remainder == 2 else 0
-    return small_fires, medium_fires, large_fires

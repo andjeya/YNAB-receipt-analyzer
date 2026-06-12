@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { format, formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -58,7 +58,7 @@ import { Snappy } from "@/components/snappy/snappy";
 import { CardMappingPanel } from "@/components/card-mapping-panel";
 import { SyncPreviewDialog } from "@/components/sync-preview-dialog";
 import { toDraftFromPayload } from "@/lib/validation-draft";
-import { parseApiDate } from "@/lib/dates";
+import { formatWeekRange, parseApiDate } from "@/lib/dates";
 import { notifyDevtoolsChange } from "@/components/providers";
 
 // ---------------------------------------------------------------------------
@@ -361,11 +361,13 @@ function WeekTrail({
   waterUnits,
   isDousingPending,
   onDouse,
+  gameTimezone,
 }: {
   slots: GameWeeklySlot[];
   waterUnits: number;
   isDousingPending: boolean;
   onDouse: (slot: GameWeeklySlot) => void;
+  gameTimezone: string;
 }) {
   const [openNode, setOpenNode] = useState<number | null>(null);
 
@@ -413,7 +415,7 @@ function WeekTrail({
     const receiptsPart = slot.receipt_count === 0 ? "no receipts yet" : `${slot.receipt_count} receipt${slot.receipt_count === 1 ? "" : "s"} scored`;
     const flamePart = slot.flames > 0 ? `, ${slot.flames} flame${slot.flames === 1 ? "" : "s"}` : "";
     const burntPart = slot.burnt ? ", burnt" : "";
-    return `${isCurrent ? "This week — " : ""}${format(parseApiDate(slot.start_at), "MMM d")}–${format(parseApiDate(slot.end_at), "MMM d")} · ${receiptsPart}${flamePart}${burntPart}`;
+    return `${isCurrent ? "This week — " : ""}${formatWeekRange(slot.start_at, slot.end_at, gameTimezone)} · ${receiptsPart}${flamePart}${burntPart}`;
   }
 
   function slotFill(slot: GameWeeklySlot): string | undefined {
@@ -852,6 +854,7 @@ function ReceiptListHeader({
               waterUnits={waterUnitsVal}
               isDousingPending={isDousingPending}
               onDouse={onDouse}
+              gameTimezone={dashboardData?.rules?.timezone ?? "UTC"}
             />
           </div>
         </div>

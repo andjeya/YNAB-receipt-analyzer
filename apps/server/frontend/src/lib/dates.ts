@@ -55,3 +55,30 @@ export function parseApiDate(value: string): Date {
   // fallback (unknown format)
   return new Date(value);
 }
+
+const WEEK_DAY_FORMAT: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+
+function formatDayInZone(date: Date, timeZone: string): string {
+  try {
+    return date.toLocaleDateString("en-US", { ...WEEK_DAY_FORMAT, timeZone });
+  } catch {
+    // invalid/unsupported IANA name — fall back to UTC (the game default)
+    return date.toLocaleDateString("en-US", { ...WEEK_DAY_FORMAT, timeZone: "UTC" });
+  }
+}
+
+/**
+ * Format a game week range ("Jun 7–Jun 13") for the trail.
+ *
+ * Week slots are bounded in the GAME timezone (rules.timezone), so the days
+ * must be rendered in that zone — a browser-local render shifts the range by
+ * a day for anyone whose tz differs from the game's. `endExclusiveIso` is the
+ * next week's start; the displayed end is the inclusive last day (24h back —
+ * still the same calendar day across DST transitions, since week bounds are
+ * midnight-aligned in the game zone).
+ */
+export function formatWeekRange(startIso: string, endExclusiveIso: string, timeZone: string): string {
+  const start = parseApiDate(startIso);
+  const endInclusive = new Date(parseApiDate(endExclusiveIso).getTime() - 24 * 60 * 60 * 1000);
+  return `${formatDayInZone(start, timeZone)}–${formatDayInZone(endInclusive, timeZone)}`;
+}

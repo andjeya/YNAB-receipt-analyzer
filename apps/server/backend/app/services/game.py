@@ -321,6 +321,12 @@ def _evaluate_passes(
     A pass is awarded when a completed week's position in a consecutive
     clean-green run is a multiple of game_pass_every_green_weeks (4).
     Award is idempotent via _record_event; never clawed back.
+
+    Accepted asymmetry: a retroactive flame can re-segment a run AFTER a pass
+    was awarded; the re-grown run may then mint an extra pass at a new week.
+    Combined with no-clawback this mildly over-awards in a rare edge case —
+    deliberately accepted (player-favorable, low stakes) over complicating the
+    award keying. Reviewed 2026-06-12.
     """
     if not all_rows:
         return
@@ -953,6 +959,9 @@ def get_dashboard_data(
             "water_capacity": settings.game_water_capacity,
             "fire_burn_threshold": settings.game_fire_burn_threshold,
             "pass_every_green_weeks": settings.game_pass_every_green_weeks,
+            # Week slots are bounded in this timezone; the frontend must format
+            # week-range labels in it (not the browser tz) or days shift.
+            "timezone": settings.game_timezone,
         },
         "momentum": {
             "current_streak": current_streak,

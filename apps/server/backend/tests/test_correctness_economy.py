@@ -29,7 +29,6 @@ from app.models import (
 from app.services.correctness import (
     add_fire,
     award_water,
-    fire_breakdown,
     get_burnt_week_count,
     get_total_active_flames,
     recompute_correctness_state_from_history,
@@ -270,10 +269,11 @@ def test_burnt_week_ignores_further_fires():
         assert week_row.burnt is True
         flames_after_burn = week_row.flames_active
 
-        # Add another fire — should be recorded as event but not change week state.
+        # Add another fire — recorded as an audit event but the week state is
+        # unchanged, so it must NOT count as an added fire (incident copy).
         result = add_fire(db, settings, units=1, receipt_id="r-1",
                           idempotency_key="fire:r-1:4", reason="test", created_at=past)
-        assert result["fires_added"] == 1  # Event still recorded
+        assert result["fires_added"] == 0
         assert result["burns_triggered"] == 0  # No new burn
 
         db.refresh(week_row)
@@ -374,17 +374,6 @@ def test_recompute_correctness_from_history():
         values = recompute_correctness_state_from_history(db, settings)
         assert values["water_units"] == 3
         assert values["water_units"] >= 0
-
-
-def test_fire_breakdown_legacy():
-    """fire_breakdown helper still works (kept for backwards compat)."""
-    small, medium, large = fire_breakdown(7)
-    assert small == 1
-    assert medium == 0
-    assert large == 2
-
-    small2, medium2, large2 = fire_breakdown(0)
-    assert small2 == medium2 == large2 == 0
 
 
 def test_total_active_flames_and_burnt_count():

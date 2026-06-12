@@ -330,6 +330,8 @@ export interface GameRules {
   water_capacity: number;
   fire_burn_threshold: number;
   pass_every_green_weeks: number;
+  /** IANA timezone the game weeks are bounded in — week labels render in it. */
+  timezone: string;
 }
 
 export interface GameMomentum {

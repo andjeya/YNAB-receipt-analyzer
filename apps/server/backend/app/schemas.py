@@ -263,6 +263,7 @@ class GameRulesOut(BaseModel):
     water_capacity: int
     fire_burn_threshold: int
     pass_every_green_weeks: int
+    timezone: str
 
 
 class GameMomentumOut(BaseModel):
@@ -375,8 +376,8 @@ class GameReconcileResponse(BaseModel):
 class GameCorrectnessRecomputeResponse(BaseModel):
     correction_count: int
     water_units: int
-    fire_units: int = 0
-    burn_count: int = 0
+    total_active_flames: int = 0
+    burnt_week_count: int = 0
 
 
 class GameWaterSpendRequest(BaseModel):
@@ -407,19 +408,10 @@ class GameDebugSeedOut(BaseModel):
     water_units: int
     water_earned_count: int
     water_spent_count: int
-    fire_units: int
-    fire_added_count: int
-    fire_extinguished_count: int
-    burn_count: int
     token_balance: int
     token_earned_count: int
     token_spent_count: int
     current_week_flames: int = 0
-    # Streak is now derived; these fields kept for legacy reads.
-    current_streak: int
-    max_streak: int
-    active_streak_group_id: int
-    break_reason: str | None = None
     correctness_event_floor_id: int
     sync_floor_unix_ms: int
 
@@ -429,19 +421,10 @@ class GameDebugSeedUpdateRequest(BaseModel):
     water_units: int | None = None
     water_earned_count: int | None = None
     water_spent_count: int | None = None
-    fire_units: int | None = None
-    fire_added_count: int | None = None
-    fire_extinguished_count: int | None = None
-    burn_count: int | None = None
     token_balance: int | None = None
     token_earned_count: int | None = None
     token_spent_count: int | None = None
     current_week_flames: int | None = None
-    # Streak fields kept for legacy/migration compat — no longer actively used.
-    current_streak: int | None = None
-    max_streak: int | None = None
-    active_streak_group_id: int | None = None
-    break_reason: str | None = None
     reset_floors_to_now: bool = False
     apply_to_live_state: bool = True
 

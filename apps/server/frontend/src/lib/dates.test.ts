@@ -7,7 +7,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseApiDate } from "./dates";
+import { formatWeekRange, parseApiDate } from "./dates";
 
 // ---------------------------------------------------------------------------
 // Naive UTC vs aware — must parse to the same instant
@@ -126,5 +126,38 @@ describe("parseApiDate — elapsed time stays positive and grows", () => {
     const naive = elapsedMinutes("2026-06-12T17:00:00.000000", nowMs);
     const aware = elapsedMinutes("2026-06-12T17:00:00Z", nowMs);
     assert.strictEqual(naive, aware);
+  });
+});
+
+describe("formatWeekRange", () => {
+  // A UTC-bounded game week: Sun Jun 7 00:00Z → Sun Jun 14 00:00Z (exclusive).
+  const START = "2026-06-07T00:00:00Z";
+  const END_EXCLUSIVE = "2026-06-14T00:00:00Z";
+
+  it("renders the game-tz days, not browser-local days (UTC game tz)", () => {
+    // Host tz is irrelevant: the label must always be Jun 7–Jun 13 for a UTC game.
+    assert.strictEqual(formatWeekRange(START, END_EXCLUSIVE, "UTC"), "Jun 7–Jun 13");
+  });
+
+  it("end date is inclusive (end_at is the next week's start)", () => {
+    assert.ok(formatWeekRange(START, END_EXCLUSIVE, "UTC").endsWith("Jun 13"));
+  });
+
+  it("respects a non-UTC game timezone", () => {
+    // An America/New_York-bounded week: Sun 00:00 EDT = 04:00Z.
+    const etStart = "2026-06-07T04:00:00Z";
+    const etEnd = "2026-06-14T04:00:00Z";
+    assert.strictEqual(formatWeekRange(etStart, etEnd, "America/New_York"), "Jun 7–Jun 13");
+  });
+
+  it("handles naive UTC timestamps (no offset suffix)", () => {
+    assert.strictEqual(
+      formatWeekRange("2026-06-07T00:00:00", "2026-06-14T00:00:00", "UTC"),
+      "Jun 7–Jun 13",
+    );
+  });
+
+  it("falls back to UTC for an invalid timezone name", () => {
+    assert.strictEqual(formatWeekRange(START, END_EXCLUSIVE, "Not/AZone"), "Jun 7–Jun 13");
   });
 });

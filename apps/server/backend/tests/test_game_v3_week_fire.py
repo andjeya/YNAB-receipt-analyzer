@@ -353,6 +353,7 @@ class TestBurntWeek:
             result = add_fire(db, settings, units=1, receipt_id="r-1",
                               idempotency_key="fire:after:1", reason="test", created_at=WEEK1)
             assert result["burns_triggered"] == 0
+            assert result["fires_added"] == 0  # Nothing changed — incident copy must not claim a fire.
             db.refresh(row)
             assert row.flames_active == flames_after  # Unchanged.
             assert row.burnt is True
@@ -1248,6 +1249,38 @@ class TestRebuildParity:
             )
             assert row.burnt is False
 
+    def test_apply_debug_seed_injects_current_week_flames_without_rebuild(self):
+        """The debug panel save (apply-to-live) must surface demo flames
+        immediately — not only after a separate rebuild."""
+        from app.services.debug_seed import apply_debug_seed_to_live_state, get_or_create_debug_seed
+
+        settings = _settings()
+        engine = _engine()
+        Base.metadata.create_all(engine)
+
+        with Session(engine) as db:
+            seed = get_or_create_debug_seed(db)
+            seed.enabled = True
+            seed.current_week_flames = 2
+            seed.water_units = 3
+
+            apply_debug_seed_to_live_state(db, seed, settings)
+            db.flush()
+
+            now = datetime.now(timezone.utc)
+            ws, _ = _week_bounds_for_timestamp(now, settings)
+            row = db.query(GameWeekFire).filter(
+                GameWeekFire.week_start_at == ws.replace(microsecond=0)
+            ).first()
+            assert row is not None, "apply-to-live must create the current-week fire row"
+            assert row.flames_active == 2
+            # Clamped below the burn threshold, like the rebuild injection.
+            seed.current_week_flames = 99
+            apply_debug_seed_to_live_state(db, seed, settings)
+            db.flush()
+            db.refresh(row)
+            assert row.flames_active == settings.game_fire_burn_threshold - 1
+
 
 # ---------------------------------------------------------------------------
 # 10. Water cap clamp (migration + award)
@@ -1332,8 +1365,10 @@ class TestSchemas:
             water_capacity=5,
             fire_burn_threshold=3,
             pass_every_green_weeks=4,
+            timezone="UTC",
         )
         assert rules.pass_every_green_weeks == 4
+        assert rules.timezone == "UTC"
         assert not hasattr(rules, "token_earn_every_greens")
         assert not hasattr(rules, "bucket_capacity")
 
