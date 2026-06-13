@@ -26,6 +26,10 @@ function formatCurrency(amount: number | null | undefined): string {
   return `$${amount.toFixed(2)}`;
 }
 
+function isDiscountItem(item: ReceiptLineItem): boolean {
+  return (item.item_type || "").toLowerCase() === "discount";
+}
+
 function lineItemClassName(item: ReceiptLineItem): string {
   const kind = (item.item_type || "").toLowerCase();
   // Extraction artifacts (only shown in edit mode for raw fidelity): de-emphasize, never alarm.
@@ -483,7 +487,7 @@ export function ReceiptTwinViewer({
                       setDraft(next);
                     }}
                   />
-                  <div className="grid gap-2 sm:grid-cols-4">
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                     <Input
                       type="number"
                       step="0.01"
@@ -522,7 +526,8 @@ export function ReceiptTwinViewer({
               ) : (
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <p className="font-medium">{item.translated_text || item.raw_text || `Line ${item.index + 1}`}</p>
+                    <p className="font-medium">{item.translated_text || item.raw_text || `Line ${index + 1}`}</p>
+                    {isDiscountItem(item) ? <p className="text-[11px]">discount / credit</p> : null}
                   </div>
                   <div className="text-right text-[11px] text-ink/70">
                     {item.quantity != null && item.unit_price != null ? (
@@ -530,8 +535,14 @@ export function ReceiptTwinViewer({
                         {item.quantity} × {formatCurrency(item.unit_price)}
                       </p>
                     ) : null}
-                    <p className="font-semibold">{item.line_total == null ? "?" : formatCurrency(item.line_total)}</p>
-                    {item.tax_code ? <p>{item.tax_code}</p> : null}
+                    <p className="font-semibold">
+                      {item.line_total == null
+                        ? "?"
+                        : isDiscountItem(item)
+                          ? `−${formatCurrency(Math.abs(item.line_total))}`
+                          : formatCurrency(item.line_total)}
+                    </p>
+                    {item.tax_code ? <p className="text-[10px] text-ink/50">Tax code {item.tax_code}</p> : null}
                   </div>
                 </div>
               )}
@@ -553,9 +564,14 @@ export function ReceiptTwinViewer({
         <section
           className="space-y-1 rounded-xl border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900"
         >
+          <p className="font-semibold">Worth a second look</p>
           {warnings.map((warning) => (
-            <p key={warning}>- {warning}</p>
+            <p key={warning}>{warning}</p>
           ))}
+          <p className="text-amber-800/80">
+            Compare with the original scan, then tap Edit to fix anything that&apos;s off. What
+            syncs to YNAB is the total above — make sure that matches the receipt.
+          </p>
         </section>
       ) : null}
 

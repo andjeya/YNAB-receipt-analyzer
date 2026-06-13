@@ -2,6 +2,15 @@ import { AllocationAssignment, AllocationItem, AllocationLane, AllocationWorkspa
 
 export const MAIN_LANE_ID = "main";
 export const UNASSIGNED_LANE_ID = "unassigned";
+export const PRIMARY_SPLIT_LANE_ID = "split-0";
+
+// The single-category "main" lane and the first split lane "split-0" are the
+// same default destination — toggling Categories between Single and Split only
+// renames the primary lane. Treat them as interchangeable so a mode toggle
+// follows items to the new primary lane instead of orphaning them.
+function isPrimaryLaneId(laneId: string): boolean {
+  return laneId === MAIN_LANE_ID || laneId === PRIMARY_SPLIT_LANE_ID;
+}
 
 function normalizeAmount(value: number): number {
   return Math.round(value * 100) / 100;
@@ -111,12 +120,23 @@ export function reconcileWorkspaceToDraft(
     };
   });
 
+  const newPrimaryLaneId =
+    expectedLanes.find((lane) => lane.lane_id !== UNASSIGNED_LANE_ID)?.lane_id ?? UNASSIGNED_LANE_ID;
+  const remapLaneId = (laneId: string): string => {
+    if (expectedLaneIds.has(laneId)) return laneId;
+    // A vanished primary lane (main↔split-0 on a mode toggle) follows its items
+    // to the new primary lane; any other vanished lane (e.g. a deleted split)
+    // orphans to Unassigned for re-review.
+    if (isPrimaryLaneId(laneId)) return newPrimaryLaneId;
+    return UNASSIGNED_LANE_ID;
+  };
+
   const itemIds = new Set(workspace.items.map((item) => item.item_id));
   const assignments = workspace.assignments
     .filter((assignment) => itemIds.has(assignment.item_id))
     .map((assignment) => ({
       item_id: assignment.item_id,
-      lane_id: expectedLaneIds.has(assignment.lane_id) ? assignment.lane_id : UNASSIGNED_LANE_ID,
+      lane_id: remapLaneId(assignment.lane_id),
     }));
 
   const assignedIds = new Set(assignments.map((assignment) => assignment.item_id));

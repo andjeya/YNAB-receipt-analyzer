@@ -313,3 +313,65 @@ describe("reconcileWorkspaceToDraft", () => {
     assert.ok(!reconciled.warnings.some((w) => w.includes("Line items changed")));
   });
 });
+
+// ---------------------------------------------------------------------------
+// reconcileWorkspaceToDraft — Single<->Split toggle preserves assignments
+// (regression: toggling Categories mode used to dump all items to Unassigned)
+// ---------------------------------------------------------------------------
+
+describe("reconcileWorkspaceToDraft — primary lane follows mode toggle", () => {
+  const twin = makeTwin([
+    { index: 0, raw_text: "A", translated_text: "A", item_type: "product", quantity: 1, unit_price: 4, line_total: 4, tax_code: null },
+    { index: 1, raw_text: "B", translated_text: "B", item_type: "product", quantity: 1, unit_price: 6, line_total: 6, tax_code: null },
+  ]);
+
+  it("Single -> Split keeps main-lane items on the first split lane (not Unassigned)", () => {
+    const single = buildFallbackWorkspace(makeDraft(), twin);
+    // sanity: items start on the main lane
+    assert.ok(single.assignments.every((a) => a.lane_id === MAIN_LANE_ID));
+
+    const splitDraft = makeDraft({ category_id: "", splits: [{ category_id: "cat-1", amount: 10, memo: "" }] });
+    const reconciled = reconcileWorkspaceToDraft(single, splitDraft, twin);
+    assert.ok(reconciled.assignments.every((a) => a.lane_id === "split-0"));
+    assert.ok(reconciled.assignments.every((a) => a.lane_id !== UNASSIGNED_LANE_ID));
+  });
+
+  it("Split -> Single restores split-0 items to the main lane", () => {
+    const splitDraft = makeDraft({ category_id: "", splits: [{ category_id: "cat-1", amount: 10, memo: "" }] });
+    const split = buildFallbackWorkspace(splitDraft, twin);
+    assert.ok(split.assignments.every((a) => a.lane_id === "split-0"));
+
+    const reconciled = reconcileWorkspaceToDraft(split, makeDraft(), twin);
+    assert.ok(reconciled.assignments.every((a) => a.lane_id === MAIN_LANE_ID));
+  });
+
+  it("round-trip Single -> Split -> Single returns items to the main lane", () => {
+    const single = buildFallbackWorkspace(makeDraft(), twin);
+    const splitDraft = makeDraft({ category_id: "", splits: [{ category_id: "cat-1", amount: 10, memo: "" }] });
+    const afterSplit = reconcileWorkspaceToDraft(single, splitDraft, twin);
+    const afterSingle = reconcileWorkspaceToDraft(afterSplit, makeDraft(), twin);
+    assert.ok(afterSingle.assignments.every((a) => a.lane_id === MAIN_LANE_ID));
+  });
+
+  it("a deleted non-primary split lane still orphans its items to Unassigned", () => {
+    const twoSplitDraft = makeDraft({
+      category_id: "",
+      splits: [
+        { category_id: "cat-1", amount: 4, memo: "" },
+        { category_id: "cat-2", amount: 6, memo: "" },
+      ],
+    });
+    const twoSplit = buildFallbackWorkspace(twoSplitDraft, twin);
+    // move the second item to split-1 so it is the one that vanishes
+    const moved = {
+      ...twoSplit,
+      assignments: twoSplit.assignments.map((a, i) => (i === 1 ? { ...a, lane_id: "split-1" } : a)),
+    };
+    // collapse to a single split (split-1 vanishes; split-0 stays primary)
+    const oneSplitDraft = makeDraft({ category_id: "", splits: [{ category_id: "cat-1", amount: 10, memo: "" }] });
+    const reconciled = reconcileWorkspaceToDraft(moved, oneSplitDraft, twin);
+    const byItem = new Map(reconciled.assignments.map((a) => [a.item_id, a.lane_id]));
+    assert.equal(byItem.get(moved.items[0].item_id), "split-0"); // stayed on primary
+    assert.equal(byItem.get(moved.items[1].item_id), UNASSIGNED_LANE_ID); // deleted split orphaned
+  });
+});

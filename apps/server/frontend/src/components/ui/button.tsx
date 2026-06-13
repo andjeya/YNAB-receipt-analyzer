@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-type ButtonVariant = "solid" | "ghost" | "outline" | "danger";
+type ButtonVariant = "solid" | "ghost" | "outline" | "danger" | "success";
 type ButtonSize = "sm" | "md" | "lg";
 
 const variantMap: Record<ButtonVariant, string> = {
@@ -10,12 +10,13 @@ const variantMap: Record<ButtonVariant, string> = {
   ghost: "bg-transparent text-ink hover:bg-ink/5",
   outline: "border border-ink/25 bg-white text-ink hover:bg-ink/5",
   danger: "bg-red-600 text-white hover:bg-red-700",
+  success: "bg-emerald-600 text-white shadow-float hover:bg-emerald-700",
 };
 
 const sizeMap: Record<ButtonSize, string> = {
-  sm: "h-9 px-3 text-sm",
-  md: "h-11 px-4 text-sm",
-  lg: "h-12 px-5 text-base",
+  sm: "min-h-9 py-2 px-3 text-sm",
+  md: "min-h-11 py-2.5 px-4 text-sm",
+  lg: "min-h-12 py-3 px-5 text-base",
 };
 
 export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {

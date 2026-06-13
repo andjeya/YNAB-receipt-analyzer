@@ -8,8 +8,40 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Repo root (in the container image: the WORKDIR /app). config.py lives at
+# apps/server/backend/app/config.py, so parents[4] is the project root. Anchor
+# all relative data/config paths here so they resolve to the SAME location no
+# matter which directory the process is launched from (repo root via dev-up.sh,
+# apps/server/backend via the run-app skill, or /app in Docker — where parents[4]
+# equals the WORKDIR, making this a no-op). Without this, launching from the
+# wrong cwd silently creates a second, divergent ./data dir.
+_PROJECT_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _anchor_path(value: Path) -> Path:
+    return value if value.is_absolute() else (_PROJECT_ROOT / value)
+
+
+def _anchor_sqlite_url(url: str) -> str:
+    """Resolve a relative sqlite:/// path against the project root. Non-sqlite
+    URLs, already-absolute sqlite paths, and in-memory DBs pass through."""
+    prefix = "sqlite:///"
+    if not url.startswith(prefix):
+        return url
+    raw = url[len(prefix):]
+    if raw.startswith("/") or raw.startswith(":memory:"):
+        return url
+    return f"{prefix}{_anchor_path(Path(raw))}"
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=(".env", ".env.local"), env_file_encoding="utf-8", extra="ignore")
+    # env_file is anchored to the project root so the same .env loads regardless
+    # of the launch cwd (a missing env_file is simply skipped, e.g. in Docker).
+    model_config = SettingsConfigDict(
+        env_file=(str(_PROJECT_ROOT / ".env"), str(_PROJECT_ROOT / ".env.local")),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     app_name: str = "Receipt YNAB Service"
     api_prefix: str = "/api"
@@ -80,6 +112,23 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return Path("./data/ingest")
         return value
+
+    @field_validator(
+        "ingest_dir",
+        "object_store_root",
+        "log_file_path",
+        "debug_tools_flag_file",
+        "ai_limits_config_path",
+        mode="after",
+    )
+    @classmethod
+    def _anchor_relative_paths(cls, value: Path) -> Path:
+        return _anchor_path(value)
+
+    @field_validator("database_url", "ai_usage_db_url", mode="after")
+    @classmethod
+    def _anchor_sqlite_urls(cls, value: str) -> str:
+        return _anchor_sqlite_url(value)
 
     @field_validator("cors_origins", mode="before")
     @classmethod

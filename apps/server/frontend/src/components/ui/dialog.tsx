@@ -133,7 +133,7 @@ export function Dialog({
         onClick={onClose}
       />
       {/* Panel */}
-      <div className="fixed inset-0 z-[81] flex items-center justify-center p-4">
+      <div className="fixed inset-0 z-[81] flex items-center justify-center p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
         <div
           ref={panelRef}
           role="dialog"
@@ -142,7 +142,7 @@ export function Dialog({
           aria-describedby={describedById}
           data-testid={dataTestId}
           tabIndex={-1}
-          className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-ink/15 bg-white shadow-float outline-none"
+          className="relative max-h-[85vh] supports-[height:1dvh]:max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-ink/15 bg-white shadow-float outline-none"
           onClick={(e) => e.stopPropagation()}
         >
           {children}

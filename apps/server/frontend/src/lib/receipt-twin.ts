@@ -1,5 +1,18 @@
 import { ReceiptLineItem, ReceiptTwinPayload } from "@/lib/types";
 
+/**
+ * Parse a numeric field while preserving null/absent values. Critically,
+ * `Number(null)` is 0, so a plain Number() coercion would turn a missing
+ * quantity into a real quantity of 0 — which both renders as "0 × $…" and
+ * trips the quantity × unit price warning on rows (discounts, taxes) that
+ * legitimately have no quantity.
+ */
+function toFiniteOrNull(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function normalizeLineItems(value: unknown): ReceiptLineItem[] {
   if (!Array.isArray(value)) {
     return [];
@@ -8,21 +21,17 @@ function normalizeLineItems(value: unknown): ReceiptLineItem[] {
   return value
     .filter((candidate): candidate is Record<string, unknown> => Boolean(candidate) && typeof candidate === "object")
     .map((item, index) => {
-      const indexValue = Number(item.index);
-      const quantityValue = Number(item.quantity);
-      const unitPriceValue = Number(item.unit_price);
-      const lineTotalValue = Number(item.line_total);
       const rawTaxCode = item.tax_code;
       const itemType = String(item.item_type ?? "").trim();
       const taxCode = typeof rawTaxCode === "string" && rawTaxCode.trim() ? rawTaxCode : null;
 
       return {
-        index: Number.isFinite(indexValue) ? indexValue : index,
+        index: toFiniteOrNull(item.index) ?? index,
         raw_text: String(item.raw_text ?? ""),
         translated_text: String(item.translated_text ?? ""),
-        quantity: Number.isFinite(quantityValue) ? quantityValue : null,
-        unit_price: Number.isFinite(unitPriceValue) ? unitPriceValue : null,
-        line_total: Number.isFinite(lineTotalValue) ? lineTotalValue : null,
+        quantity: toFiniteOrNull(item.quantity),
+        unit_price: toFiniteOrNull(item.unit_price),
+        line_total: toFiniteOrNull(item.line_total),
         tax_code: taxCode,
         item_type: itemType || "product",
       };
@@ -47,25 +56,30 @@ function toNumberOrNull(value: number | null | undefined): number | null {
   return value;
 }
 
+function lineItemDisplayName(item: ReceiptLineItem, position: number): string {
+  const name = item.translated_text?.trim() || item.raw_text?.trim();
+  return name ? `"${name}"` : `Line ${position + 1}`;
+}
+
 export function computeTwinEditWarnings(payload: ReceiptTwinPayload): string[] {
   const warnings: string[] = [];
 
-  for (const item of payload.line_items) {
+  payload.line_items.forEach((item, position) => {
     const quantity = toNumberOrNull(item.quantity);
     const unitPrice = toNumberOrNull(item.unit_price);
     const lineTotal = toNumberOrNull(item.line_total);
 
     if (quantity == null || unitPrice == null || lineTotal == null) {
-      continue;
+      return;
     }
 
     const expected = quantity * unitPrice;
     if (Math.abs(expected - lineTotal) > 0.01) {
       warnings.push(
-        `Line ${item.index + 1}: line total ${lineTotal.toFixed(2)} differs from quantity × unit price ${expected.toFixed(2)}.`,
+        `${lineItemDisplayName(item, position)}: ${quantity} × $${unitPrice.toFixed(2)} is $${expected.toFixed(2)}, but the line shows $${lineTotal.toFixed(2)}. One of those numbers is probably off.`,
       );
     }
-  }
+  });
 
   let additiveTotal = 0;
   let additiveCount = 0;
@@ -94,7 +108,7 @@ export function computeTwinEditWarnings(payload: ReceiptTwinPayload): string[] {
     const delta = Math.abs(additiveTotal - payload.total_amount);
     if (delta > 0.05) {
       warnings.push(
-        `Line-item sum ${additiveTotal.toFixed(2)} differs from total ${payload.total_amount.toFixed(2)} by ${delta.toFixed(2)}.`,
+        `The line items add up to $${additiveTotal.toFixed(2)}, but the receipt total is $${payload.total_amount.toFixed(2)} — a $${delta.toFixed(2)} difference. One line is probably missing or has the wrong amount.`,
       );
     }
   }

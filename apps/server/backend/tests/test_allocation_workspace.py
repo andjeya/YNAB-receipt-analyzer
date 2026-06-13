@@ -179,6 +179,59 @@ def test_stale_pin_does_not_resurrect_old_total():
     )
 
 
+def _two_item_twin() -> dict:
+    return {
+        "line_items": [
+            {"index": 0, "raw_text": "A", "translated_text": "", "line_total": 20.0, "tax_code": None, "item_type": "product"},
+            {"index": 1, "raw_text": "B", "translated_text": "", "line_total": 10.0, "tax_code": None, "item_type": "product"},
+        ]
+    }
+
+
+def test_category_mode_toggle_preserves_item_assignments():
+    """Toggling Categories Single<->Split renames the primary lane (main<->split-0);
+    items must follow it, not get orphaned to Unassigned (regression)."""
+    twin = _two_item_twin()
+    single = build_initial_allocation_workspace(
+        _single_category_payload(total=30.0), twin_payload=twin, twin_version=1
+    )
+    assert all(a["lane_id"] == "main" for a in single["assignments"])
+
+    # Single -> Split: main-lane items follow to the first split lane.
+    split = reconcile_allocation_workspace(
+        _split_payload(), single, twin_payload=twin, twin_version=1
+    )
+    assert all(a["lane_id"] == "split-0" for a in split["assignments"]), split["assignments"]
+    assert not any(a["lane_id"] == "unassigned" for a in split["assignments"])
+
+    # Split -> Single: items return to the main lane.
+    back = reconcile_allocation_workspace(
+        _single_category_payload(total=30.0), split, twin_payload=twin, twin_version=1
+    )
+    assert all(a["lane_id"] == "main" for a in back["assignments"]), back["assignments"]
+
+
+def test_deleted_non_primary_split_orphans_to_unassigned():
+    """A vanished NON-primary split lane (e.g. split-1) still orphans its items
+    to Unassigned; only the primary lane follows the mode toggle."""
+    twin = _two_item_twin()
+    two_split = build_initial_allocation_workspace(
+        _split_payload(), twin_payload=twin, twin_version=1
+    )
+    items = two_split["items"]
+    two_split["assignments"] = [
+        {"item_id": items[0]["item_id"], "lane_id": "split-0"},
+        {"item_id": items[1]["item_id"], "lane_id": "split-1"},
+    ]
+    one_split_payload = {**_split_payload(), "category_id": None, "splits": [{"category_id": "cat-1", "amount": 30.0, "memo": "a"}]}
+    reconciled = reconcile_allocation_workspace(
+        one_split_payload, two_split, twin_payload=twin, twin_version=1
+    )
+    by_item = {a["item_id"]: a["lane_id"] for a in reconciled["assignments"]}
+    assert by_item[items[0]["item_id"]] == "split-0"
+    assert by_item[items[1]["item_id"]] == "unassigned"
+
+
 def test_recompute_never_mutates_total_amount_single_category():
     """
     For single-category receipts, recompute must not alter total_amount in

@@ -16,6 +16,15 @@ from receipt_shared.contracts import (
 
 MAIN_LANE_ID = "main"
 UNASSIGNED_LANE_ID = "unassigned"
+PRIMARY_SPLIT_LANE_ID = "split-0"
+
+
+def _is_primary_lane_id(lane_id: str) -> bool:
+    """The single-category "main" lane and the first split lane "split-0" are
+    the same default destination; toggling Categories Single<->Split only renames
+    the primary lane. Treating them as interchangeable lets a mode toggle follow
+    items to the new primary lane instead of orphaning them to Unassigned."""
+    return lane_id in (MAIN_LANE_ID, PRIMARY_SPLIT_LANE_ID)
 
 
 def _utcnow_iso() -> str:
@@ -234,16 +243,32 @@ def reconcile_allocation_workspace(
             )
         )
 
+    new_primary_lane_id = next(
+        (lane.lane_id for lane in expected_lanes if lane.lane_id != UNASSIGNED_LANE_ID),
+        UNASSIGNED_LANE_ID,
+    )
+
+    def _remap_lane_id(lane_id: str) -> str:
+        if lane_id in expected_lane_map:
+            return lane_id
+        # A vanished primary lane (main<->split-0 on a mode toggle) follows its
+        # items to the new primary lane; any other vanished lane (e.g. a deleted
+        # split) orphans to Unassigned for re-review.
+        if _is_primary_lane_id(lane_id):
+            return new_primary_lane_id
+        return UNASSIGNED_LANE_ID
+
     items = workspace.items
     item_ids = {item.item_id for item in items}
     assignments: list[AllocationAssignment] = []
     for assignment in workspace.assignments:
         if assignment.item_id not in item_ids:
             continue
-        if assignment.lane_id not in expected_lane_map:
-            assignments.append(AllocationAssignment(item_id=assignment.item_id, lane_id=UNASSIGNED_LANE_ID))
-            continue
-        assignments.append(assignment)
+        remapped_lane_id = _remap_lane_id(assignment.lane_id)
+        if remapped_lane_id == assignment.lane_id:
+            assignments.append(assignment)
+        else:
+            assignments.append(AllocationAssignment(item_id=assignment.item_id, lane_id=remapped_lane_id))
 
     assigned_item_ids = {assignment.item_id for assignment in assignments}
     for item in items:

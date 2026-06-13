@@ -7,8 +7,10 @@ import { formatDistanceToNow } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Check,
   ChevronDown,
   ChevronUp,
+  Clock,
   Droplets,
   Flame,
   HelpCircle,
@@ -58,7 +60,7 @@ import { Snappy } from "@/components/snappy/snappy";
 import { CardMappingPanel } from "@/components/card-mapping-panel";
 import { SyncPreviewDialog } from "@/components/sync-preview-dialog";
 import { toDraftFromPayload } from "@/lib/validation-draft";
-import { formatWeekRange, parseApiDate } from "@/lib/dates";
+import { formatWeekRange, formatWeekStart, parseApiDate } from "@/lib/dates";
 import { notifyDevtoolsChange } from "@/components/providers";
 
 // ---------------------------------------------------------------------------
@@ -249,12 +251,36 @@ function ReceiptLookup({ onNavigate }: { onNavigate: (path: string) => void }) {
 // Tile IDs for the tap-popover system
 type StatTileId = "streak" | "droplets" | "skip-pass";
 
-function StatTilePopover({ text, id }: { text: string; id: string }) {
+function StatTilePopover({ text, id }: { text: string; id: string; align?: "left" | "right" }) {
+  // Anchored to the trigger's left edge, then nudged horizontally so it never
+  // spills past either viewport edge — a static left/right anchor can't keep a
+  // mid-row chip's popover on screen at 320px (the chip's position is unknown
+  // until layout).
+  const ref = useRef<HTMLDivElement | null>(null);
+  const measuredRef = useRef(false);
+  const [shiftX, setShiftX] = useState(0);
+  useEffect(() => {
+    // Measure exactly once per mount, while the transform is still translateX(0),
+    // so the rect is the element's natural position. A ref guard makes this
+    // idempotent under React Strict Mode's double effect-invoke (a functional
+    // accumulator would otherwise double the shift).
+    if (measuredRef.current) return;
+    const el = ref.current;
+    if (!el) return;
+    measuredRef.current = true;
+    const margin = 8;
+    const viewportWidth = document.documentElement.clientWidth;
+    const rect = el.getBoundingClientRect();
+    if (rect.left < margin) setShiftX(margin - rect.left);
+    else if (rect.right > viewportWidth - margin) setShiftX(viewportWidth - margin - rect.right);
+  }, [text]);
   return (
     <div
+      ref={ref}
       role="status"
       id={id}
-      className="absolute left-0 top-full z-20 mt-1 w-max max-w-[16rem] rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
+      style={{ transform: `translateX(${shiftX}px)` }}
+      className="absolute left-0 top-full z-20 mt-1 w-max max-w-[min(16rem,calc(100vw-1rem))] rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
     >
       {text}
     </div>
@@ -347,14 +373,17 @@ const NODE_FILL: Record<string, string> = {
 };
 
 /**
- * WeekTrail — replaces JourneyPathBoard.
- * - HERO tile (last slot): larger (~h-14), labeled "This week"
- * - PAST stamps (first 8 slots): small circles
- *   - Mobile: show last 4 past stamps (hidden sm:flex for older 4)
+ * WeekTrail — one row of uniform week tiles that fills the card width.
+ * - Every slot (past + hero) shares the same column structure: tile on top,
+ *   tiny date label below — so all tiles sit on one baseline.
+ * - HERO tile (last slot): slightly taller, mint ring, labeled "This week".
+ * - PAST tiles: rounded squares with a state glyph (✓ on time, clock late).
+ *   - Mobile: show last 4 past tiles (hidden sm:flex for older 4)
  *   - EXCEPTION: any hidden-on-mobile slot with flames or burnt gets forced-shown
  * - Flames: Flame overlays (max 3, pulse) on flaming weeks
  * - Burnt: charred dark fill
- * - Tap popover with Douse action
+ * - Tap popover explains what the week's state means + Douse action
+ * - One-line micro-legend below the row
  */
 function WeekTrail({
   slots,
@@ -418,6 +447,31 @@ function WeekTrail({
     return `${isCurrent ? "This week — " : ""}${formatWeekRange(slot.start_at, slot.end_at, gameTimezone)} · ${receiptsPart}${flamePart}${burntPart}`;
   }
 
+  /** Plain-English explanation of the slot's state, shown in the tap popover. */
+  function slotMeaning(slot: GameWeeklySlot): string | null {
+    if (slot.burnt) return "Three flames went undoused, so this week is burnt for good.";
+    if (slot.flames > 0) return "A flame means a synced receipt had to be corrected in YNAB afterwards. Douse it with a droplet.";
+    if (slot.display_state === "green") return "Every receipt was reviewed within a day. Nice.";
+    if (slot.display_state === "yellow") return "The slowest review took up to three days.";
+    if (slot.display_state === "brown") return "The slowest review took more than three days.";
+    if (slot.receipt_count === 0) return "No receipts — this week doesn't count for or against you.";
+    return null;
+  }
+
+  /** Glyph inside a filled tile: ✓ for on-time weeks, clock for late ones. */
+  function slotGlyph(slot: GameWeeklySlot, sizeClass: string) {
+    if (slot.display_state === "green") {
+      return <Check className={cn(sizeClass, "text-white/90")} aria-hidden="true" />;
+    }
+    if (slot.display_state === "yellow") {
+      return <Clock className={cn(sizeClass, "text-ink/60")} aria-hidden="true" />;
+    }
+    if (slot.display_state === "brown") {
+      return <Clock className={cn(sizeClass, "text-white/80")} aria-hidden="true" />;
+    }
+    return null;
+  }
+
   function slotFill(slot: GameWeeklySlot): string | undefined {
     if (slot.burnt) return NODE_FILL.burnt;
     if (!slot.display_state) return undefined;
@@ -447,20 +501,20 @@ function WeekTrail({
     const hasState = slot.display_state !== null || slot.burnt;
     const isOpen = openNode === arrayIndex;
     const label = slotLabel(slot, false);
+    const meaning = slotMeaning(slot);
     const canDouse = slot.flames > 0 && !slot.burnt && waterUnits > 0;
     const isOlderOnMobile = arrayIndex < mobileVisibleCutoff;
     const isForced = isForcedOnMobile(arrayIndex);
 
     const buttonEl = (
-      <div className={cn("relative flex flex-col items-center", isOlderOnMobile && !isForced ? "hidden sm:flex" : undefined)}>
+      <div className={cn("relative min-w-0 flex-1 flex-col items-center gap-1", isOlderOnMobile && !isForced ? "hidden sm:flex" : "flex")}>
         <button
           type="button"
           data-testid={`trail-week-${slot.index}`}
           onClick={() => setOpenNode((prev) => (prev === arrayIndex ? null : arrayIndex))}
           aria-describedby={isOpen ? `trail-popover-${arrayIndex}` : undefined}
           className={cn(
-            "relative flex items-center justify-center rounded-full border-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
-            "h-7 w-7",
+            "relative flex h-9 w-full max-w-[3.5rem] items-center justify-center rounded-xl border-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
             slot.burnt ? "border-transparent bg-stone-900" : hasState ? "border-transparent" : "border-dashed border-sand/30 bg-white/5",
           )}
           style={!slot.burnt && hasState && fill ? { backgroundColor: fill, borderColor: fill } : undefined}
@@ -468,21 +522,26 @@ function WeekTrail({
           title={label}
         >
           {slot.burnt ? (
-            <Flame className="h-3 w-3 text-stone-400" aria-hidden="true" />
-          ) : hasState ? (
-            <span className="h-2 w-2 rounded-full bg-white/30" aria-hidden="true" />
-          ) : null}
+            <Flame className="h-3.5 w-3.5 text-stone-400" aria-hidden="true" />
+          ) : (
+            slotGlyph(slot, "h-3.5 w-3.5")
+          )}
           {slot.flames > 0 && !slot.burnt ? renderFlameOverlay(slot.flames, false) : null}
         </button>
+        <p className="text-[9px] text-sand/50 whitespace-nowrap">{formatWeekStart(slot.start_at, gameTimezone)}</p>
 
-        {/* Popover */}
+        {/* Popover — left-align for left-half tiles, right-align for right-half */}
         {isOpen ? (
           <div
             role="status"
             id={`trail-popover-${arrayIndex}`}
-            className="absolute bottom-full left-1/2 z-20 mb-2 w-max max-w-[14rem] -translate-x-1/2 rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
+            className={cn(
+              "absolute bottom-full z-20 mb-2 w-max max-w-[min(14rem,calc(100vw-2rem))] rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float",
+              arrayIndex < mobileVisibleCutoff + 2 ? "left-0" : "right-0",
+            )}
           >
             <p>{label}</p>
+            {meaning ? <p className="mt-1 text-[10px] text-sand/70">{meaning}</p> : null}
             {canDouse ? (
               <button
                 type="button"
@@ -510,29 +569,27 @@ function WeekTrail({
   const heroHasState = heroSlot.display_state !== null || heroSlot.burnt;
   const heroIsOpen = openNode === pastSlots.length;
   const heroLabel = slotLabel(heroSlot, true);
+  const heroMeaning = slotMeaning(heroSlot);
   const heroCanDouse = heroSlot.flames > 0 && !heroSlot.burnt && waterUnits > 0;
 
   return (
     <div ref={trailRef} className="relative">
-      {/* Connecting track line */}
-      <div className="absolute left-[calc(100%/18)] right-0 top-1/2 -translate-y-1/2 h-0.5 bg-white/20 rounded-full" style={{ right: "3.5rem" }} aria-hidden="true" />
-
-      <div className="relative flex items-end gap-1.5">
+      <div className="relative flex items-end gap-1 sm:gap-1.5">
         {/* Past stamps */}
         {pastSlots.map((slot, arrayIndex) => (
           <PastStamp key={`past-${slot.index}`} slot={slot} arrayIndex={arrayIndex} />
         ))}
 
-        {/* Hero tile (current week) */}
-        <div className="relative ml-2 flex flex-col items-center gap-1 shrink-0">
+        {/* Hero tile (current week) — same column structure as the stamps so
+            everything shares one baseline; only taller + ringed. */}
+        <div className="relative flex min-w-0 flex-[1.3] flex-col items-center gap-1">
           <button
             type="button"
             data-testid={`trail-week-${heroSlot.index}`}
             onClick={() => setOpenNode((prev) => (prev === pastSlots.length ? null : pastSlots.length))}
             aria-describedby={heroIsOpen ? `trail-popover-hero` : undefined}
             className={cn(
-              "relative flex flex-col items-center justify-center rounded-2xl border-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
-              "h-14 w-14 sm:h-16 sm:w-16",
+              "relative flex h-12 w-full max-w-[4.5rem] items-center justify-center rounded-xl border-2 ring-2 ring-mint/60 ring-offset-2 ring-offset-ink transition focus-visible:outline-none focus-visible:ring-mint",
               heroSlot.burnt
                 ? "border-transparent bg-stone-900"
                 : heroHasState
@@ -544,25 +601,26 @@ function WeekTrail({
             title={heroLabel}
           >
             {heroSlot.burnt ? (
-              <Flame className="h-6 w-6 text-stone-400 animate-fire-fade" aria-hidden="true" />
+              <Flame className="h-5 w-5 text-stone-400 animate-fire-fade" aria-hidden="true" />
             ) : heroHasState ? (
-              <span className="h-4 w-4 rounded-full bg-white/30" aria-hidden="true" />
+              slotGlyph(heroSlot, "h-4 w-4")
             ) : (
               // Empty / no receipts yet: subtle sprout hint
               <span className="text-lg" aria-hidden="true">🌱</span>
             )}
             {heroSlot.flames > 0 && !heroSlot.burnt ? renderFlameOverlay(heroSlot.flames, true) : null}
           </button>
-          <p className="text-[10px] font-semibold text-sand/60 whitespace-nowrap">This week</p>
+          <p className="text-[9px] font-semibold text-sand/80 whitespace-nowrap">This week</p>
 
-          {/* Hero popover */}
+          {/* Hero popover — right-aligned so it doesn't overflow right viewport edge */}
           {heroIsOpen ? (
             <div
               role="status"
               id="trail-popover-hero"
-              className="absolute bottom-full left-1/2 z-20 mb-2 w-max max-w-[15rem] -translate-x-1/2 rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
+              className="absolute bottom-full right-0 z-20 mb-2 w-max max-w-[min(15rem,calc(100vw-2rem))] rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
             >
               <p>{heroLabel}</p>
+              {heroMeaning ? <p className="mt-1 text-[10px] text-sand/70">{heroMeaning}</p> : null}
               {heroCanDouse ? (
                 <button
                   type="button"
@@ -580,6 +638,30 @@ function WeekTrail({
             </div>
           ) : null}
         </div>
+      </div>
+
+      {/* Micro-legend — one compact line so the colors explain themselves */}
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-sand/60">
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: NODE_FILL.green }} aria-hidden="true" />
+          on time
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: NODE_FILL.yellow }} aria-hidden="true" />
+          a bit late
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: NODE_FILL.brown }} aria-hidden="true" />
+          very late
+        </span>
+        <span className="flex items-center gap-1">
+          <Flame className="h-3 w-3 text-orange-400" aria-hidden="true" />
+          fixed in YNAB — tap to douse
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full border border-dashed border-sand/40" aria-hidden="true" />
+          no receipts
+        </span>
       </div>
     </div>
   );
@@ -805,6 +887,7 @@ function ReceiptListHeader({
                 {openTile === "droplets" ? (
                   <StatTilePopover
                     id="tile-popover-droplets"
+                    align="right"
                     text={`Droplets — earned by catching Snappy's mistakes during review. You can hold up to ${dashboardData?.rules?.water_capacity ?? 5}. Tap a flaming week on your trail to spend them.`}
                   />
                 ) : null}
@@ -827,6 +910,7 @@ function ReceiptListHeader({
                 {openTile === "skip-pass" ? (
                   <StatTilePopover
                     id="tile-popover-skip-pass"
+                    align="right"
                     text="Skip Pass — shred a late receipt and it won't count against its week. Earned every 4 consecutive green streak weeks."
                   />
                 ) : null}
@@ -1040,21 +1124,21 @@ function ReceiptListItem({
               <p className="mt-1 text-[11px] font-semibold text-ink/70">{receipt.correction_message}</p>
             ) : null}
 
-            <div className="mt-3 flex items-center justify-between gap-2">
+            <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
               {(() => {
                 const kind = receipt.transaction_kind ?? "purchase";
                 const millis = receipt.display_total_milliunits;
-                if (millis == null) return <p className="text-sm font-semibold">--</p>;
+                if (millis == null) return <p className="min-w-0 shrink-0 text-sm font-semibold">--</p>;
                 const dollars = signedDollars(millis / 1000, kind);
                 const formatted = formatSignedDollars(dollars);
                 const isRefund = kind === "refund";
                 return (
-                  <p className={cn("text-sm font-semibold", isRefund ? "text-emerald-700" : undefined)}>
+                  <p className={cn("min-w-0 shrink-0 text-sm font-semibold", isRefund ? "text-emerald-700" : undefined)}>
                     {formatted}
                   </p>
                 );
               })()}
-              <div className="relative z-10 flex items-center gap-2">
+              <div className="relative z-10 ml-auto flex flex-wrap items-center justify-end gap-1.5">
                 {tile?.display_state === "shredded" ? (
                   <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700">
                     <Sparkles className="h-3 w-3" />
@@ -1077,7 +1161,8 @@ function ReceiptListItem({
                   <Button
                     data-testid="quick-sync-button"
                     size="sm"
-                    className="h-8 gap-1 bg-mint text-white hover:bg-mint/90"
+                    variant="success"
+                    className="h-8 gap-1"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1085,7 +1170,7 @@ function ReceiptListItem({
                     }}
                     disabled={isQuickSyncPending}
                   >
-                    {isQuickSyncPending ? "Syncing…" : "Looks right — Sync"}
+                    {isQuickSyncPending ? "Syncing…" : "Looks right - Sync"}
                   </Button>
                 ) : null}
                 {receipt.status !== "synced" && receipt.status !== "syncing" ? (
@@ -1094,7 +1179,7 @@ function ReceiptListItem({
                     data-testid="delete-receipt-button"
                     aria-label="Delete receipt"
                     title="Delete receipt"
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-full text-ink/40 opacity-70 transition hover:bg-red-50 hover:text-red-600 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-40"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink/40 opacity-70 transition hover:bg-red-50 hover:text-red-600 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-40"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1192,12 +1277,6 @@ function QuickSyncPreview({
 
   const payload = (receipt.latest_validation?.payload ?? {}) as Record<string, unknown>;
   const draft = toDraftFromPayload(payload, receipt.display_payee_name ?? "");
-  const latestSync = receipt.latest_sync;
-  const lastDryRunTransaction: Record<string, unknown> | null = (() => {
-    if (!latestSync || latestSync.status !== "dry_run" || !latestSync.raw_request) return null;
-    const txn = (latestSync.raw_request as Record<string, unknown>).transaction;
-    return txn && typeof txn === "object" ? (txn as Record<string, unknown>) : null;
-  })();
   const config = configQuery.data;
 
   return (
@@ -1216,7 +1295,6 @@ function QuickSyncPreview({
         newFlagColor: config?.new_transaction_flag_color ?? "green",
         updatedFlagColor: config?.updated_transaction_flag_color ?? "blue",
       }}
-      lastDryRunTransaction={lastDryRunTransaction}
       isConfirmDisabled={false}
       isSyncing={isSyncing}
       dateTimeConfirmed={receipt.latest_twin?.confirmed_sections.date_time ?? false}

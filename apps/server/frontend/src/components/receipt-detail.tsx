@@ -870,7 +870,7 @@ function DuplicateReviewSection({
         </Card>
       </div>
 
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink/15 bg-white/95 px-4 py-3 backdrop-blur">
+      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink/15 bg-white/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center gap-2">
           <Button
             className="flex-1 bg-red-700 hover:bg-red-800"
@@ -904,7 +904,7 @@ function ActionButtonBar({ isSyncing, onReset, canReset, isAutosaving, onSync, c
   stripReasons: string[];
 }) {
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink/15 bg-white/95 px-4 py-3 backdrop-blur">
+    <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink/15 bg-white/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
       {stripReasons.length > 0 ? (
         <div className="mx-auto mb-2 max-w-6xl">
           <p className="text-xs font-medium text-amber-800">
@@ -917,7 +917,7 @@ function ActionButtonBar({ isSyncing, onReset, canReset, isAutosaving, onSync, c
         <Button variant="outline" className="shrink-0 px-5" onClick={onReset} disabled={!canReset || isAutosaving}>
           Reset
         </Button>
-        <Button className="flex-1 whitespace-nowrap" variant={isSyncing ? "outline" : "solid"} onClick={onSync} disabled={!canSync || isSyncing} data-testid="sync-button">
+        <Button className="flex-1 whitespace-nowrap" variant={isSyncing ? "outline" : "success"} onClick={onSync} disabled={!canSync || isSyncing} data-testid="sync-button">
           {syncButtonLabel}
         </Button>
       </div>
@@ -1484,26 +1484,16 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     overrideDuplicateMutation.mutate();
   };
 
-  // Derive last dry-run transaction for the preview dialog (non-hook; defined after early-return guards)
-  const latestSync = receipt.latest_sync;
-  const lastDryRunTransaction: Record<string, unknown> | null = (() => {
-    if (!latestSync || latestSync.status !== "dry_run") return null;
-    const rawReq = latestSync.raw_request;
-    if (!rawReq) return null;
-    const txn = (rawReq as Record<string, unknown>).transaction;
-    return txn && typeof txn === "object" ? (txn as Record<string, unknown>) : null;
-  })();
-
   return (
-    <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 pb-28 pt-4">
+    <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 pt-4" style={{ paddingBottom: "max(7rem, calc(7rem + env(safe-area-inset-bottom)))" }}>
       <header className="animate-reveal rounded-3xl bg-white/90 p-4 shadow-float">
         <Link href="/" className="inline-flex items-center gap-1.5 rounded-full border border-ink/20 bg-white/80 px-4 py-2 text-sm font-medium text-ink/80 hover:bg-white transition shadow-sm">
           <ArrowLeft className="h-4 w-4" />
           Back
         </Link>
         <div className="mt-3 flex items-start justify-between gap-2">
-          <div>
-            <h1 className="font-[var(--font-heading)] text-xl font-bold">{receipt.display_payee_name ?? receipt.original_filename}</h1>
+          <div className="min-w-0">
+            <h1 className="break-words font-[var(--font-heading)] text-xl font-bold">{receipt.display_payee_name ?? receipt.original_filename}</h1>
             <p className="mt-1 text-sm text-ink/70">
               Total{" "}
               {receipt.display_total_milliunits != null && draft
@@ -1514,18 +1504,20 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
                 : "--"}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             {receipt.status !== "synced" && receipt.status !== "syncing" ? (
               <Button
                 variant="outline"
                 size="sm"
                 data-testid="forget-receipt-button"
+                aria-label="Delete receipt"
+                title="Delete receipt"
                 className="h-8 gap-1 border-red-200 text-red-600 hover:bg-red-50"
                 onClick={() => deleteMutation.mutate()}
                 disabled={deleteMutation.isPending}
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                Delete receipt
+                <span className="hidden sm:inline">Delete receipt</span>
               </Button>
             ) : null}
             <StatusBadge status={receipt.status} />
@@ -1712,7 +1704,6 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
               newFlagColor: config?.new_transaction_flag_color ?? "green",
               updatedFlagColor: config?.updated_transaction_flag_color ?? "blue",
             }}
-            lastDryRunTransaction={lastDryRunTransaction}
             isConfirmDisabled={isConfirmDisabled}
             confirmDisabledReason={confirmDisabledReason}
             isSyncing={isSyncing}

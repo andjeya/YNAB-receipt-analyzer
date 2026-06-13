@@ -90,7 +90,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       <div
         aria-live="polite"
         aria-label="Notifications"
-        className="pointer-events-none fixed bottom-4 right-4 z-[90] flex flex-col gap-2"
+        className="pointer-events-none fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-4 right-4 z-[90] flex flex-col gap-2 items-end"
       >
         {toasts.map((item) => (
           <div
@@ -99,7 +99,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             data-testid="toast"
             data-variant={item.variant}
             className={cn(
-              "pointer-events-auto animate-toast-in flex w-80 items-start gap-3 rounded-2xl border px-4 py-3 shadow-float text-sm",
+              "pointer-events-auto animate-toast-in flex w-80 max-w-full items-start gap-3 rounded-2xl border px-4 py-3 shadow-float text-sm",
               item.variant === "success"
                 ? "border-emerald-200 bg-emerald-50 text-emerald-900"
                 : "border-red-200 bg-red-50 text-red-900",
@@ -109,7 +109,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               {item.title ? (
                 <p className="font-semibold leading-snug">{item.title}</p>
               ) : null}
-              <p className={cn("leading-snug", item.title ? "mt-0.5 text-xs opacity-85" : "font-medium")}>
+              <p className={cn("leading-snug break-words", item.title ? "mt-0.5 text-xs opacity-85" : "font-medium")}>
                 {item.message}
               </p>
               {item.action ? (

@@ -72,8 +72,6 @@ export interface SyncPreviewDialogProps {
   categories: { entity_id: string; name: string; group_name: string | null }[];
   hasSuccessfulSync: boolean;
   mode: SyncPreviewMode;
-  /** The transaction object from the most recent dry-run's raw_request */
-  lastDryRunTransaction: Record<string, unknown> | null;
   isConfirmDisabled: boolean;
   confirmDisabledReason?: string;
   isSyncing: boolean;
@@ -100,7 +98,6 @@ export function SyncPreviewDialog({
   categories,
   hasSuccessfulSync,
   mode,
-  lastDryRunTransaction,
   isConfirmDisabled,
   confirmDisabledReason,
   isSyncing,
@@ -132,9 +129,9 @@ export function SyncPreviewDialog({
   if (mode.dryRun) {
     confirmLabel = "Run dry-run";
   } else if (hasSuccessfulSync) {
-    confirmLabel = "Update transaction in YNAB";
+    confirmLabel = "Update in YNAB";
   } else {
-    confirmLabel = "Create transaction in YNAB";
+    confirmLabel = "Add to YNAB";
   }
 
   // Mode badge
@@ -154,7 +151,7 @@ export function SyncPreviewDialog({
   } else {
     const budgetLabel = mode.budgetName ?? (mode.budgetId ? `budget ${mode.budgetId}` : "");
     modeBadge = (
-      <span className="rounded border border-ember bg-ember/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-ember">
+      <span className="max-w-full break-all rounded border border-ember bg-ember/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-ember">
         LIVE{budgetLabel ? ` → ${budgetLabel}` : ""}
       </span>
     );
@@ -163,10 +160,10 @@ export function SyncPreviewDialog({
   // Flag color
   const activeFlag = hasSuccessfulSync ? mode.updatedFlagColor : mode.newFlagColor;
 
-  // Intent caption
-  const intentLabel = hasSuccessfulSync ? "Update intent" : "Create intent";
-  const intentCaption =
-    "Create-intent payload (the exact body is finalized server-side based on current validation)";
+  // One plain-English line explaining what confirming will do
+  const intentSummary = hasSuccessfulSync
+    ? "This receipt is already in YNAB — here's what the updated transaction will look like."
+    : "Here's the transaction that will be added to YNAB.";
 
   // Confirm button is fully disabled
   const confirmFullyDisabled = isConfirmDisabled || isSyncing || !mode.syncEnabled;
@@ -180,7 +177,7 @@ export function SyncPreviewDialog({
     >
       {/* Header */}
       <div className="border-b border-ink/10 px-4 py-3">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <h2 id="sync-preview-heading" className="text-sm font-semibold text-ink">
             Review transaction
           </h2>
@@ -195,30 +192,30 @@ export function SyncPreviewDialog({
 
       {/* Body — dense bank-register table */}
       <div className="px-4 py-3 text-xs">
-        {/* Intent label */}
-        <p className="mb-2 font-semibold text-ink/70 uppercase tracking-wide text-[11px]">
-          {intentLabel}
-        </p>
-        <p className="mb-3 text-[11px] text-ink/50">{intentCaption}</p>
+        <p className="mb-3 text-xs text-ink/70">{intentSummary}</p>
 
         {/* Table */}
-        <table className="w-full border-collapse text-xs">
+        <table className="w-full table-fixed border-collapse text-xs">
+          <colgroup>
+            <col className="w-20 sm:w-28" />
+            <col />
+          </colgroup>
           <tbody>
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/70 w-28 align-top">Payee</td>
-              <td className="py-1.5 text-ink">{draft.payee_name || "—"}</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top whitespace-nowrap">Payee</td>
+              <td className="py-1.5 text-ink break-words">{draft.payee_name || "—"}</td>
             </tr>
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Account</td>
-              <td className="py-1.5 text-ink">{accountName}</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top whitespace-nowrap">Account</td>
+              <td className="py-1.5 text-ink break-words">{accountName}</td>
             </tr>
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Date</td>
-              <td className="py-1.5 text-ink">{draft.transaction_date || "—"}</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top whitespace-nowrap">Date</td>
+              <td className="py-1.5 text-ink break-words">{draft.transaction_date || "—"}</td>
             </tr>
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Total</td>
-              <td className="py-1.5 text-ink">
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top whitespace-nowrap">Total</td>
+              <td className="py-1.5 text-ink break-words">
                 {formatSignedDollarsWithDirection(signed, kind)}
               </td>
             </tr>
@@ -226,15 +223,19 @@ export function SyncPreviewDialog({
             {/* Category / splits */}
             {draft.splits.length > 0 ? (
               <tr className="border-b border-ink/8">
-                <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Categories</td>
-                <td className="py-1.5">
-                  <table className="w-full">
+                <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top whitespace-nowrap">Categories</td>
+                <td className="py-1.5 min-w-0">
+                  <table className="w-full table-fixed">
+                    <colgroup>
+                      <col />
+                      <col className="w-16" />
+                    </colgroup>
                     <tbody>
                       {draft.splits.map((split, idx) => {
                         const splitSigned = signedDollars(split.amount, kind);
                         return (
                           <tr key={idx} className="border-b border-ink/5 last:border-0">
-                            <td className="py-0.5 pr-2 text-ink/80">{categoryLabel(split.category_id)}</td>
+                            <td className="py-0.5 pr-2 text-ink/80 break-words">{categoryLabel(split.category_id)}</td>
                             <td className="py-0.5 text-right text-ink tabular-nums">
                               {formatDollarsMagnitude(Math.round(Math.abs(splitSigned) * 1000))}
                             </td>
@@ -255,32 +256,32 @@ export function SyncPreviewDialog({
               </tr>
             ) : (
               <tr className="border-b border-ink/8">
-                <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Category</td>
-                <td className="py-1.5 text-ink">{categoryLabel(draft.category_id)}</td>
+                <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top whitespace-nowrap">Category</td>
+                <td className="py-1.5 text-ink break-words">{categoryLabel(draft.category_id)}</td>
               </tr>
             )}
 
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Memo</td>
-              <td className="py-1.5 text-ink">{displayMemo || "—"}</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top whitespace-nowrap">Memo</td>
+              <td className="py-1.5 text-ink break-words">{displayMemo || "—"}</td>
             </tr>
 
-            {/* Twin confirmation */}
+            {/* Receipt confirmation status */}
             <tr className="border-b border-ink/8">
-              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Twin checks</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top whitespace-nowrap">Checked</td>
               <td className="py-1.5 space-y-0.5">
                 <p className={dateTimeConfirmed ? "text-emerald-700" : "text-amber-700"}>
-                  {dateTimeConfirmed ? "✓" : "✗"} Date + time
+                  {dateTimeConfirmed ? "✓ Date + time match the receipt" : "✗ Date + time not confirmed yet"}
                 </p>
                 <p className={totalConfirmed ? "text-emerald-700" : "text-amber-700"}>
-                  {totalConfirmed ? "✓" : "✗"} Total
+                  {totalConfirmed ? "✓ Total matches the receipt" : "✗ Total not confirmed yet"}
                 </p>
               </td>
             </tr>
 
             {/* Flag color */}
             <tr>
-              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top">Flag color</td>
+              <td className="py-1.5 pr-3 font-semibold text-ink/70 align-top whitespace-nowrap">Flag color</td>
               <td className="py-1.5">
                 <span className="inline-flex items-center gap-1.5">
                   <span
@@ -294,17 +295,6 @@ export function SyncPreviewDialog({
           </tbody>
         </table>
 
-        {/* Last dry-run payload reference */}
-        {lastDryRunTransaction ? (
-          <details className="mt-3">
-            <summary className="cursor-pointer text-[11px] font-semibold text-ink/50 hover:text-ink/80 select-none">
-              Server&apos;s last create-intent payload (reference)
-            </summary>
-            <pre className="mt-1 max-h-48 overflow-auto rounded-xl bg-ink/5 p-2 text-[10px] leading-relaxed text-ink/80">
-              {JSON.stringify(lastDryRunTransaction, null, 2)}
-            </pre>
-          </details>
-        ) : null}
       </div>
 
       {/* Footer */}
@@ -342,7 +332,7 @@ export function SyncPreviewDialog({
             Cancel
           </Button>
           <Button
-            variant="solid"
+            variant="success"
             size="sm"
             className="flex-1"
             data-testid="sync-preview-confirm"

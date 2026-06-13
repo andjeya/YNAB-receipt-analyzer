@@ -58,7 +58,13 @@ function laneDollarTotal(
   for (const itemId of laneItemIds) {
     const item = itemMap.get(itemId);
     if (item && item.amount != null) {
-      total += item.amount;
+      // Discounts are stored as positive magnitudes; they reduce the lane
+      // total (mirrors the backend's lane-weight math in allocation_workspace.py).
+      if ((item.item_type || "").toLowerCase() === "discount") {
+        total -= Math.abs(item.amount);
+      } else {
+        total += item.amount;
+      }
       hasAmount = true;
     }
   }
@@ -83,6 +89,7 @@ function DraggableAllocationItem({
   const style = {
     transform: CSS.Translate.toString(transform),
     opacity: isDragging ? 0.5 : 1,
+    touchAction: "none" as const,
   };
 
   return (
@@ -109,7 +116,11 @@ function DraggableAllocationItem({
             <p className="text-[10px] text-ink/50 font-mono uppercase truncate">{item.raw_text}</p>
           ) : null}
           <p className="text-[11px] text-ink/70">
-            {item.amount == null ? "Unknown amount" : `$${Math.abs(item.amount).toFixed(2)}`}
+            {item.amount == null
+              ? "Unknown amount"
+              : (item.item_type || "").toLowerCase() === "discount"
+                ? `−$${Math.abs(item.amount).toFixed(2)}`
+                : `$${Math.abs(item.amount).toFixed(2)}`}
           </p>
         </div>
       </div>
@@ -411,7 +422,7 @@ export function AllocationBoard({
         </div>
         <DragOverlay>
           {activeItems.length > 0 ? (
-            <div className="w-56 rounded-xl border border-sky-500 bg-white p-2 shadow-float">
+            <div className="w-56 max-w-[80vw] rounded-xl border border-sky-500 bg-white p-2 shadow-float">
               <p className="text-xs font-semibold text-sky-800">{activeItems.length} item(s)</p>
               {activeItems.slice(0, 4).map((item) => (
                 <p key={item.item_id} className="truncate text-[11px] text-ink/75">

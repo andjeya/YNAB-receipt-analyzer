@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
 import type { ReactNode } from "react";
 
@@ -20,6 +20,10 @@ const bodyFont = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "Receipt YNAB",
   description: "Local receipt review and YNAB sync",
+};
+
+export const viewport: Viewport = {
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

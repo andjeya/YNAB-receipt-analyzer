@@ -82,3 +82,8 @@ export function formatWeekRange(startIso: string, endExclusiveIso: string, timeZ
   const endInclusive = new Date(parseApiDate(endExclusiveIso).getTime() - 24 * 60 * 60 * 1000);
   return `${formatDayInZone(start, timeZone)}–${formatDayInZone(endInclusive, timeZone)}`;
 }
+
+/** Format just the week's first day ("Jun 7") in the game timezone, for compact trail labels. */
+export function formatWeekStart(startIso: string, timeZone: string): string {
+  return formatDayInZone(parseApiDate(startIso), timeZone);
+}
