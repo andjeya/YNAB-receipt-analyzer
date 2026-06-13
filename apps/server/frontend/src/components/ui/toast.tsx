@@ -99,7 +99,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             data-testid="toast"
             data-variant={item.variant}
             className={cn(
-              "pointer-events-auto animate-toast-in flex w-80 max-w-full items-start gap-3 rounded-2xl border px-4 py-3 shadow-float text-sm",
+              "pointer-events-auto animate-toast-in flex w-80 max-w-full items-start gap-3 rounded-2xl border px-4 py-3 shadow-lift text-sm",
               item.variant === "success"
                 ? "border-emerald-200 bg-emerald-50 text-emerald-900"
                 : "border-red-200 bg-red-50 text-red-900",

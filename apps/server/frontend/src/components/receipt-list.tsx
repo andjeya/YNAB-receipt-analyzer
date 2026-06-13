@@ -16,8 +16,8 @@ import {
   HelpCircle,
   Scissors,
   Search,
+  Shredder,
   Sparkles,
-  Ticket,
   Trash2,
   Zap,
   Wrench,
@@ -249,7 +249,7 @@ function ReceiptLookup({ onNavigate }: { onNavigate: (path: string) => void }) {
 }
 
 // Tile IDs for the tap-popover system
-type StatTileId = "streak" | "droplets" | "skip-pass";
+type StatTileId = "streak" | "droplets" | "shred";
 
 function StatTilePopover({ text, id }: { text: string; id: string; align?: "left" | "right" }) {
   // Anchored to the trigger's left edge, then nudged horizontally so it never
@@ -335,10 +335,10 @@ function HowToPlayDialog({
         </section>
 
         <section className="space-y-2 text-sm text-ink/80">
-          <p className="font-semibold text-ink">Streak &amp; Skip Passes</p>
+          <p className="font-semibold text-ink">Streak &amp; shred tokens</p>
           <p>
             Green, flame-free weeks in a row build your streak; an active flame pauses it until
-            you douse it. Every {passEvery} streak weeks earns a Skip Pass &mdash; shred a late receipt
+            you douse it. Every {passEvery} streak weeks earns a shred token &mdash; shred a late receipt
             and it won&apos;t count against its week.
           </p>
         </section>
@@ -770,13 +770,11 @@ function ReceiptListHeader({
 
   const toggleTile = (id: StatTileId) => setOpenTile((prev) => (prev === id ? null : id));
 
-  const streakLabel = streak === 0 ? "start a streak" : `${streak}-week streak`;
-
   // Conditional indicators:
   // Droplets pill: visible iff water_units>0 OR total_active_flames>0
   const showDroplets = waterUnitsVal > 0 || totalActiveFlames > 0;
-  // Skip Pass badge: visible iff token_balance >= 1
-  const showSkipPass = tokenBalance > 0;
+  // Shred token chip: visible iff token_balance >= 1
+  const showShred = tokenBalance > 0;
 
   return (
     <>
@@ -856,10 +854,7 @@ function ReceiptListHeader({
                 style={{ background: "linear-gradient(135deg, #f59e0b 0%, #f97316 100%)" }}
               >
                 <Zap className="h-5 w-5 text-white/90" aria-hidden="true" />
-                <div className="text-left">
-                  <p className="text-xl font-bold leading-none text-white">{streak}</p>
-                  <p className="mt-0.5 text-[11px] font-medium text-white/80">{streakLabel}</p>
-                </div>
+                <p className="text-xl font-bold leading-none text-white">{streak}</p>
               </button>
               {openTile === "streak" ? (
                 <StatTilePopover
@@ -894,24 +889,26 @@ function ReceiptListHeader({
               </div>
             ) : null}
 
-            {/* Skip Pass badge — conditional: only when token_balance >= 1 */}
-            {showSkipPass ? (
+            {/* Shred token chip — conditional: only when token_balance >= 1 */}
+            {showShred ? (
               <div className="relative">
                 <button
                   type="button"
-                  onClick={() => toggleTile("skip-pass")}
-                  aria-describedby={openTile === "skip-pass" ? "tile-popover-skip-pass" : undefined}
-                  data-testid="skip-pass-badge"
-                  className="flex items-center gap-1.5 rounded-2xl bg-white/10 px-3 py-2 transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
+                  onClick={() => toggleTile("shred")}
+                  aria-describedby={openTile === "shred" ? "tile-popover-shred" : undefined}
+                  data-testid="shred-badge"
+                  aria-label={`Shred tokens — ${tokenBalance} available. Shred a late receipt so it won't count against its week`}
+                  className="flex items-center gap-2 rounded-2xl px-3 py-2 transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
+                  style={{ background: "linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)" }}
                 >
-                  <Ticket className="h-4 w-4 text-amber-300" aria-hidden="true" />
-                  <p className="text-sm font-semibold text-white">Skip Pass &times;{tokenBalance}</p>
+                  <Shredder className="h-5 w-5 text-white/90" aria-hidden="true" />
+                  <p className="text-xl font-bold leading-none text-white">{tokenBalance}</p>
                 </button>
-                {openTile === "skip-pass" ? (
+                {openTile === "shred" ? (
                   <StatTilePopover
-                    id="tile-popover-skip-pass"
+                    id="tile-popover-shred"
                     align="right"
-                    text="Skip Pass — shred a late receipt and it won't count against its week. Earned every 4 consecutive green streak weeks."
+                    text="Shred token — shred a late receipt and it won't count against its week. Earned every 4 consecutive green streak weeks."
                   />
                 ) : null}
               </div>
@@ -981,7 +978,7 @@ function TabBar({
   };
 
   return (
-    <section className="animate-reveal flex items-center gap-2 rounded-3xl bg-white/85 p-3 shadow-float" style={{ animationDelay: "90ms" }}>
+    <section className="animate-reveal flex items-center gap-2 rounded-3xl border border-ink/[0.06] bg-surface/85 p-2.5 shadow-soft backdrop-blur-[2px]" style={{ animationDelay: "90ms" }}>
       <div role="tablist" aria-label="Receipt queue tabs" className="flex flex-1 gap-2">
         {TABS.map((tab) => {
           const isActive = activeTab === tab.bucket;
@@ -1498,9 +1495,9 @@ function DebugPanel({
             <div className="grid grid-cols-2 gap-2">
               {numField("water_units", "Droplets")}
               {numField("current_week_flames", "Current Week Flames")}
-              {numField("token_balance", "Skip Pass Balance")}
-              {numField("token_earned_count", "Skip Passes Earned")}
-              {numField("token_spent_count", "Skip Passes Spent")}
+              {numField("token_balance", "Shred Token Balance")}
+              {numField("token_earned_count", "Shred Tokens Earned")}
+              {numField("token_spent_count", "Shred Tokens Spent")}
             </div>
             <p className="text-[11px] text-ink/50">current_week_flames: demo flames on the current week</p>
 
@@ -1971,7 +1968,7 @@ export function ReceiptList() {
         toast({
           variant: "success",
           title: "Streak milestone!",
-          message: `${currentStreak} in a row — Skip Pass earned!`,
+          message: `${currentStreak} in a row — shred token earned!`,
         });
         setTimeout(() => setCelebratingStreak(false), 1600);
       }
@@ -1995,7 +1992,7 @@ export function ReceiptList() {
   const incidentWaterEarned = activeIncident?.incident_type === "water_earned" ? toInt(incidentDetails?.units) : 0;
 
   return (
-    <main className="relative mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 pb-24 pt-6">
+    <main className="relative mx-auto flex w-full max-w-2xl flex-col gap-4 px-4 pb-24 pt-6 sm:pt-8">
       <ReceiptListHeader
         dashboardData={dashboardQuery.data}
         highlightedCount={highlightedCount}

@@ -3,10 +3,13 @@
 @tailwind utilities;
 
 :root {
-  --bg-top: #fff0dc;
-  --bg-bottom: #eaf9f4;
+  --bg-top: #fff1dd;
+  --bg-bottom: #e8f7f2;
   --ink: #172026;
   --accent: #f78b5d;
+  --mint: #7ad6c2;
+  --surface: #fffdf9;
+  --line: rgba(23, 32, 38, 0.1);
 }
 
 * {
@@ -22,15 +25,61 @@ body {
 
 body {
   color: var(--ink);
-  background:
-    radial-gradient(circle at 10% 10%, rgba(247, 139, 93, 0.22), transparent 36%),
-    radial-gradient(circle at 80% 0%, rgba(122, 214, 194, 0.28), transparent 32%),
+  font-family: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Layered warm gradient mesh — three soft light sources over a sand→mint
+     wash, so the page reads as atmosphere rather than a flat fill. */
+  background-color: var(--bg-bottom);
+  background-image:
+    radial-gradient(900px circle at 6% -6%, rgba(247, 139, 93, 0.2), transparent 46%),
+    radial-gradient(760px circle at 98% 0%, rgba(122, 214, 194, 0.26), transparent 42%),
+    radial-gradient(1200px circle at 50% 116%, rgba(122, 214, 194, 0.16), transparent 56%),
     linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  background-repeat: no-repeat;
+}
+
+/* Real headings get the display face; UI labels using <p class="font-semibold">
+   intentionally stay on the body face for legibility. */
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-heading), ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: -0.012em;
 }
 
 a {
   color: inherit;
   text-decoration: none;
+}
+
+::selection {
+  background: rgba(122, 214, 194, 0.38);
+  color: var(--ink);
+}
+
+/* Slim, on-brand scrollbars — the default chunky gray bar is a classic
+   unstyled-app tell. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(23, 32, 38, 0.22) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(23, 32, 38, 0.18);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(23, 32, 38, 0.32);
 }
 
 @keyframes incident-enter {

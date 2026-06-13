@@ -126,9 +126,10 @@ export function Dialog({
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop — warm ink wash + blur so the panel floats above a softened
+          page rather than over a hard black scrim. */}
       <div
-        className="fixed inset-0 z-[80] bg-black/45"
+        className="animate-reveal fixed inset-0 z-[80] bg-ink/40 backdrop-blur-sm"
         aria-hidden="true"
         onClick={onClose}
       />
@@ -142,7 +143,7 @@ export function Dialog({
           aria-describedby={describedById}
           data-testid={dataTestId}
           tabIndex={-1}
-          className="relative max-h-[85vh] supports-[height:1dvh]:max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-ink/15 bg-white shadow-float outline-none"
+          className="animate-float-in relative max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-ink/10 bg-surface shadow-lift outline-none supports-[height:1dvh]:max-h-[85dvh]"
           onClick={(e) => e.stopPropagation()}
         >
           {children}
