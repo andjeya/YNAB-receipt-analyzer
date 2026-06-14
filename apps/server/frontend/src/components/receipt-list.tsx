@@ -7,18 +7,16 @@ import { formatDistanceToNow } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
-  Check,
   ChevronDown,
   ChevronUp,
-  Clock,
   Droplets,
   Flame,
   HelpCircle,
   Scissors,
   Search,
-  Shredder,
   Sparkles,
   Trash2,
+  TreePine,
   Zap,
   Wrench,
 } from "lucide-react";
@@ -287,6 +285,52 @@ function StatTilePopover({ text, id }: { text: string; id: string; align?: "left
   );
 }
 
+/**
+ * StatChip — one game-stat tile in the header (streak / droplets / shred).
+ * Every chip shares ONE internal structure — leading icon, then a stacked
+ * number + short label — so all visible chips sit on the same baseline and at
+ * the same height regardless of which ones are conditionally shown. The label
+ * is always present (an unlabeled "2" is a mystery); tapping still opens the
+ * fuller explanation in a popover.
+ */
+function StatChip({
+  icon, value, label, gradient, popoverId, popoverText, ariaLabel, testid, open, onToggle,
+}: {
+  icon: React.ReactNode;
+  value: number;
+  label: string;
+  gradient: string;
+  popoverId: string;
+  popoverText: string;
+  ariaLabel: string;
+  testid: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-describedby={open ? popoverId : undefined}
+        data-testid={testid}
+        aria-label={ariaLabel}
+        className="flex items-center gap-2.5 rounded-2xl px-3 py-2 text-left transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
+        style={{ background: gradient }}
+      >
+        <span className="shrink-0" aria-hidden="true">{icon}</span>
+        <span className="flex min-w-0 flex-col leading-none">
+          <span className="text-lg font-bold text-white">{value}</span>
+          <span className="mt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/75">
+            {label}
+          </span>
+        </span>
+      </button>
+      {open ? <StatTilePopover id={popoverId} text={popoverText} /> : null}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // "How to play" dialog content
 // ─────────────────────────────────────────────────────────────────────────────
@@ -371,6 +415,77 @@ const NODE_FILL: Record<string, string> = {
   shredded: "#a16207",
   burnt:    "#292524",
 };
+
+/**
+ * WeekTree — the friendly forest glyph for a scored week. The TILE colour already
+ * encodes timeliness (green/yellow/brown); the tree reinforces the forest metaphor
+ * and visibly "decays": a lush full canopy when on time, a sparse wilting one when
+ * slow. Drawn white/dark for contrast against its tile, so colour stays the signal.
+ */
+function WeekTree({ state, className }: { state: "green" | "yellow" | "brown"; className?: string }) {
+  if (state === "green") {
+    // Thriving — full rounded canopy, white on the green tile.
+    return (
+      <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+        <rect x="10.6" y="14" width="2.8" height="7" rx="1.3" fill="#0b3b2e" />
+        <circle cx="12" cy="9.2" r="6.6" fill="#ffffff" />
+        <circle cx="7.6" cy="11" r="3.4" fill="#ffffff" />
+        <circle cx="16.4" cy="11" r="3.4" fill="#ffffff" />
+      </svg>
+    );
+  }
+  if (state === "yellow") {
+    // A bit late — full canopy but inked dark for contrast on the bright yellow tile.
+    return (
+      <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+        <rect x="10.6" y="14" width="2.8" height="7" rx="1.3" fill="#7c5a04" />
+        <circle cx="12" cy="9.4" r="6.2" fill="#3a2f06" />
+        <circle cx="8" cy="11" r="3" fill="#3a2f06" />
+        <circle cx="16" cy="11" r="3" fill="#3a2f06" />
+      </svg>
+    );
+  }
+  // Very late — wilting, sparse canopy (leaves dropping), cream on the brown tile.
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <rect x="10.6" y="13.5" width="2.8" height="7.5" rx="1.3" fill="#3f2d10" />
+      <circle cx="9.8" cy="9.5" r="3.1" fill="#fff5e6" />
+      <circle cx="14.4" cy="8.4" r="2.5" fill="#fff5e6" />
+      <circle cx="13.2" cy="12" r="2.1" fill="#fff5e6" />
+    </svg>
+  );
+}
+
+/** A bare, charred tree for burnt weeks — the forest's "gone for good" state. */
+function BurntTree({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      aria-hidden="true"
+      fill="none"
+      stroke="#a8a29e"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+    >
+      <path d="M12 21V8" />
+      <path d="M12 12 8.5 8.5" />
+      <path d="M12 11l3.5-3" />
+      <path d="M12 15l-3-2.4" />
+    </svg>
+  );
+}
+
+/** A little sprout for the current week before any receipts land — "newly planted". */
+function Sprout({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path d="M12 21v-7" stroke="#6ee7b7" strokeWidth="2" strokeLinecap="round" />
+      <path d="M12 14c0-3-3-4-6-4 0 3 3 4 6 4z" fill="#34d399" />
+      <path d="M12 12c0-3 3-4 6-4 0 3-3 4-6 4z" fill="#6ee7b7" />
+    </svg>
+  );
+}
 
 /**
  * WeekTrail — one row of uniform week tiles that fills the card width.
@@ -458,16 +573,11 @@ function WeekTrail({
     return null;
   }
 
-  /** Glyph inside a filled tile: ✓ for on-time weeks, clock for late ones. */
+  /** Glyph inside a filled tile: a little tree whose canopy reflects the week's health. */
   function slotGlyph(slot: GameWeeklySlot, sizeClass: string) {
-    if (slot.display_state === "green") {
-      return <Check className={cn(sizeClass, "text-white/90")} aria-hidden="true" />;
-    }
-    if (slot.display_state === "yellow") {
-      return <Clock className={cn(sizeClass, "text-ink/60")} aria-hidden="true" />;
-    }
-    if (slot.display_state === "brown") {
-      return <Clock className={cn(sizeClass, "text-white/80")} aria-hidden="true" />;
+    const state = slot.display_state;
+    if (state === "green" || state === "yellow" || state === "brown") {
+      return <WeekTree state={state} className={sizeClass} />;
     }
     return null;
   }
@@ -522,7 +632,7 @@ function WeekTrail({
           title={label}
         >
           {slot.burnt ? (
-            <Flame className="h-3.5 w-3.5 text-stone-400" aria-hidden="true" />
+            <BurntTree className="h-3.5 w-3.5" />
           ) : (
             slotGlyph(slot, "h-3.5 w-3.5")
           )}
@@ -601,12 +711,12 @@ function WeekTrail({
             title={heroLabel}
           >
             {heroSlot.burnt ? (
-              <Flame className="h-5 w-5 text-stone-400 animate-fire-fade" aria-hidden="true" />
+              <BurntTree className="h-5 w-5" />
             ) : heroHasState ? (
-              slotGlyph(heroSlot, "h-4 w-4")
+              slotGlyph(heroSlot, "h-5 w-5")
             ) : (
-              // Empty / no receipts yet: subtle sprout hint
-              <span className="text-lg" aria-hidden="true">🌱</span>
+              // Empty / no receipts yet: a freshly-planted sprout
+              <Sprout className="h-6 w-6 animate-snappy-sprout" />
             )}
             {heroSlot.flames > 0 && !heroSlot.burnt ? renderFlameOverlay(heroSlot.flames, true) : null}
           </button>
@@ -640,27 +750,28 @@ function WeekTrail({
         </div>
       </div>
 
-      {/* Micro-legend — one compact line so the colors explain themselves */}
+      {/* Micro-legend — compact key; swatches are rounded squares so they echo
+          the week tiles above (the colour is what carries the meaning). */}
       <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-sand/60">
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: NODE_FILL.green }} aria-hidden="true" />
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-[3px]" style={{ backgroundColor: NODE_FILL.green }} aria-hidden="true" />
           on time
         </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: NODE_FILL.yellow }} aria-hidden="true" />
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-[3px]" style={{ backgroundColor: NODE_FILL.yellow }} aria-hidden="true" />
           a bit late
         </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: NODE_FILL.brown }} aria-hidden="true" />
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-[3px]" style={{ backgroundColor: NODE_FILL.brown }} aria-hidden="true" />
           very late
         </span>
-        <span className="flex items-center gap-1">
+        <span className="flex items-center gap-1.5">
           <Flame className="h-3 w-3 text-orange-400" aria-hidden="true" />
           fixed in YNAB — tap to douse
         </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full border border-dashed border-sand/40" aria-hidden="true" />
-          no receipts
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-[3px] border border-dashed border-sand/40" aria-hidden="true" />
+          quiet week
         </span>
       </div>
     </div>
@@ -840,85 +951,64 @@ function ReceiptListHeader({
 
         {/* ── Expandable section: chips + trail ──────────────────────────── */}
         <div className={cn("px-4 pb-4 space-y-4", isExpanded ? "block" : "hidden sm:block")}>
-          {/* Stat chips row */}
+          {/* Stat chips row — every chip shares one structure (icon + number +
+              label) so they stay the same height however many are shown. */}
           <div ref={headerRef} className="flex flex-wrap gap-2">
 
-            {/* Streak chip — ONLY permanent number chip; Zap icon (not Flame) */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => toggleTile("streak")}
-                aria-describedby={openTile === "streak" ? "tile-popover-streak" : undefined}
-                data-testid="stat-tile-streak"
-                className="flex items-center gap-2 rounded-2xl px-3 py-2 transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
-                style={{ background: "linear-gradient(135deg, #f59e0b 0%, #f97316 100%)" }}
-              >
-                <Zap className="h-5 w-5 text-white/90" aria-hidden="true" />
-                <p className="text-xl font-bold leading-none text-white">{streak}</p>
-              </button>
-              {openTile === "streak" ? (
-                <StatTilePopover
-                  id="tile-popover-streak"
-                  text="Green, flame-free weeks in a row. Weeks with no receipts don't count — or break — it."
-                />
-              ) : null}
-            </div>
+            {/* Streak — the one permanent chip; Zap icon (not Flame). */}
+            <StatChip
+              testid="stat-tile-streak"
+              icon={<Zap className="h-5 w-5 text-white/90" />}
+              value={streak}
+              label="Streak"
+              gradient="linear-gradient(135deg, #f59e0b 0%, #f97316 100%)"
+              popoverId="tile-popover-streak"
+              popoverText="Green, flame-free weeks in a row. Weeks with no receipts don't count — or break — it."
+              ariaLabel={`Streak — ${streak} green weeks in a row`}
+              open={openTile === "streak"}
+              onToggle={() => toggleTile("streak")}
+            />
 
-            {/* Droplets pill — conditional: only when water_units>0 OR any active flames */}
+            {/* Droplets — conditional: only when water_units>0 OR any active flames. */}
             {showDroplets ? (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => toggleTile("droplets")}
-                  aria-describedby={openTile === "droplets" ? "tile-popover-droplets" : undefined}
-                  data-testid="droplets-pill"
-                  aria-label={`Droplets — ${waterUnitsVal} available. Earned by catching Snappy's mistakes during review`}
-                  className="flex items-center gap-2 rounded-2xl px-3 py-2 transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
-                  style={{ background: "linear-gradient(135deg, #0ea5e9 0%, #14b8a6 100%)" }}
-                >
-                  <Droplets className="h-5 w-5 text-white/90" aria-hidden="true" />
-                  <p className="text-xl font-bold leading-none text-white">{waterUnitsVal}</p>
-                </button>
-                {openTile === "droplets" ? (
-                  <StatTilePopover
-                    id="tile-popover-droplets"
-                    align="right"
-                    text={`Droplets — earned by catching Snappy's mistakes during review. You can hold up to ${dashboardData?.rules?.water_capacity ?? 5}. Tap a flaming week on your trail to spend them.`}
-                  />
-                ) : null}
-              </div>
+              <StatChip
+                testid="droplets-pill"
+                icon={<Droplets className="h-5 w-5 text-white/90" />}
+                value={waterUnitsVal}
+                label="Droplets"
+                gradient="linear-gradient(135deg, #0ea5e9 0%, #14b8a6 100%)"
+                popoverId="tile-popover-droplets"
+                popoverText={`Droplets — earned by catching Snappy's mistakes during review. You can hold up to ${dashboardData?.rules?.water_capacity ?? 5}. Tap a flaming week on your trail to spend them.`}
+                ariaLabel={`Droplets — ${waterUnitsVal} available. Earned by catching Snappy's mistakes during review`}
+                open={openTile === "droplets"}
+                onToggle={() => toggleTile("droplets")}
+              />
             ) : null}
 
-            {/* Shred token chip — conditional: only when token_balance >= 1 */}
+            {/* Shred token — conditional: only when token_balance >= 1. */}
             {showShred ? (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => toggleTile("shred")}
-                  aria-describedby={openTile === "shred" ? "tile-popover-shred" : undefined}
-                  data-testid="shred-badge"
-                  aria-label={`Shred tokens — ${tokenBalance} available. Shred a late receipt so it won't count against its week`}
-                  className="flex items-center gap-2 rounded-2xl px-3 py-2 transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
-                  style={{ background: "linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)" }}
-                >
-                  <Shredder className="h-5 w-5 text-white/90" aria-hidden="true" />
-                  <p className="text-xl font-bold leading-none text-white">{tokenBalance}</p>
-                </button>
-                {openTile === "shred" ? (
-                  <StatTilePopover
-                    id="tile-popover-shred"
-                    align="right"
-                    text="Shred token — shred a late receipt and it won't count against its week. Earned every 4 consecutive green streak weeks."
-                  />
-                ) : null}
-              </div>
+              <StatChip
+                testid="shred-badge"
+                icon={<Scissors className="h-5 w-5 text-white/90" />}
+                value={tokenBalance}
+                label="Shred"
+                gradient="linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)"
+                popoverId="tile-popover-shred"
+                popoverText="Shred token — shred a late receipt and it won't count against its week. Earned every 4 consecutive green streak weeks."
+                ariaLabel={`Shred tokens — ${tokenBalance} available. Shred a late receipt so it won't count against its week`}
+                open={openTile === "shred"}
+                onToggle={() => toggleTile("shred")}
+              />
             ) : null}
           </div>
 
           {/* Trail section */}
           <div>
             <div className="mb-3 flex items-center justify-between">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-sand/60">Your trail</p>
+              <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sand/60">
+                <TreePine className="h-3.5 w-3.5 text-mint/70" aria-hidden="true" />
+                Your forest
+              </p>
               <button
                 type="button"
                 onClick={() => setHowToPlayOpen(true)}
@@ -1074,7 +1164,9 @@ function ReceiptListItem({
           aria-label={`Open receipt: ${receipt.display_payee_name ?? receipt.original_filename}`}
         />
         <div className="flex items-start gap-3">
-          <div className="mt-1 flex shrink-0 items-center gap-1.5">
+          {/* Leading state-icon column — fixed width so every card's title
+              starts on the same vertical line, icon present or not. */}
+          <div className="mt-0.5 flex shrink-0 items-center gap-1.5">
             {correctionVisible ? (
               <span title="YNAB correction tracked" aria-label="YNAB correction tracked">
                 <Flame
@@ -1084,57 +1176,65 @@ function ReceiptListItem({
                 />
               </span>
             ) : null}
-            <div className="flex w-7 justify-center">
+            <div className="flex w-6 justify-center">
               {tone ? <ReceiptStateIcon tone={tone} shredded={shredded} className={cn("h-5 w-5", sproutClass)} /> : null}
             </div>
           </div>
 
           <div className="min-w-0 flex-1">
+            {/* Title row — payee on the left, status badge pinned top-right on
+                BOTH tabs so the badge never wraps under the action buttons. */}
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold">
-                  {receipt.display_payee_name ?? receipt.original_filename}
-                </p>
-                {isProcessing ? (
-                  <p className="mt-1 text-xs font-medium text-ink/55">
-                    Snappy is working on this one — no action needed
-                  </p>
-                ) : showWaiting ? (
-                  <p className="mt-1 text-xs font-semibold text-amber-700">
-                    {formatWallWait(receipt.ingested_at)} waiting
-                  </p>
-                ) : (
-                  <p className="mt-1 text-xs text-ink/65">
-                    {formatDistanceToNow(parseApiDate(receipt.ingested_at), { addSuffix: true })}
-                  </p>
-                )}
+              <p className="min-w-0 flex-1 truncate text-sm font-semibold leading-snug">
+                {receipt.display_payee_name ?? receipt.original_filename}
+              </p>
+              <div className="shrink-0">
+                <StatusBadge status={receipt.status} />
               </div>
-              {(tile?.age_hours_at_validation != null || !showWaiting) ? (
-                <div className="text-right text-xs">
-                  <p className="uppercase tracking-wide text-ink/70">Review time</p>
-                  <p className="mt-1 font-semibold">{formatWaitTime(tile?.age_hours_at_validation)}</p>
-                </div>
-              ) : null}
             </div>
+
+            {/* Subtitle — the one metadata line (working / waiting / synced-ago). */}
+            {isProcessing ? (
+              <p className="mt-1 text-xs font-medium text-ink/55">
+                Snappy is working on this one — no action needed
+              </p>
+            ) : showWaiting ? (
+              <p className="mt-1 text-xs font-semibold text-amber-700">
+                {formatWallWait(receipt.ingested_at)} waiting
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-ink/65">
+                {formatDistanceToNow(parseApiDate(receipt.ingested_at), { addSuffix: true })}
+              </p>
+            )}
 
             {receipt.correction_message ? (
               <p className="mt-1 text-[11px] font-semibold text-ink/70">{receipt.correction_message}</p>
             ) : null}
 
-            <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
-              {(() => {
-                const kind = receipt.transaction_kind ?? "purchase";
-                const millis = receipt.display_total_milliunits;
-                if (millis == null) return <p className="min-w-0 shrink-0 text-sm font-semibold">--</p>;
-                const dollars = signedDollars(millis / 1000, kind);
-                const formatted = formatSignedDollars(dollars);
-                const isRefund = kind === "refund";
-                return (
-                  <p className={cn("min-w-0 shrink-0 text-sm font-semibold", isRefund ? "text-emerald-700" : undefined)}>
-                    {formatted}
-                  </p>
-                );
-              })()}
+            {/* Footer — amount (+ subtle review-time meta) on the left, actions
+                on the right. Same skeleton on every card. */}
+            <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
+              <div className="flex min-w-0 shrink-0 items-baseline gap-2">
+                {(() => {
+                  const kind = receipt.transaction_kind ?? "purchase";
+                  const millis = receipt.display_total_milliunits;
+                  if (millis == null) return <span className="text-sm font-semibold">--</span>;
+                  const dollars = signedDollars(millis / 1000, kind);
+                  const formatted = formatSignedDollars(dollars);
+                  const isRefund = kind === "refund";
+                  return (
+                    <span className={cn("text-sm font-semibold", isRefund ? "text-emerald-700" : undefined)}>
+                      {formatted}
+                    </span>
+                  );
+                })()}
+                {tile?.age_hours_at_validation != null ? (
+                  <span className="whitespace-nowrap text-[11px] text-ink/50">
+                    Reviewed in {formatWaitTime(tile.age_hours_at_validation)}
+                  </span>
+                ) : null}
+              </div>
               <div className="relative z-10 ml-auto flex flex-wrap items-center justify-end gap-1.5">
                 {tile?.display_state === "shredded" ? (
                   <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700">
@@ -1187,7 +1287,6 @@ function ReceiptListItem({
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 ) : null}
-                <StatusBadge status={receipt.status} />
               </div>
             </div>
           </div>
