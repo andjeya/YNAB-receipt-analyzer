@@ -143,6 +143,8 @@ def test_fire_lands_on_receipts_week():
         receipt = _add_receipt(db, "r-1")
         _add_receipt_state(db, "r-1", validated_at=past)
         db.flush()
+        # Droplet covers the fire so it lands (rather than burning the board).
+        award_water(db, settings, units=1, receipt_id="r-1", idempotency_key="w:land", reason="test")
 
         result = add_fire(
             db, settings,
@@ -164,8 +166,8 @@ def test_fire_lands_on_receipts_week():
         assert week_row.burnt is False
 
 
-def test_third_flame_burns_when_water_zero():
-    """When no water is available, the 3rd flame burns the week."""
+def test_fire_burns_worst_week_when_water_zero():
+    """With no droplets, an incoming fire burns the worst week to ash (cleared to 0)."""
     settings = Settings(_env_file=None, game_water_capacity=5, game_fire_burn_threshold=3)
     past = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
     with _memory_session() as db:
@@ -173,14 +175,9 @@ def test_third_flame_burns_when_water_zero():
         _add_receipt_state(db, "r-1", validated_at=past)
         db.flush()
 
-        # No water. Add 2 flames.
-        add_fire(db, settings, units=1, receipt_id="r-1",
-                 idempotency_key="fire:r-1:1", reason="test", created_at=past)
-        add_fire(db, settings, units=1, receipt_id="r-1",
-                 idempotency_key="fire:r-1:2", reason="test", created_at=past)
-        # 3rd flame: should burn.
+        # No droplets: the very first fire burns.
         result = add_fire(db, settings, units=1, receipt_id="r-1",
-                          idempotency_key="fire:r-1:3", reason="test", created_at=past)
+                          idempotency_key="fire:r-1:1", reason="test", created_at=past)
 
         assert result["fires_added"] == 1
         assert result["burns_triggered"] == 1
@@ -192,7 +189,7 @@ def test_third_flame_burns_when_water_zero():
             GameWeekFire.week_start_at == ws.replace(microsecond=0)
         ).first()
         assert week_row.burnt is True
-        assert week_row.flames_active == 3
+        assert week_row.flames_active == 0
 
 
 def test_auto_douse_holds_week_at_2_when_water_available():
@@ -388,19 +385,22 @@ def test_total_active_flames_and_burnt_count():
         _add_receipt_state(db, "r-2", validated_at=past2)
         db.flush()
 
-        # 1 flame on week 1.
+        # Cover fires so flames accumulate: 1 on week1, 2 on week2.
+        award_water(db, settings, units=3, receipt_id="r-1", idempotency_key="w:agg", reason="test")
         add_fire(db, settings, units=1, receipt_id="r-1",
                  idempotency_key="fire:r-1:1", reason="test", created_at=past1)
-        # Burn week 2 (3 flames, no water).
         add_fire(db, settings, units=1, receipt_id="r-2",
                  idempotency_key="fire:r-2:1", reason="test", created_at=past2)
         add_fire(db, settings, units=1, receipt_id="r-2",
                  idempotency_key="fire:r-2:2", reason="test", created_at=past2)
+        # Empty the stash, then a fresh fire on week2 (the worst, at 3) burns it.
+        db.get(GameCorrectnessState, 1).water_units = 0
+        db.flush()
         add_fire(db, settings, units=1, receipt_id="r-2",
                  idempotency_key="fire:r-2:3", reason="test", created_at=past2)
 
         total_flames = get_total_active_flames(db)
         burnt_count = get_burnt_week_count(db)
-        # Week 1 has 1 active flame; week 2 is burnt (3 flames but burnt=True counts as 0 for active).
+        # Week 1 still has its 1 active flame; week 2 is burnt (cleared to 0 active).
         assert total_flames == 1
         assert burnt_count == 1

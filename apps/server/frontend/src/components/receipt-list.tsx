@@ -13,10 +13,10 @@ import {
   Flame,
   HelpCircle,
   Scissors,
+  Receipt,
   Search,
   Sparkles,
   Trash2,
-  TreePine,
   Zap,
   Wrench,
 } from "lucide-react";
@@ -29,6 +29,7 @@ import {
   getAppConfig,
   getGameDebugSeed,
   getGameDashboard,
+  getGameSettings,
   getReceiptDetail,
   getYnabCache,
   listGameIncidents,
@@ -40,6 +41,7 @@ import {
   spendGameWater,
   triggerScan,
   updateGameDebugSeed,
+  updateGameSettings,
 } from "@/lib/api";
 import { GameForestTile, GameIncident, GameWeeklySlot } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -53,7 +55,7 @@ import { Card } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
 import { StatusBadge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { ReceiptStateIcon } from "@/components/receipt-state-icon";
+import { ReceiptStateIcon, type ReceiptIconState } from "@/components/receipt-state-icon";
 import { Snappy } from "@/components/snappy/snappy";
 import { CardMappingPanel } from "@/components/card-mapping-panel";
 import { SyncPreviewDialog } from "@/components/sync-preview-dialog";
@@ -127,23 +129,33 @@ function formatWallWait(ingestedAt: string): string {
   return `${Math.max(Math.round(totalHours / 24), 1)}d`;
 }
 
-function deriveIconState(
-  tile: GameForestTile | undefined,
-): { tone: "green" | "yellow" | "brown" | null; shredded: boolean } {
-  if (!tile) return { tone: null, shredded: false };
-  if (tile.display_state === "shredded") {
-    return { tone: tile.state, shredded: true };
+function deriveIconState(tile: GameForestTile | undefined): ReceiptIconState | null {
+  const ds = tile?.display_state;
+  if (ds === "green" || ds === "yellow" || ds === "brown" || ds === "shredded" || ds === "burnt") {
+    return ds;
   }
-  if (tile.display_state === "green" || tile.display_state === "yellow" || tile.display_state === "brown") {
-    return { tone: tile.display_state, shredded: false };
-  }
-  // "burnt" and other states fall through to no tone (receipts on burnt weeks show no icon)
-  return { tone: null, shredded: false };
+  return null;
 }
 
 function isWithinSlot(isoTimestamp: string, slotStart: string, slotEnd: string): boolean {
   const ts = parseApiDate(isoTimestamp).getTime();
   return ts >= parseApiDate(slotStart).getTime() && ts < parseApiDate(slotEnd).getTime();
+}
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+// A receipt is shreddable if it was validated within `windowWeeks` trailing
+// weeks (including the current one). windowWeeks=1 is current-week-only; the
+// effective value comes from the backend (debug-panel adjustable).
+function isWithinShredWindow(
+  isoTimestamp: string,
+  currentWeekStart: string,
+  currentWeekEnd: string,
+  windowWeeks: number,
+): boolean {
+  const ts = parseApiDate(isoTimestamp).getTime();
+  const windowStart = parseApiDate(currentWeekStart).getTime() - Math.max(windowWeeks - 1, 0) * WEEK_MS;
+  return ts >= windowStart && ts < parseApiDate(currentWeekEnd).getTime();
 }
 
 function severityClass(incident: GameIncident): string {
@@ -349,8 +361,9 @@ function HowToPlayDialog({
   rules: any;
 }) {
   const waterCap = rules?.water_capacity ?? 5;
-  const burnThreshold = rules?.fire_burn_threshold ?? 3;
   const passEvery = rules?.pass_every_green_weeks ?? 4;
+  const greenHours = rules?.green_hours_threshold ?? 24;
+  const brownHours = rules?.brown_hours_threshold ?? 72;
 
   return (
     <Dialog open={open} onClose={onClose} labelledById="how-to-play-heading">
@@ -358,23 +371,26 @@ function HowToPlayDialog({
         <h2 id="how-to-play-heading" className="text-base font-semibold">How to play</h2>
 
         <section className="space-y-2 text-sm text-ink/80">
-          <p className="font-semibold text-ink">Keep weeks green</p>
+          <p className="font-semibold text-ink">Keep your receipts crisp</p>
           <p>
-            Each week&apos;s stamp takes the color of the slowest receipt you reviewed that week:
-            within a day &rarr; green, within three days &rarr; yellow, longer &rarr; brown.
-            Weeks with no receipts don&apos;t count for &mdash; or against &mdash; you.
+            Each week shows that week&apos;s slowest receipt, aging by how long it took to reach YNAB
+            &mdash; measured from the date on the receipt to when it synced. Within{" "}
+            {formatWaitTime(greenHours)} &rarr; crisp and green; within {formatWaitTime(brownHours)}{" "}
+            &rarr; dog-eared and yellow; longer &rarr; crumpled and brown. Weeks with no receipts
+            don&apos;t count for &mdash; or against &mdash; you.
           </p>
         </section>
 
         <section className="space-y-2 text-sm text-ink/80">
-          <p className="font-semibold text-ink">Droplets &amp; flames</p>
+          <p className="font-semibold text-ink">Droplets &amp; fires</p>
           <p>
             Catch one of Snappy&apos;s category mistakes while reviewing and you earn a droplet
             (you can hold {waterCap}). If a synced transaction has to be fixed in YNAB later,
-            a flame lands on that receipt&apos;s week &mdash; {burnThreshold} flames burn the week for good.
-            Tap a flaming week to douse it, one droplet per flame.
-            If a third flame lands while you have a droplet saved, Snappy spends it automatically
-            to save the week.
+            a fire lands on that receipt&apos;s week. Keep your droplets up: while you have more
+            droplets than fires you&apos;re safe, and Snappy will auto-spend one to smother a fire
+            you can&apos;t cover. But if a fire breaks out while you&apos;re out of droplets, your
+            worst week (the one with the most fires) burns to ash for good. Tap a flaming week to
+            douse it, one droplet per fire.
           </p>
         </section>
 
@@ -388,11 +404,11 @@ function HowToPlayDialog({
         </section>
 
         <section className="rounded-xl bg-ink/5 px-3 py-2 text-sm">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink/50">Your average review time</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/50">Your average time to YNAB</p>
           <p className="mt-1 text-lg font-bold text-ink">
-            {avgValidationAgeHours == null ? "No reviews yet" : formatWaitTime(avgValidationAgeHours)}
+            {avgValidationAgeHours == null ? "Nothing synced yet" : formatWaitTime(avgValidationAgeHours)}
           </p>
-          <p className="text-xs text-ink/60">Average time between a receipt arriving and you reviewing it.</p>
+          <p className="text-xs text-ink/60">Average time from a receipt&apos;s purchase date to landing in YNAB.</p>
         </section>
 
         <div className="flex justify-end">
@@ -407,96 +423,31 @@ function HowToPlayDialog({
 // Week trail
 // ─────────────────────────────────────────────────────────────────────────────
 
-// State-colour map for the trail nodes (matches TONE_STYLES in receipt-state-icon.tsx)
-const NODE_FILL: Record<string, string> = {
-  green:    "#34d399",
-  yellow:   "#facc15",
-  brown:    "#a16207",
-  shredded: "#a16207",
-  burnt:    "#292524",
-};
-
-/**
- * WeekTree — the friendly forest glyph for a scored week. The TILE colour already
- * encodes timeliness (green/yellow/brown); the tree reinforces the forest metaphor
- * and visibly "decays": a lush full canopy when on time, a sparse wilting one when
- * slow. Drawn white/dark for contrast against its tile, so colour stays the signal.
- */
-function WeekTree({ state, className }: { state: "green" | "yellow" | "brown"; className?: string }) {
-  if (state === "green") {
-    // Thriving — full rounded canopy, white on the green tile.
-    return (
-      <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
-        <rect x="10.6" y="14" width="2.8" height="7" rx="1.3" fill="#0b3b2e" />
-        <circle cx="12" cy="9.2" r="6.6" fill="#ffffff" />
-        <circle cx="7.6" cy="11" r="3.4" fill="#ffffff" />
-        <circle cx="16.4" cy="11" r="3.4" fill="#ffffff" />
-      </svg>
-    );
-  }
-  if (state === "yellow") {
-    // A bit late — full canopy but inked dark for contrast on the bright yellow tile.
-    return (
-      <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
-        <rect x="10.6" y="14" width="2.8" height="7" rx="1.3" fill="#7c5a04" />
-        <circle cx="12" cy="9.4" r="6.2" fill="#3a2f06" />
-        <circle cx="8" cy="11" r="3" fill="#3a2f06" />
-        <circle cx="16" cy="11" r="3" fill="#3a2f06" />
-      </svg>
-    );
-  }
-  // Very late — wilting, sparse canopy (leaves dropping), cream on the brown tile.
+/** A faint dashed receipt outline for the current week before any receipts land. */
+function BlankReceipt({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
-      <rect x="10.6" y="13.5" width="2.8" height="7.5" rx="1.3" fill="#3f2d10" />
-      <circle cx="9.8" cy="9.5" r="3.1" fill="#fff5e6" />
-      <circle cx="14.4" cy="8.4" r="2.5" fill="#fff5e6" />
-      <circle cx="13.2" cy="12" r="2.1" fill="#fff5e6" />
-    </svg>
-  );
-}
-
-/** A bare, charred tree for burnt weeks — the forest's "gone for good" state. */
-function BurntTree({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className={className}
-      aria-hidden="true"
-      fill="none"
-      stroke="#a8a29e"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-    >
-      <path d="M12 21V8" />
-      <path d="M12 12 8.5 8.5" />
-      <path d="M12 11l3.5-3" />
-      <path d="M12 15l-3-2.4" />
-    </svg>
-  );
-}
-
-/** A little sprout for the current week before any receipts land — "newly planted". */
-function Sprout({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
-      <path d="M12 21v-7" stroke="#6ee7b7" strokeWidth="2" strokeLinecap="round" />
-      <path d="M12 14c0-3-3-4-6-4 0 3 3 4 6 4z" fill="#34d399" />
-      <path d="M12 12c0-3 3-4 6-4 0 3-3 4-6 4z" fill="#6ee7b7" />
+    <svg viewBox="4.5 1 15 20" className={className} aria-hidden="true">
+      <path
+        d="M6 2.5h12a1 1 0 0 1 1 1v16l-2-1.3-2 1.3-2-1.3-2 1.3-2-1.3-2 1.3v-16a1 1 0 0 1 1-1Z"
+        fill="none"
+        stroke="#6ee7b7"
+        strokeWidth="1.4"
+        strokeDasharray="2.5 2"
+      />
     </svg>
   );
 }
 
 /**
- * WeekTrail — one row of uniform week tiles that fills the card width.
- * - Every slot (past + hero) shares the same column structure: tile on top,
- *   tiny date label below — so all tiles sit on one baseline.
- * - HERO tile (last slot): slightly taller, mint ring, labeled "This week".
- * - PAST tiles: rounded squares with a state glyph (✓ on time, clock late).
- *   - Mobile: show last 4 past tiles (hidden sm:flex for older 4)
+ * WeekTrail — one row of uniform week cells that fills the card width.
+ * - Every slot (past + hero) shares the same column structure: a neutral cell
+ *   holding a receipt in its state, with a tiny date label below.
+ * - HERO cell (last slot): slightly taller, mint ring, labeled "This week".
+ * - PAST cells: neutral rounded slots; the receipt's own tint + wear shows the
+ *   state (crisp green / dog-eared yellow / crumpled brown / ash burnt).
+ *   - Mobile: show last 4 past cells (hidden sm:flex for older 4)
  *   - EXCEPTION: any hidden-on-mobile slot with flames or burnt gets forced-shown
- * - Flames: Flame overlays (max 3, pulse) on flaming weeks
- * - Burnt: charred dark fill
+ * - Flames: a small corner badge (with a count) on flaming weeks
  * - Tap popover explains what the week's state means + Douse action
  * - One-line micro-legend below the row
  */
@@ -506,12 +457,16 @@ function WeekTrail({
   isDousingPending,
   onDouse,
   gameTimezone,
+  greenHours,
+  brownHours,
 }: {
   slots: GameWeeklySlot[];
   waterUnits: number;
   isDousingPending: boolean;
   onDouse: (slot: GameWeeklySlot) => void;
   gameTimezone: string;
+  greenHours: number;
+  brownHours: number;
 }) {
   const [openNode, setOpenNode] = useState<number | null>(null);
 
@@ -540,19 +495,18 @@ function WeekTrail({
 
   if (slots.length === 0) return null;
 
-  const pastSlots = slots.slice(0, -1); // all but last
   const heroSlot = slots[slots.length - 1];
+  // Reading order: newest (this week / hero) on the LEFT, oldest on the RIGHT.
+  // `slots` is oldest→newest, so reverse the past weeks: the most recent sits next
+  // to the hero and the oldest trails off to the right (hidden first on mobile).
+  const reversedPast = slots.slice(0, -1).reverse(); // index 0 = most recent past
 
-  // Determine which past slots are off-screen on mobile (older 4 when there are 8)
-  // Mobile shows the 4 MOST RECENT past stamps + hero.
-  // If pastSlots.length <= 4, all are shown.
-  const mobileVisibleCutoff = Math.max(0, pastSlots.length - 4);
-
-  // Force-show a slot on mobile if it has flames or is burnt (even if it would be hidden)
-  function isForcedOnMobile(slotIndex: number): boolean {
-    if (slotIndex >= mobileVisibleCutoff) return false; // already visible
-    const slot = pastSlots[slotIndex];
-    return (slot.flames > 0 || slot.burnt);
+  // Mobile shows the hero + the 4 most recent past cells; older cells (further to
+  // the right) collapse unless they carry flames or are burnt.
+  const MOBILE_PAST_VISIBLE = 4;
+  function isHiddenOnMobile(reversedIndex: number, slot: GameWeeklySlot): boolean {
+    if (reversedIndex < MOBILE_PAST_VISIBLE) return false;
+    return !(slot.flames > 0 || slot.burnt);
   }
 
   function slotLabel(slot: GameWeeklySlot, isCurrent: boolean): string {
@@ -564,90 +518,81 @@ function WeekTrail({
 
   /** Plain-English explanation of the slot's state, shown in the tap popover. */
   function slotMeaning(slot: GameWeeklySlot): string | null {
-    if (slot.burnt) return "Three flames went undoused, so this week is burnt for good.";
-    if (slot.flames > 0) return "A flame means a synced receipt had to be corrected in YNAB afterwards. Douse it with a droplet.";
-    if (slot.display_state === "green") return "Every receipt was reviewed within a day. Nice.";
-    if (slot.display_state === "yellow") return "The slowest review took up to three days.";
-    if (slot.display_state === "brown") return "The slowest review took more than three days.";
+    if (slot.burnt) return "Fires outnumbered your droplets, so this week burned to ash. It can't be brought back.";
+    if (slot.flames > 0) return "A flame means a synced receipt had to be corrected in YNAB afterwards. Douse it with a droplet before fires outnumber your droplets.";
+    if (slot.display_state === "green") return `Every receipt reached YNAB within ${formatWaitTime(greenHours)} of its purchase. Crisp.`;
+    if (slot.display_state === "yellow") return `The slowest receipt took up to ${formatWaitTime(brownHours)} to reach YNAB — a little dog-eared.`;
+    if (slot.display_state === "brown") return `The slowest receipt took more than ${formatWaitTime(brownHours)} to reach YNAB — crumpled.`;
     if (slot.receipt_count === 0) return "No receipts — this week doesn't count for or against you.";
     return null;
   }
 
-  /** Glyph inside a filled tile: a little tree whose canopy reflects the week's health. */
+  /** The receipt glyph for a week — its tint + wear shows the state; ash when burnt. */
   function slotGlyph(slot: GameWeeklySlot, sizeClass: string) {
+    if (slot.burnt) return <ReceiptStateIcon state="burnt" className={sizeClass} />;
     const state = slot.display_state;
     if (state === "green" || state === "yellow" || state === "brown") {
-      return <WeekTree state={state} className={sizeClass} />;
+      return <ReceiptStateIcon state={state} className={sizeClass} />;
     }
     return null;
   }
 
-  function slotFill(slot: GameWeeklySlot): string | undefined {
-    if (slot.burnt) return NODE_FILL.burnt;
-    if (!slot.display_state) return undefined;
-    return NODE_FILL[slot.display_state] ?? undefined;
-  }
-
-  function renderFlameOverlay(count: number, large: boolean) {
-    const clampedCount = Math.min(count, 3);
+  /** A small corner badge showing the fire count — never overflows the cell. */
+  function renderFlameBadge(count: number, large: boolean) {
     return (
-      <div className={cn("absolute inset-0 flex items-center justify-center gap-0.5", large ? "gap-1" : "gap-0")} aria-hidden="true">
-        {Array.from({ length: clampedCount }).map((_, i) => (
-          <Flame
-            key={i}
-            className={cn(
-              "animate-fire-fade text-orange-400 drop-shadow-sm",
-              large ? "h-4 w-4" : "h-2.5 w-2.5",
-            )}
-            style={{ animationDelay: `${i * 150}ms` }}
-          />
-        ))}
-      </div>
+      <span
+        className="absolute -right-1.5 -top-1.5 z-10 flex items-center gap-0.5 rounded-full bg-stone-900/90 px-1 py-0.5 shadow-sm animate-fire-fade"
+        aria-hidden="true"
+      >
+        <Flame className={cn("text-orange-400", large ? "h-3 w-3" : "h-2.5 w-2.5")} />
+        {count > 1 ? (
+          <span className={cn("font-bold leading-none text-orange-200", large ? "text-[9px]" : "text-[8px]")}>{count}</span>
+        ) : null}
+      </span>
     );
   }
 
-  function PastStamp({ slot, arrayIndex }: { slot: GameWeeklySlot; arrayIndex: number }) {
-    const fill = slotFill(slot);
-    const hasState = slot.display_state !== null || slot.burnt;
-    const isOpen = openNode === arrayIndex;
+  function PastStamp({ slot, reversedIndex }: { slot: GameWeeklySlot; reversedIndex: number }) {
+    const isOpen = openNode === slot.index;
     const label = slotLabel(slot, false);
     const meaning = slotMeaning(slot);
     const canDouse = slot.flames > 0 && !slot.burnt && waterUnits > 0;
-    const isOlderOnMobile = arrayIndex < mobileVisibleCutoff;
-    const isForced = isForcedOnMobile(arrayIndex);
+    const hiddenOnMobile = isHiddenOnMobile(reversedIndex, slot);
+    // Cells near the left anchor their popover on the left edge; the rest on the
+    // right, so popovers never run off the far side of the row.
+    const alignLeft = reversedIndex <= 1;
 
     const buttonEl = (
-      <div className={cn("relative min-w-0 flex-1 flex-col items-center gap-1", isOlderOnMobile && !isForced ? "hidden sm:flex" : "flex")}>
+      <div className={cn("relative min-w-0 flex-1 flex-col items-center gap-1", hiddenOnMobile ? "hidden sm:flex" : "flex")}>
         <button
           type="button"
           data-testid={`trail-week-${slot.index}`}
-          onClick={() => setOpenNode((prev) => (prev === arrayIndex ? null : arrayIndex))}
-          aria-describedby={isOpen ? `trail-popover-${arrayIndex}` : undefined}
+          onClick={() => setOpenNode((prev) => (prev === slot.index ? null : slot.index))}
+          aria-describedby={isOpen ? `trail-popover-${slot.index}` : undefined}
           className={cn(
-            "relative flex h-9 w-full max-w-[3.5rem] items-center justify-center rounded-xl border-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
-            slot.burnt ? "border-transparent bg-stone-900" : hasState ? "border-transparent" : "border-dashed border-sand/30 bg-white/5",
+            "relative flex h-12 w-full max-w-[4.5rem] items-center justify-center rounded-xl border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+            slot.burnt
+              ? "border-white/5 bg-stone-900/60"
+              : slot.display_state
+                ? "border-white/10 bg-white/5"
+                : "border-dashed border-sand/25 bg-white/[0.03]",
           )}
-          style={!slot.burnt && hasState && fill ? { backgroundColor: fill, borderColor: fill } : undefined}
           aria-label={label}
           title={label}
         >
-          {slot.burnt ? (
-            <BurntTree className="h-3.5 w-3.5" />
-          ) : (
-            slotGlyph(slot, "h-3.5 w-3.5")
-          )}
-          {slot.flames > 0 && !slot.burnt ? renderFlameOverlay(slot.flames, false) : null}
+          {slotGlyph(slot, "h-9 w-9")}
+          {slot.flames > 0 && !slot.burnt ? renderFlameBadge(slot.flames, false) : null}
         </button>
         <p className="text-[9px] text-sand/50 whitespace-nowrap">{formatWeekStart(slot.start_at, gameTimezone)}</p>
 
-        {/* Popover — left-align for left-half tiles, right-align for right-half */}
+        {/* Popover — anchored on whichever edge keeps it on-screen */}
         {isOpen ? (
           <div
             role="status"
-            id={`trail-popover-${arrayIndex}`}
+            id={`trail-popover-${slot.index}`}
             className={cn(
               "absolute bottom-full z-20 mb-2 w-max max-w-[min(14rem,calc(100vw-2rem))] rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float",
-              arrayIndex < mobileVisibleCutoff + 2 ? "left-0" : "right-0",
+              alignLeft ? "left-0" : "right-0",
             )}
           >
             <p>{label}</p>
@@ -675,9 +620,8 @@ function WeekTrail({
   }
 
   // Hero tile (current week)
-  const heroFill = slotFill(heroSlot);
   const heroHasState = heroSlot.display_state !== null || heroSlot.burnt;
-  const heroIsOpen = openNode === pastSlots.length;
+  const heroIsOpen = openNode === heroSlot.index;
   const heroLabel = slotLabel(heroSlot, true);
   const heroMeaning = slotMeaning(heroSlot);
   const heroCanDouse = heroSlot.flames > 0 && !heroSlot.burnt && waterUnits > 0;
@@ -685,49 +629,42 @@ function WeekTrail({
   return (
     <div ref={trailRef} className="relative">
       <div className="relative flex items-end gap-1 sm:gap-1.5">
-        {/* Past stamps */}
-        {pastSlots.map((slot, arrayIndex) => (
-          <PastStamp key={`past-${slot.index}`} slot={slot} arrayIndex={arrayIndex} />
-        ))}
-
-        {/* Hero tile (current week) — same column structure as the stamps so
-            everything shares one baseline; only taller + ringed. */}
-        <div className="relative flex min-w-0 flex-[1.3] flex-col items-center gap-1">
+        {/* Hero tile (current week) FIRST — newest on the left (reading order).
+            Same size as every other cell; distinguished only by its pulsing mint
+            outline. */}
+        <div className="relative flex min-w-0 flex-1 flex-col items-center gap-1">
           <button
             type="button"
             data-testid={`trail-week-${heroSlot.index}`}
-            onClick={() => setOpenNode((prev) => (prev === pastSlots.length ? null : pastSlots.length))}
-            aria-describedby={heroIsOpen ? `trail-popover-hero` : undefined}
+            onClick={() => setOpenNode((prev) => (prev === heroSlot.index ? null : heroSlot.index))}
+            aria-describedby={heroIsOpen ? `trail-popover-${heroSlot.index}` : undefined}
             className={cn(
-              "relative flex h-12 w-full max-w-[4.5rem] items-center justify-center rounded-xl border-2 ring-2 ring-mint/60 ring-offset-2 ring-offset-ink transition focus-visible:outline-none focus-visible:ring-mint",
+              "relative flex h-12 w-full max-w-[4.5rem] items-center justify-center rounded-xl border ring-2 ring-mint/60 ring-offset-2 ring-offset-ink animate-current-week-pulse transition focus-visible:outline-none focus-visible:ring-mint",
               heroSlot.burnt
-                ? "border-transparent bg-stone-900"
+                ? "border-white/5 bg-stone-900/60"
                 : heroHasState
-                  ? "border-transparent"
-                  : "border-dashed border-mint/40 bg-white/5 animate-current-week-pulse",
+                  ? "border-white/10 bg-white/5"
+                  : "border-dashed border-mint/40 bg-white/5",
             )}
-            style={!heroSlot.burnt && heroHasState && heroFill ? { backgroundColor: heroFill, borderColor: heroFill } : undefined}
             aria-label={heroLabel}
             title={heroLabel}
           >
-            {heroSlot.burnt ? (
-              <BurntTree className="h-5 w-5" />
-            ) : heroHasState ? (
-              slotGlyph(heroSlot, "h-5 w-5")
+            {heroHasState ? (
+              slotGlyph(heroSlot, "h-9 w-9")
             ) : (
-              // Empty / no receipts yet: a freshly-planted sprout
-              <Sprout className="h-6 w-6 animate-snappy-sprout" />
+              // Empty / no receipts yet: a fresh, blank receipt waiting to be filled
+              <BlankReceipt className="h-9 w-9 animate-snappy-sprout opacity-50" />
             )}
-            {heroSlot.flames > 0 && !heroSlot.burnt ? renderFlameOverlay(heroSlot.flames, true) : null}
+            {heroSlot.flames > 0 && !heroSlot.burnt ? renderFlameBadge(heroSlot.flames, true) : null}
           </button>
           <p className="text-[9px] font-semibold text-sand/80 whitespace-nowrap">This week</p>
 
-          {/* Hero popover — right-aligned so it doesn't overflow right viewport edge */}
+          {/* Hero popover — left-aligned (hero is the leftmost cell). */}
           {heroIsOpen ? (
             <div
               role="status"
-              id="trail-popover-hero"
-              className="absolute bottom-full right-0 z-20 mb-2 w-max max-w-[min(15rem,calc(100vw-2rem))] rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
+              id={`trail-popover-${heroSlot.index}`}
+              className="absolute bottom-full left-0 z-20 mb-2 w-max max-w-[min(15rem,calc(100vw-2rem))] rounded-xl bg-ink/95 px-3 py-2 text-[11px] leading-relaxed text-sand shadow-float"
             >
               <p>{heroLabel}</p>
               {heroMeaning ? <p className="mt-1 text-[10px] text-sand/70">{heroMeaning}</p> : null}
@@ -748,30 +685,34 @@ function WeekTrail({
             </div>
           ) : null}
         </div>
+
+        {/* Past weeks — most recent next to the hero, oldest trailing off right. */}
+        {reversedPast.map((slot, reversedIndex) => (
+          <PastStamp key={`past-${slot.index}`} slot={slot} reversedIndex={reversedIndex} />
+        ))}
       </div>
 
-      {/* Micro-legend — compact key; swatches are rounded squares so they echo
-          the week tiles above (the colour is what carries the meaning). */}
+      {/* Micro-legend — the actual receipt glyphs so the row reads itself. */}
       <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-sand/60">
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-[3px]" style={{ backgroundColor: NODE_FILL.green }} aria-hidden="true" />
+          <ReceiptStateIcon state="green" className="h-3.5 w-3.5" />
           on time
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-[3px]" style={{ backgroundColor: NODE_FILL.yellow }} aria-hidden="true" />
+          <ReceiptStateIcon state="yellow" className="h-3.5 w-3.5" />
           a bit late
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-[3px]" style={{ backgroundColor: NODE_FILL.brown }} aria-hidden="true" />
+          <ReceiptStateIcon state="brown" className="h-3.5 w-3.5" />
           very late
         </span>
         <span className="flex items-center gap-1.5">
           <Flame className="h-3 w-3 text-orange-400" aria-hidden="true" />
-          fixed in YNAB — tap to douse
+          miscategorization fire
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-[3px] border border-dashed border-sand/40" aria-hidden="true" />
-          quiet week
+          <ReceiptStateIcon state="burnt" className="h-3.5 w-3.5" />
+          burned to ash
         </span>
       </div>
     </div>
@@ -1006,8 +947,8 @@ function ReceiptListHeader({
           <div>
             <div className="mb-3 flex items-center justify-between">
               <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sand/60">
-                <TreePine className="h-3.5 w-3.5 text-mint/70" aria-hidden="true" />
-                Your forest
+                <Receipt className="h-3.5 w-3.5 text-mint/70" aria-hidden="true" />
+                Paper trail
               </p>
               <button
                 type="button"
@@ -1026,6 +967,8 @@ function ReceiptListHeader({
               isDousingPending={isDousingPending}
               onDouse={onDouse}
               gameTimezone={dashboardData?.rules?.timezone ?? "UTC"}
+              greenHours={dashboardData?.rules?.green_hours_threshold ?? 24}
+              brownHours={dashboardData?.rules?.brown_hours_threshold ?? 72}
             />
           </div>
         </div>
@@ -1108,7 +1051,7 @@ function TabBar({
 }
 
 function ReceiptListItem({
-  receipt, tile, currentWeekSlot, spendableNow, onShred, isShredPending, onQuickSync, isQuickSyncPending, onDelete, isDeletePending, index, showWaiting,
+  receipt, tile, currentWeekSlot, spendableNow, shredWindowWeeks, onShred, isShredPending, onQuickSync, isQuickSyncPending, onDelete, isDeletePending, index, showWaiting,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   receipt: any;
@@ -1116,6 +1059,7 @@ function ReceiptListItem({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   currentWeekSlot: any;
   spendableNow: boolean;
+  shredWindowWeeks: number;
   onShred: (receiptId: string) => void;
   isShredPending: boolean;
   onQuickSync: (receiptId: string) => void;
@@ -1126,7 +1070,7 @@ function ReceiptListItem({
   /** When true (To Review tab), show a prominent "Xd waiting" label. */
   showWaiting?: boolean;
 }) {
-  const { tone, shredded } = deriveIconState(tile);
+  const iconState = deriveIconState(tile);
   const isProcessing = isProcessingStatus(receipt.status);
   const correctionOpacity = receipt.correction_shade_opacity ?? 0;
   const correctionVisible = correctionOpacity > 0.01;
@@ -1136,7 +1080,11 @@ function ReceiptListItem({
     tile?.shredded_at == null &&
     (tile?.display_state === "yellow" || tile?.display_state === "brown") &&
     spendableNow &&
-    Boolean(tile && currentWeekSlot && isWithinSlot(tile.validated_at, currentWeekSlot.start_at, currentWeekSlot.end_at));
+    Boolean(
+      tile &&
+        currentWeekSlot &&
+        isWithinShredWindow(tile.validated_at, currentWeekSlot.start_at, currentWeekSlot.end_at, shredWindowWeeks),
+    );
 
   // Timeliness: sprout animation on first mount for green tiles (fallback approach —
   // edge-detection is unreliable vs 10s polling, so we animate once on mount).
@@ -1177,7 +1125,7 @@ function ReceiptListItem({
               </span>
             ) : null}
             <div className="flex w-6 justify-center">
-              {tone ? <ReceiptStateIcon tone={tone} shredded={shredded} className={cn("h-5 w-5", sproutClass)} /> : null}
+              {iconState ? <ReceiptStateIcon state={iconState} className={cn("h-5 w-5", sproutClass)} /> : null}
             </div>
           </div>
 
@@ -1231,7 +1179,7 @@ function ReceiptListItem({
                 })()}
                 {tile?.age_hours_at_validation != null ? (
                   <span className="whitespace-nowrap text-[11px] text-ink/50">
-                    Reviewed in {formatWaitTime(tile.age_hours_at_validation)}
+                    {formatWaitTime(tile.age_hours_at_validation)} to YNAB
                   </span>
                 ) : null}
               </div>
@@ -1440,6 +1388,89 @@ function DevtoolsToggleRow() {
 }
 
 /**
+ * GameSettingsSection — admin-configurable game parameters (timeliness thresholds
+ * + shred window). These are real persistent settings (not testing seed data), so
+ * they live in their own self-contained section with their own save. Changing the
+ * thresholds re-grades existing receipts server-side.
+ */
+function GameSettingsSection() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const settingsQuery = useQuery({ queryKey: ["game-settings"], queryFn: getGameSettings });
+
+  const [form, setForm] = useState({ user_name: "", green_hours_threshold: 24, brown_hours_threshold: 72, shred_window_weeks: 2 });
+  useEffect(() => {
+    if (!settingsQuery.data) return;
+    setForm({
+      user_name: settingsQuery.data.user_name ?? "",
+      green_hours_threshold: settingsQuery.data.green_hours_threshold ?? 24,
+      brown_hours_threshold: settingsQuery.data.brown_hours_threshold ?? 72,
+      shred_window_weeks: settingsQuery.data.shred_window_weeks ?? 2,
+    });
+  }, [settingsQuery.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: () => updateGameSettings(form),
+    onSuccess: () => {
+      toast({ variant: "success", message: "Game settings saved" });
+      queryClient.invalidateQueries({ queryKey: ["game-settings"] });
+      queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+    },
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Failed to save game settings" });
+    },
+  });
+
+  type NumKey = "green_hours_threshold" | "brown_hours_threshold" | "shred_window_weeks";
+  const numField = (key: NumKey, label: string, min: number) => (
+    <label className="text-xs font-semibold text-ink/70">
+      {label}
+      <Input
+        type="number"
+        value={form[key]}
+        onChange={(event) => setForm({ ...form, [key]: Math.max(Number(event.target.value) || 0, min) })}
+      />
+    </label>
+  );
+
+  return (
+    <section className="space-y-2">
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink/50">Game settings</p>
+      <p className="text-xs text-ink/60">
+        Persistent game configuration — saved on the server and respected on every load, on any device.
+        Saving re-grades existing receipts.
+      </p>
+      {settingsQuery.isError ? (
+        <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">Debug tools are disabled or unavailable.</p>
+      ) : null}
+      <label className="block text-xs font-semibold text-ink/70">
+        Player name
+        <Input
+          value={form.user_name}
+          onChange={(event) => setForm({ ...form, user_name: event.target.value })}
+          placeholder="Anna"
+        />
+      </label>
+      <p className="text-[11px] text-ink/50">Snappy greets this name. Leave blank for a generic greeting.</p>
+      <div className="grid grid-cols-2 gap-2">
+        {numField("green_hours_threshold", "On-time within (hours)", 0)}
+        {numField("brown_hours_threshold", "Very late after (hours)", 0)}
+        {numField("shred_window_weeks", "Shred window (weeks)", 1)}
+      </div>
+      <p className="text-[11px] text-ink/50">
+        ≤ on-time → green · ≤ very-late → yellow · beyond → brown. Very-late is clamped to at least on-time.
+      </p>
+      <div className="flex justify-end">
+        <Button size="sm" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || settingsQuery.isLoading}>
+          {saveMutation.isPending ? "Saving…" : "Save settings"}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/**
  * DebugPanel — the developer's drawer. Every maintenance action the old
  * hamburger menu exposed lives here now, each with a plain-language
  * explanation of what it does and why you'd run it. Normal use of the app
@@ -1447,7 +1478,6 @@ function DevtoolsToggleRow() {
  */
 function DebugPanel({
   open, onClose,
-  userName, onUserNameChange,
   onScan, isScanPending,
   onFetchUpdates, isFetchUpdatesPending,
   onRebuild, isRebuildPending,
@@ -1457,8 +1487,6 @@ function DebugPanel({
 }: {
   open: boolean;
   onClose: () => void;
-  userName: string;
-  onUserNameChange: (name: string) => void;
   onScan: () => void; isScanPending: boolean;
   onFetchUpdates: () => void; isFetchUpdatesPending: boolean;
   onRebuild: () => void; isRebuildPending: boolean;
@@ -1513,21 +1541,8 @@ function DebugPanel({
           </p>
         </div>
 
-        {/* ── Profile ─────────────────────────────────────────────────── */}
-        <section className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink/50">Profile</p>
-          <label htmlFor="debug-user-name" className="block text-sm font-semibold text-ink">
-            Your name
-          </label>
-          <Input
-            id="debug-user-name"
-            value={userName}
-            onChange={(event) => onUserNameChange(event.target.value)}
-            placeholder="Anna"
-            className="h-10"
-          />
-          <p className="text-xs text-ink/60">Snappy uses this to say hi. (Stored on this device only.)</p>
-        </section>
+        {/* ── Game settings (admin config: name, timeliness, shred window) ── */}
+        <GameSettingsSection />
 
         {/* ── Maintenance ─────────────────────────────────────────────── */}
         <section className="space-y-2">
@@ -1725,19 +1740,6 @@ export function ReceiptList() {
   const { toast } = useToast();
   // Active queue tab — defaults to "review" so unreviewed receipts are shown first
   const [activeTab, setActiveTab] = useState<ReceiptBucket>("review");
-  // Display name for Snappy's greetings — single-user for now, set in the
-  // debug panel and stored on-device. Defaults to "Anna".
-  const [userName, setUserName] = useState("Anna");
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem("snappy_user_name");
-      if (stored) setUserName(stored);
-    } catch { /* ignore */ }
-  }, []);
-  const handleUserNameChange = (name: string) => {
-    setUserName(name);
-    try { localStorage.setItem("snappy_user_name", name); } catch { /* ignore */ }
-  };
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
   const [cardMappingPanelOpen, setCardMappingPanelOpen] = useState(false);
   const [debugResetFloors, setDebugResetFloors] = useState(true);
@@ -1772,6 +1774,10 @@ export function ReceiptList() {
     queryFn: () => getGameDashboard("week", 400),
     refetchInterval: 10_000,
   });
+
+  // Display name for Snappy's greetings — persistent server config (admin sets it
+  // in Game settings), so it's respected on every load and on any device.
+  const userName = dashboardQuery.data?.user_name ?? "";
 
   const incidentsQuery = useQuery({
     queryKey: ["game-incidents", "pending"],
@@ -2150,6 +2156,7 @@ export function ReceiptList() {
               tile={tileByReceiptId.get(receipt.id)}
               currentWeekSlot={currentWeekSlot}
               spendableNow={Boolean(dashboardQuery.data?.momentum?.spendable_now)}
+              shredWindowWeeks={dashboardQuery.data?.momentum?.shred_window_weeks ?? 1}
               onShred={(receiptId) => shredMutation.mutate(receiptId)}
               isShredPending={shredMutation.isPending}
               onQuickSync={(receiptId) => setQuickSyncPreviewId(receiptId)}
@@ -2178,8 +2185,6 @@ export function ReceiptList() {
       <DebugPanel
         open={debugToolsEnabled && debugPanelOpen}
         onClose={() => setDebugPanelOpen(false)}
-        userName={userName}
-        onUserNameChange={handleUserNameChange}
         onScan={() => scanMutation.mutate({ silent: false })} isScanPending={scanMutation.isPending}
         onFetchUpdates={() => fetchUpdatesMutation.mutate({ silent: false })} isFetchUpdatesPending={fetchUpdatesMutation.isPending}
         onRebuild={() => rebuildMutation.mutate()} isRebuildPending={rebuildMutation.isPending}

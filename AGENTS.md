@@ -146,9 +146,13 @@ Do not auto-archive active weeks.
 
 ## Implementation Loop
 
-Before any implementation work, read `docs/agent_loop_state.md` — it is the
-single source of truth for the autonomous loop. Follow its milestone order
-(lowest-numbered open milestone first, smallest unchecked task) and its Hard
-Rules. Production YNAB writes are never autonomous; enabling sync against a
-non-test token is never autonomous. Update `docs/agent_loop_state.md` and the
-`plans/` notes every session.
+Before any implementation work, read the current week's latest `plans/`
+notes (see Read-First Rule) — they are the source of truth for in-flight
+milestones and status. Follow milestone order (lowest-numbered open milestone
+first, smallest unchecked task) and the Hard Rules below. Keep the `plans/`
+notes updated every session.
+
+Hard Rules:
+
+- Production YNAB writes are never autonomous.
+- Enabling sync against a non-test token is never autonomous.

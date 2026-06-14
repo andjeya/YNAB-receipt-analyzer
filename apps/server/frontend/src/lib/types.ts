@@ -343,6 +343,7 @@ export interface GameMomentum {
   pass_every_green_weeks: number;
   next_pass_in_weeks: number;
   spendable_now: boolean;
+  shred_window_weeks: number;
 }
 
 export interface GameForestTile {
@@ -399,6 +400,7 @@ export interface GameDashboard {
   generated_at: string;
   window: GameWindow;
   debug_tools_enabled: boolean;
+  user_name: string | null;
   rules: GameRules;
   momentum: GameMomentum;
   forest: GameForest;
@@ -465,6 +467,20 @@ export interface GameDebugSeed {
   token_spent_count: number;
   correctness_event_floor_id: number;
   sync_floor_unix_ms: number;
+}
+
+export interface GameSettings {
+  user_name: string | null;
+  green_hours_threshold: number;
+  brown_hours_threshold: number;
+  shred_window_weeks: number;
+}
+
+export interface GameSettingsUpdateRequest {
+  user_name?: string | null;
+  green_hours_threshold?: number;
+  brown_hours_threshold?: number;
+  shred_window_weeks?: number;
 }
 
 export interface CardMapping {

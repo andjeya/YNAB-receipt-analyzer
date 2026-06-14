@@ -104,12 +104,24 @@ def add_fire(
 ) -> dict[str, int]:
     """Add flame(s) to the week that the corrected receipt belongs to.
 
-    Week-scoped fire mechanics (Game v3):
-    - Flames land on the receipt's week (derived from GameReceiptStateModel.validated_at).
-    - When flames_active would reach game_fire_burn_threshold (3):
-        - Auto-douse: if water_units > 0, spend 1 water, keep week at threshold-1 flames.
-        - Otherwise: mark week as burnt, record incident.
-    - If week is already burnt, record the event but change nothing on the week.
+    Board-pressure fire mechanics:
+    - A flame lands on the corrected receipt's week (derived from validated_at).
+    - You are safe while droplets >= total active fires on the board. For each
+      incoming flame:
+        - If the board would still be covered (total + 1 <= water_units): the
+          flame lands normally; no water spent.
+        - Else if water_units > 0: auto-douse — spend 1 droplet to smother the
+          incoming flame (net week flames unchanged). Snappy does this for you.
+        - Else (water_units == 0): the flame lands AND the worst week burns to
+          ash — the non-burnt week with the MOST active flames (tie: earliest
+          week_start). Its flames are cleared and it is marked burnt for good.
+          The victim may differ from the flame's landing week.
+    - If the flame's own week is already burnt, the event is recorded for the
+      audit trail but nothing changes.
+
+    Replay parity note: FIRE_ADDED records the flame's LANDING week; WEEK_BURNED
+    records the VICTIM week (+ flames_cleared). _replay_week_fire_events relies on
+    this split to reconstruct identical state.
     """
     if units <= 0:
         return {"fires_added": 0, "fires_extinguished": 0, "waters_spent": 0, "burns_triggered": 0, "forced_waters_spent": 0}
@@ -150,129 +162,14 @@ def add_fire(
             )
             continue
 
-        # Would this flame reach the threshold?
+        # Board pressure: would landing this flame leave the board covered by water?
         new_flames = week_row.flames_active + 1
-        threshold = settings.game_fire_burn_threshold
+        total_active = get_total_active_flames(db)  # excludes burnt weeks
+        prospective_total = total_active + 1
 
-        if new_flames >= threshold:
-            # Auto-douse: spend 1 water to hold week at threshold-1.
-            if state.water_units > 0:
-                recorded = _record_event(
-                    db,
-                    event_type=GameEventType.FIRE_ADDED,
-                    idempotency_key=f"{idempotency_key}:unit:{i}",
-                    receipt_id=receipt_id,
-                    payload={
-                        "units": 1,
-                        "reason": reason,
-                        "week_start_at": week_start.isoformat(),
-                        "flames_active": week_row.flames_active,
-                    },
-                    created_at=now,
-                )
-                if recorded:
-                    state.water_units -= 1
-                    state.water_spent_count += 1
-                    state.fire_extinguished_count += 1
-                    # Keep week at threshold-1 flames (don't increment).
-                    week_row.last_flame_at = now
-                    forced_waters_spent += 1
-                    fires_added += 1
-
-                    _record_event(
-                        db,
-                        event_type=GameEventType.WATER_SPENT,
-                        idempotency_key=f"{idempotency_key}:unit:{i}:forced_douse:water",
-                        receipt_id=receipt_id,
-                        payload={
-                            "units": 1,
-                            "reason": "forced_prevent_week_burn",
-                            "water_units": state.water_units,
-                            "week_start_at": week_start.isoformat(),
-                        },
-                        created_at=now,
-                    )
-                    _record_event(
-                        db,
-                        event_type=GameEventType.FIRE_EXTINGUISHED,
-                        idempotency_key=f"{idempotency_key}:unit:{i}:forced_douse:extinguished",
-                        receipt_id=receipt_id,
-                        payload={
-                            "units": 1,
-                            "reason": "forced_prevent_week_burn",
-                            "week_start_at": week_start.isoformat(),
-                        },
-                        created_at=now,
-                    )
-
-                    # Record non-blocking incident for frontend narration.
-                    from app.services.incidents import record_incident
-                    record_incident(
-                        db,
-                        incident_type="forced_week_douse",
-                        severity="warning",
-                        title="Auto-Douse Triggered",
-                        message="A flame would have burned a week — water was automatically spent to prevent it.",
-                        details={
-                            "week_start_at": week_start.isoformat(),
-                            "flames_active": week_row.flames_active,
-                            "water_units_remaining": state.water_units,
-                        },
-                        idempotency_key=f"forced_week_douse:{idempotency_key}:unit:{i}",
-                        created_at=now,
-                    )
-            else:
-                # Burn the week.
-                recorded = _record_event(
-                    db,
-                    event_type=GameEventType.FIRE_ADDED,
-                    idempotency_key=f"{idempotency_key}:unit:{i}",
-                    receipt_id=receipt_id,
-                    payload={
-                        "units": 1,
-                        "reason": reason,
-                        "week_start_at": week_start.isoformat(),
-                        # flames_active set after mutation below
-                        "flames_active": new_flames,
-                    },
-                    created_at=now,
-                )
-                if recorded:
-                    week_row.flames_active = new_flames
-                    week_row.burnt = True
-                    week_row.last_flame_at = now
-                    fires_added += 1
-                    burns_triggered += 1
-
-                    _record_event(
-                        db,
-                        event_type=GameEventType.WEEK_BURNED,
-                        idempotency_key=f"week_burned:{week_start.isoformat()}:{idempotency_key}:unit:{i}",
-                        receipt_id=receipt_id,
-                        payload={
-                            "week_start_at": week_start.isoformat(),
-                            "flames_active": week_row.flames_active,
-                        },
-                        created_at=now,
-                    )
-
-                    from app.services.incidents import record_incident
-                    record_incident(
-                        db,
-                        incident_type="week_burned",
-                        severity="warning",
-                        title="Week Burned",
-                        message="A week has been burned due to too many YNAB corrections.",
-                        details={
-                            "week_start_at": week_start.isoformat(),
-                            "flames_active": week_row.flames_active,
-                        },
-                        idempotency_key=f"week_burned_incident:{week_start.isoformat()}:{idempotency_key}:unit:{i}",
-                        created_at=now,
-                    )
-        else:
-            # Normal flame increment. Gate mutation on event being newly recorded
-            # so that calling add_fire twice with the same idempotency_key is safe.
+        if prospective_total <= state.water_units:
+            # Covered — the flame lands normally, no water spent. Gate mutation on
+            # the event being newly recorded so a repeat call is idempotent.
             recorded = _record_event(
                 db,
                 event_type=GameEventType.FIRE_ADDED,
@@ -290,6 +187,134 @@ def add_fire(
                 week_row.flames_active = new_flames
                 week_row.last_flame_at = now
                 fires_added += 1
+
+        elif state.water_units > 0:
+            # Auto-douse: spend 1 droplet to smother the incoming flame (the week's
+            # flame count is left unchanged). Same 3-event shape replay expects.
+            recorded = _record_event(
+                db,
+                event_type=GameEventType.FIRE_ADDED,
+                idempotency_key=f"{idempotency_key}:unit:{i}",
+                receipt_id=receipt_id,
+                payload={
+                    "units": 1,
+                    "reason": reason,
+                    "week_start_at": week_start.isoformat(),
+                    "flames_active": week_row.flames_active,
+                },
+                created_at=now,
+            )
+            if recorded:
+                state.water_units -= 1
+                state.water_spent_count += 1
+                state.fire_extinguished_count += 1
+                week_row.last_flame_at = now
+                forced_waters_spent += 1
+                fires_added += 1
+
+                _record_event(
+                    db,
+                    event_type=GameEventType.WATER_SPENT,
+                    idempotency_key=f"{idempotency_key}:unit:{i}:forced_douse:water",
+                    receipt_id=receipt_id,
+                    payload={
+                        "units": 1,
+                        "reason": "forced_prevent_week_burn",
+                        "water_units": state.water_units,
+                        "week_start_at": week_start.isoformat(),
+                    },
+                    created_at=now,
+                )
+                _record_event(
+                    db,
+                    event_type=GameEventType.FIRE_EXTINGUISHED,
+                    idempotency_key=f"{idempotency_key}:unit:{i}:forced_douse:extinguished",
+                    receipt_id=receipt_id,
+                    payload={
+                        "units": 1,
+                        "reason": "forced_prevent_week_burn",
+                        "week_start_at": week_start.isoformat(),
+                    },
+                    created_at=now,
+                )
+
+                # Record non-blocking incident for frontend narration.
+                from app.services.incidents import record_incident
+                record_incident(
+                    db,
+                    incident_type="forced_week_douse",
+                    severity="warning",
+                    title="Auto-Douse Triggered",
+                    message="Fires would have outnumbered your droplets — one was spent automatically to prevent a burn.",
+                    details={
+                        "week_start_at": week_start.isoformat(),
+                        "water_units_remaining": state.water_units,
+                    },
+                    idempotency_key=f"forced_week_douse:{idempotency_key}:unit:{i}",
+                    created_at=now,
+                )
+
+        else:
+            # water_units == 0: the flame lands on its week, then the worst week
+            # (most active flames; tie -> earliest) burns to ash.
+            recorded = _record_event(
+                db,
+                event_type=GameEventType.FIRE_ADDED,
+                idempotency_key=f"{idempotency_key}:unit:{i}",
+                receipt_id=receipt_id,
+                payload={
+                    "units": 1,
+                    "reason": reason,
+                    "week_start_at": week_start.isoformat(),
+                    "flames_active": new_flames,
+                },
+                created_at=now,
+            )
+            if recorded:
+                week_row.flames_active = new_flames
+                week_row.last_flame_at = now
+                fires_added += 1
+
+                # Select the victim AFTER the increment so the just-landed flame
+                # counts toward "most flames".
+                victim = db.scalar(
+                    select(GameWeekFire)
+                    .where(GameWeekFire.burnt.is_(False))
+                    .order_by(GameWeekFire.flames_active.desc(), GameWeekFire.week_start_at.asc())
+                )
+                if victim is not None and not victim.burnt:
+                    victim_iso = _as_utc(victim.week_start_at).replace(microsecond=0).isoformat()
+                    flames_cleared = victim.flames_active
+                    victim.flames_active = 0
+                    victim.burnt = True
+                    burns_triggered += 1
+
+                    _record_event(
+                        db,
+                        event_type=GameEventType.WEEK_BURNED,
+                        idempotency_key=f"week_burned:{victim_iso}:{idempotency_key}:unit:{i}",
+                        receipt_id=receipt_id,
+                        payload={
+                            "week_start_at": victim_iso,
+                            "flames_cleared": flames_cleared,
+                        },
+                        created_at=now,
+                    )
+
+                    from app.services.incidents import record_incident
+                    record_incident(
+                        db,
+                        incident_type="week_burned",
+                        severity="warning",
+                        title="Week Burned",
+                        message="Fires outnumbered your droplets — your worst week burned to ash.",
+                        details={
+                            "week_start_at": victim_iso,
+                            "flames_cleared": flames_cleared,
+                        },
+                        idempotency_key=f"week_burned_incident:{victim_iso}:{idempotency_key}:unit:{i}",
+                        created_at=now,
+                    )
 
     return {
         "fires_added": fires_added,

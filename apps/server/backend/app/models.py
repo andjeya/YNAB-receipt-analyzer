@@ -306,9 +306,44 @@ class GameDebugSeed(Base):
     # Demo seeding: current-week flames to inject for UI demoing.
     current_week_flames: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # NOTE: behavioral configuration (shred window, timeliness thresholds) lives in
+    # GameSettings, NOT here — this row is for testing-only seeding. The legacy
+    # shred_window_weeks/green_hours_threshold/brown_hours_threshold columns may
+    # still exist on older databases but are no longer mapped or read.
+
     # Replay floors so future activity builds from this baseline.
     correctness_event_floor_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     sync_floor_unix_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class GameSettings(Base):
+    """Admin-configurable game parameters (singleton row id=1).
+
+    Distinct from GameDebugSeed: these are real, persistent configuration values
+    an administrator sets during setup — not testing-only seed data. They apply
+    regardless of whether the debug seed is enabled. A blank install falls back to
+    the config (env) defaults until a row is written.
+    """
+
+    __tablename__ = "game_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+
+    # Display name Snappy greets (single-user app). None → generic greeting.
+    user_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # A receipt is green when it reaches YNAB within `green_hours_threshold` hours
+    # of its purchase date, brown when it takes longer than `brown_hours_threshold`,
+    # yellow in between.
+    green_hours_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=24.0)
+    brown_hours_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=72.0)
+
+    # Trailing weeks (including the current one) a validated receipt stays eligible
+    # for shredding. 1 = current week only.
+    shred_window_weeks: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)

@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.enums import YNABSyncStatus
-from app.models import GameCorrectnessState, GameDebugSeed, GameStreak, GameToken, YNABSync
+from app.models import GameCorrectnessState, GameDebugSeed, GameSettings, GameStreak, GameToken, YNABSync
 from app.utils import utcnow
 
 if TYPE_CHECKING:
@@ -36,6 +36,18 @@ def get_or_create_debug_seed(db: Session) -> GameDebugSeed:
         return row
 
     row = GameDebugSeed(id=1)
+    db.add(row)
+    db.flush()
+    return row
+
+
+def get_or_create_game_settings(db: Session) -> GameSettings:
+    """The singleton admin-config row (timeliness thresholds, shred window)."""
+    row = db.get(GameSettings, 1)
+    if row is not None:
+        return row
+
+    row = GameSettings(id=1)
     db.add(row)
     db.flush()
     return row
@@ -104,7 +116,9 @@ def apply_debug_seed_to_live_state(db: Session, seed: GameDebugSeed, settings: "
         week_start, _ = _week_bounds_for_timestamp(utcnow(), settings)
         week_row = _get_or_create_week_fire(db, week_start)
         if not week_row.burnt:
-            week_row.flames_active = min(seed.current_week_flames, settings.game_fire_burn_threshold - 1)
+            # Clamp to the water cap (burns are now board-pressure driven, not a
+            # per-week threshold).
+            week_row.flames_active = min(seed.current_week_flames, settings.game_water_capacity)
 
     # Streak is now derived from GameReceiptStateModel history; do not write GameStreak.
     # Keep GameStreak row but don't overwrite it — the legacy streak fields are read-only

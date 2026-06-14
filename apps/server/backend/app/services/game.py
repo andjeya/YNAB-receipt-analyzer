@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.enums import GameChallengeStatus, GameEventType, GameReceiptState, YNABSyncStatus
 from app.models import (
+    GameDebugSeed,
     GameEvent,
     GameReceiptStateModel,
+    GameSettings,
     GameStreak,
     GameToken,
     GameWeekFire,
@@ -63,18 +65,25 @@ def _week_bounds_for_timestamp(value: datetime, settings: Settings) -> tuple[dat
     return week_start_local.astimezone(timezone.utc), week_end_local.astimezone(timezone.utc)
 
 
+def _classify_age(age_hours: float, green_threshold: float, brown_threshold: float) -> GameReceiptState:
+    """Map a purchase→sync age (hours) to a timeliness state given the thresholds."""
+    if age_hours <= green_threshold:
+        return GameReceiptState.GREEN
+    if age_hours > brown_threshold:
+        return GameReceiptState.BROWN
+    return GameReceiptState.YELLOW
+
+
 def classify_receipt_state(
     transaction_at: datetime,
     synced_at: datetime,
-    settings: Settings,
+    green_threshold: float,
+    brown_threshold: float,
 ) -> tuple[GameReceiptState, float]:
+    """Classify by how long a receipt took to reach YNAB: the span from its
+    purchase date (transaction_at) to when it synced (synced_at)."""
     age_hours = max((_as_utc(synced_at) - _as_utc(transaction_at)).total_seconds() / 3600, 0.0)
-
-    if age_hours <= settings.game_green_hours_threshold:
-        return GameReceiptState.GREEN, age_hours
-    if age_hours > settings.game_brown_hours_threshold:
-        return GameReceiptState.BROWN, age_hours
-    return GameReceiptState.YELLOW, age_hours
+    return _classify_age(age_hours, green_threshold, brown_threshold), age_hours
 
 
 def _get_or_create_streak(db: Session) -> GameStreak:
@@ -191,7 +200,8 @@ def apply_sync_gamification(
         raise ValueError("Validation payload is missing a valid transaction_date for gamification")
 
     synced_at_utc = _as_utc(synced_at)
-    state, age_hours = classify_receipt_state(transaction_at, synced_at_utc, settings)
+    green_threshold, brown_threshold = _effective_timeliness_thresholds(db, settings)
+    state, age_hours = classify_receipt_state(transaction_at, synced_at_utc, green_threshold, brown_threshold)
     streak = _get_or_create_streak(db)
     streak_group_id = streak.active_streak_group_id
 
@@ -557,7 +567,10 @@ def rebuild_gamification_state(db: Session, settings: Settings) -> dict[str, int
             from app.services.correctness import _get_or_create_week_fire
             ws, _ = _week_bounds_for_timestamp(now, settings)
             week_row = _get_or_create_week_fire(db, ws)
-            week_row.flames_active = min(seed.current_week_flames, settings.game_fire_burn_threshold - 1)
+            # Clamp seeded demo flames to the water cap so a demo board stays within
+            # a coverable range (burns are now driven by board pressure, not a
+            # per-week threshold).
+            week_row.flames_active = min(seed.current_week_flames, settings.game_water_capacity)
     else:
         tokens.spent_count = preserved_spent
         tokens.balance = 0
@@ -686,10 +699,15 @@ def _replay_week_fire_events(db: Session, settings: Settings, event_floor_id: in
             row.last_flame_at = event.created_at
 
         elif event.event_type == GameEventType.WEEK_BURNED.value:
+            # ws_iso here is the VICTIM week (board-pressure rule may burn a week
+            # other than the one the triggering flame landed on). Mark it burnt and
+            # clear its flames so rebuild matches live accrual (which zeroes the
+            # victim's flames_active on burn).
             row = _get_week_row(ws_iso)
             if row is None:
                 continue
             row.burnt = True
+            row.flames_active = 0
 
         elif event.event_type == GameEventType.WATER_SPENT.value:
             # Only week-scoped water spends have week_start_at in payload.
@@ -703,6 +721,42 @@ def _replay_week_fire_events(db: Session, settings: Settings, event_floor_id: in
                 continue
             units = int(payload.get("units", 1))
             row.flames_active = max(row.flames_active - units, 0)
+
+
+def _effective_shred_window_weeks(db: Session, settings: Settings) -> int:
+    """Trailing weeks (incl. current) a receipt stays shreddable.
+
+    Read from the debug-seed row so it is runtime-adjustable; falls back to the
+    config default when no row exists. Always at least 1 (current week only).
+    """
+
+    row = db.get(GameSettings, 1)
+    weeks = row.shred_window_weeks if row is not None else settings.game_shred_window_weeks
+    return max(int(weeks), 1)
+
+
+def _effective_timeliness_thresholds(db: Session, settings: Settings) -> tuple[float, float]:
+    """(green_hours, brown_hours) timeliness thresholds — read from the admin
+    GameSettings row so they are runtime-configurable, falling back to config
+    defaults. Always returns brown >= green so the yellow band can't invert."""
+    row = db.get(GameSettings, 1)
+    green = float(row.green_hours_threshold) if row is not None else settings.game_green_hours_threshold
+    brown = float(row.brown_hours_threshold) if row is not None else settings.game_brown_hours_threshold
+    green = max(green, 0.0)
+    brown = max(brown, green)
+    return green, brown
+
+
+def reclassify_all_receipt_states(db: Session, green_threshold: float, brown_threshold: float) -> int:
+    """Re-grade every stored receipt state from its purchase→sync age against the
+    given thresholds (used after an admin changes the timeliness settings so the
+    change shows on past data without a re-sync). shredded_at is left untouched.
+    Returns the number of rows reclassified."""
+    count = 0
+    for row in db.scalars(select(GameReceiptStateModel)):
+        row.state = _classify_age(float(row.age_hours_at_validation), green_threshold, brown_threshold).value
+        count += 1
+    return count
 
 
 def spend_shred_token(
@@ -723,9 +777,13 @@ def spend_shred_token(
 
     now = _as_utc(spent_at or utcnow())
 
-    shred_week_start, shred_week_end = _week_bounds_for_timestamp(now, settings)
-    if not (shred_week_start <= _as_utc(state_row.validated_at) < shred_week_end):
-        raise ValueError("Receipts can only be shredded in the same week they were validated")
+    window_weeks = _effective_shred_window_weeks(db, settings)
+    current_week_start, current_week_end = _week_bounds_for_timestamp(now, settings)
+    window_start = current_week_start - timedelta(days=7 * (window_weeks - 1))
+    if not (window_start <= _as_utc(state_row.validated_at) < current_week_end):
+        raise ValueError(
+            f"Receipts can only be shredded within {window_weeks} week(s) of being validated"
+        )
 
     if settings.game_shred_daily_spend_cap > 0:
         day_start, day_end = _day_bounds(now, settings)
@@ -947,14 +1005,18 @@ def get_dashboard_data(
 
     total_active_flames = get_total_active_flames(db)
     burnt_week_count = get_burnt_week_count(db)
+    _eff_green, _eff_brown = _effective_timeliness_thresholds(db, settings)
+    _settings_row = db.get(GameSettings, 1)
+    _user_name = _settings_row.user_name if _settings_row is not None else None
 
     return {
         "generated_at": now,
         "window": window,
         "debug_tools_enabled": is_debug_tools_enabled(settings),
+        "user_name": _user_name,
         "rules": {
-            "green_hours_threshold": settings.game_green_hours_threshold,
-            "brown_hours_threshold": settings.game_brown_hours_threshold,
+            "green_hours_threshold": _eff_green,
+            "brown_hours_threshold": _eff_brown,
             "shred_daily_spend_cap": settings.game_shred_daily_spend_cap,
             "water_capacity": settings.game_water_capacity,
             "fire_burn_threshold": settings.game_fire_burn_threshold,
@@ -972,6 +1034,7 @@ def get_dashboard_data(
             "pass_every_green_weeks": pass_every,
             "next_pass_in_weeks": next_pass_in_weeks,
             "spendable_now": spendable_now,
+            "shred_window_weeks": _effective_shred_window_weeks(db, settings),
         },
         "forest": {
             "latest_receipt_id": latest_receipt_id,

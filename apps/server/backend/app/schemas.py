@@ -275,6 +275,7 @@ class GameMomentumOut(BaseModel):
     pass_every_green_weeks: int
     next_pass_in_weeks: int
     spendable_now: bool
+    shred_window_weeks: int
 
 
 class GameForestTileOut(BaseModel):
@@ -342,6 +343,7 @@ class GameDashboardOut(BaseModel):
     generated_at: datetime
     window: str
     debug_tools_enabled: bool = False
+    user_name: str | None = None
     rules: GameRulesOut
     momentum: GameMomentumOut
     forest: GameForestOut
@@ -414,6 +416,20 @@ class GameDebugSeedOut(BaseModel):
     current_week_flames: int = 0
     correctness_event_floor_id: int
     sync_floor_unix_ms: int
+
+
+class GameSettingsOut(BaseModel):
+    user_name: str | None = None
+    green_hours_threshold: float = 24.0
+    brown_hours_threshold: float = 72.0
+    shred_window_weeks: int = 2
+
+
+class GameSettingsUpdateRequest(BaseModel):
+    user_name: str | None = None
+    green_hours_threshold: float | None = None
+    brown_hours_threshold: float | None = None
+    shred_window_weeks: int | None = None
 
 
 class GameDebugSeedUpdateRequest(BaseModel):

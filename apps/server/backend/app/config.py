@@ -68,10 +68,19 @@ class Settings(BaseSettings):
     game_timezone: str = "UTC"
     game_pass_every_green_weeks: int = 4
     game_shred_daily_spend_cap: int = 0
+    # How many trailing weeks (including the current one) a validated receipt
+    # stays eligible for shredding. 1 = current week only. Runtime-adjustable by
+    # the admin via GameSettings.shred_window_weeks; this is the fallback default
+    # used when no settings row exists yet.
+    game_shred_window_weeks: int = 2
     game_green_ratio_target_percent: int = 70
     game_streak_challenge_target: int = 6
     game_shred_challenge_target: int = 2
     game_water_capacity: int = 5
+    # DEPRECATED: no longer gates burns. Burns are now board-pressure driven — a
+    # week burns when total active fires exceed your droplets (the worst week goes
+    # first). Kept only because it is still surfaced in the `rules` payload; safe to
+    # remove once no client reads it.
     game_fire_burn_threshold: int = 3
     correction_fade_days: int = 90
 

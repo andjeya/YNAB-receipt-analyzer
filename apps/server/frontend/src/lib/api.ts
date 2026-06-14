@@ -7,6 +7,8 @@ import {
   FetchYnabUpdatesResponse,
   GameDebugSeed,
   GameDebugSeedUpdateRequest,
+  GameSettings,
+  GameSettingsUpdateRequest,
   GameCorrectnessRecomputeResponse,
   GameDashboard,
   DuplicateConfirmResponse,
@@ -249,6 +251,17 @@ export function getGameDebugSeed() {
 
 export function updateGameDebugSeed(payload: GameDebugSeedUpdateRequest) {
   return request<GameDebugSeed>("/game/debug-seed", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getGameSettings() {
+  return request<GameSettings>("/game/settings");
+}
+
+export function updateGameSettings(payload: GameSettingsUpdateRequest) {
+  return request<GameSettings>("/game/settings", {
     method: "POST",
     body: JSON.stringify(payload),
   });

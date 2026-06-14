@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import app_settings, db_session, require_debug_tools_enabled
 from app.config import Settings
-from app.models import GameDebugSeed, GameIncident, GameToken, ReceiptCorrection
+from app.models import GameDebugSeed, GameIncident, GameSettings, GameToken, ReceiptCorrection
 from app.schemas import (
     GameDebugSeedOut,
     GameDebugSeedUpdateRequest,
@@ -18,14 +18,27 @@ from app.schemas import (
     GameIncidentOut,
     GameRebuildResponse,
     GameReconcileResponse,
+    GameSettingsOut,
+    GameSettingsUpdateRequest,
     GameShredResponse,
     GameWaterSpendRequest,
     GameWaterSpendResponse,
 )
 from app.services.correctness import get_or_create_correctness_state, recompute_correctness_state_from_history, spend_water_to_extinguish
 from app.models import GameWeekFire
-from app.services.debug_seed import apply_debug_seed_to_live_state, get_or_create_debug_seed, mark_debug_seed_floor_now
-from app.services.game import ALLOWED_WINDOWS, get_dashboard_data, rebuild_gamification_state, spend_shred_token
+from app.services.debug_seed import (
+    apply_debug_seed_to_live_state,
+    get_or_create_debug_seed,
+    get_or_create_game_settings,
+    mark_debug_seed_floor_now,
+)
+from app.services.game import (
+    ALLOWED_WINDOWS,
+    get_dashboard_data,
+    reclassify_all_receipt_states,
+    rebuild_gamification_state,
+    spend_shred_token,
+)
 from app.services.incidents import acknowledge_incident, list_incidents
 from app.services.reconciliation import run_ynab_reconciliation
 
@@ -249,3 +262,50 @@ def update_debug_seed(
     db.commit()
     db.refresh(seed)
     return _to_debug_seed_schema(seed)
+
+
+def _to_game_settings_schema(row: GameSettings) -> GameSettingsOut:
+    return GameSettingsOut(
+        user_name=row.user_name,
+        green_hours_threshold=row.green_hours_threshold,
+        brown_hours_threshold=row.brown_hours_threshold,
+        shred_window_weeks=row.shred_window_weeks,
+    )
+
+
+@router.get("/settings", response_model=GameSettingsOut)
+def get_game_settings(
+    _: None = Depends(require_debug_tools_enabled),
+    db: Session = Depends(db_session),
+) -> GameSettingsOut:
+    return _to_game_settings_schema(get_or_create_game_settings(db))
+
+
+@router.post("/settings", response_model=GameSettingsOut)
+def update_game_settings(
+    request: GameSettingsUpdateRequest,
+    _: None = Depends(require_debug_tools_enabled),
+    db: Session = Depends(db_session),
+) -> GameSettingsOut:
+    row = get_or_create_game_settings(db)
+
+    if request.user_name is not None:
+        # Empty/whitespace clears the name (falls back to a generic greeting).
+        row.user_name = request.user_name.strip() or None
+    if request.green_hours_threshold is not None:
+        row.green_hours_threshold = max(float(request.green_hours_threshold), 0.0)
+    if request.brown_hours_threshold is not None:
+        row.brown_hours_threshold = max(float(request.brown_hours_threshold), 0.0)
+    # Keep the yellow band valid: brown must be >= green.
+    if row.brown_hours_threshold < row.green_hours_threshold:
+        row.brown_hours_threshold = row.green_hours_threshold
+    if request.shred_window_weeks is not None:
+        row.shred_window_weeks = max(int(request.shred_window_weeks), 1)
+
+    # Re-grade existing receipts against the new timeliness thresholds so the
+    # change is visible immediately on past data (no re-sync needed).
+    reclassify_all_receipt_states(db, row.green_hours_threshold, row.brown_hours_threshold)
+
+    db.commit()
+    db.refresh(row)
+    return _to_game_settings_schema(row)

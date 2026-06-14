@@ -160,6 +160,8 @@ class TestFlameLandsOnReceiptWeek:
         with _session() as db:
             _add_receipt_and_state(db, "r-w1", WEEK1)
             db.flush()
+            # Droplets cover the fire so it lands (rather than burning the board).
+            award_water(db, settings, units=1, receipt_id="r-w1", idempotency_key="w:fl:1", reason="test")
 
             add_fire(db, settings, units=1, receipt_id="r-w1",
                      idempotency_key="fire:1", reason="test", created_at=WEEK1)
@@ -168,6 +170,7 @@ class TestFlameLandsOnReceiptWeek:
             week_row = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws).first()
             assert week_row is not None
             assert week_row.flames_active == 1
+            assert week_row.burnt is False
 
     def test_flame_does_not_affect_other_weeks(self):
         settings = _settings()
@@ -175,6 +178,8 @@ class TestFlameLandsOnReceiptWeek:
             _add_receipt_and_state(db, "r-w1", WEEK1)
             _add_receipt_and_state(db, "r-w2", WEEK2)
             db.flush()
+            # Droplets cover both fires so they land on their own weeks.
+            award_water(db, settings, units=2, receipt_id="r-w1", idempotency_key="w:fl:2", reason="test")
 
             add_fire(db, settings, units=1, receipt_id="r-w1",
                      idempotency_key="fire:w1:1", reason="test", created_at=WEEK1)
@@ -192,6 +197,7 @@ class TestFlameLandsOnReceiptWeek:
         """When receipt has no GameReceiptStateModel, flame falls back to created_at week."""
         settings = _settings()
         with _session() as db:
+            award_water(db, settings, units=1, receipt_id=None, idempotency_key="w:fl:3", reason="test")
             # No GameReceiptStateModel for this receipt.
             result = add_fire(db, settings, units=1, receipt_id="no-state-receipt",
                               idempotency_key="fire:nostate:1", reason="test",
@@ -204,22 +210,19 @@ class TestFlameLandsOnReceiptWeek:
 
 
 # ---------------------------------------------------------------------------
-# 2. 3rd flame burns when water=0
+# 2. Board pressure: a week burns when fires exceed droplets (water == 0)
 # ---------------------------------------------------------------------------
 
-class TestThirdFlameBurnsWithNoWater:
-    def test_burns_on_third_flame(self):
+class TestBurnsWhenUncovered:
+    def test_single_fire_burns_when_no_water(self):
+        """With zero droplets, even one incoming fire burns the worst week to ash."""
         settings = _settings()
         with _session() as db:
             _add_receipt_and_state(db, "r-1", WEEK1)
             db.flush()
 
-            for i in range(2):
-                add_fire(db, settings, units=1, receipt_id="r-1",
-                         idempotency_key=f"fire:1:{i}", reason="test", created_at=WEEK1)
-
             result = add_fire(db, settings, units=1, receipt_id="r-1",
-                              idempotency_key="fire:1:2", reason="test", created_at=WEEK1)
+                              idempotency_key="fire:1:0", reason="test", created_at=WEEK1)
 
             assert result["fires_added"] == 1
             assert result["burns_triggered"] == 1
@@ -228,19 +231,85 @@ class TestThirdFlameBurnsWithNoWater:
             ws = _week_start(WEEK1, settings).replace(microsecond=0)
             row = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws).first()
             assert row.burnt is True
-            assert row.flames_active == 3
+            # The victim's flames are cleared (it can no longer be doused).
+            assert row.flames_active == 0
 
-            # WEEK_BURNED event recorded.
+            # WEEK_BURNED event recorded for the victim week.
             burned_events = db.query(GameEvent).filter(
                 GameEvent.event_type == GameEventType.WEEK_BURNED.value
             ).all()
             assert len(burned_events) == 1
+            assert burned_events[0].payload_json["week_start_at"] == ws.isoformat()
+
+    def test_worst_week_burns_not_the_landing_week(self):
+        """When fires are uncovered, the week with the MOST flames burns — even if a
+        new fire lands on a different week."""
+        settings = _settings()
+        with _session() as db:
+            _add_receipt_and_state(db, "r-w1", WEEK1)
+            _add_receipt_and_state(db, "r-w2", WEEK2)
+            db.flush()
+            # Cover two fires on WEEK1 so it sits at 2 flames, then empty the stash.
+            award_water(db, settings, units=2, receipt_id="r-w1", idempotency_key="w:cross:1", reason="test")
+            add_fire(db, settings, units=1, receipt_id="r-w1",
+                     idempotency_key="fire:w1:0", reason="test", created_at=WEEK1)
+            add_fire(db, settings, units=1, receipt_id="r-w1",
+                     idempotency_key="fire:w1:1", reason="test", created_at=WEEK1)
+            db.get(GameCorrectnessState, 1).water_units = 0
+            db.flush()
+
+            ws1 = _week_start(WEEK1, settings).replace(microsecond=0)
+            ws2 = _week_start(WEEK2, settings).replace(microsecond=0)
+            row1 = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws1).first()
+            assert row1.flames_active == 2 and row1.burnt is False
+
+            # A fresh fire lands on WEEK2 with no droplets → the worst week (WEEK1 at 2)
+            # burns, not the landing week.
+            result = add_fire(db, settings, units=1, receipt_id="r-w2",
+                              idempotency_key="fire:w2:burn", reason="test", created_at=WEEK2)
+            assert result["burns_triggered"] == 1
+
+            row1 = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws1).first()
+            row2 = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws2).first()
+            assert row1.burnt is True and row1.flames_active == 0  # worst week burned
+            assert row2.burnt is False and row2.flames_active == 1  # landing week kept its flame
+
+    def test_tie_break_earliest_week_burns(self):
+        """When tied on flames and the board is uncovered, the earliest week burns."""
+        settings = _settings()
+        with _session() as db:
+            _add_receipt_and_state(db, "r-w1", WEEK1)
+            _add_receipt_and_state(db, "r-w2", WEEK2)
+            _add_receipt_and_state(db, "r-w3", WEEK3)
+            db.flush()
+            # One flame each on WEEK1 and WEEK2 (covered), then empty the stash.
+            award_water(db, settings, units=2, receipt_id="r-w1", idempotency_key="w:tie:1", reason="test")
+            add_fire(db, settings, units=1, receipt_id="r-w1",
+                     idempotency_key="fire:tie:w1", reason="test", created_at=WEEK1)
+            add_fire(db, settings, units=1, receipt_id="r-w2",
+                     idempotency_key="fire:tie:w2", reason="test", created_at=WEEK2)
+            db.get(GameCorrectnessState, 1).water_units = 0
+            db.flush()
+
+            ws1 = _week_start(WEEK1, settings).replace(microsecond=0)
+            ws2 = _week_start(WEEK2, settings).replace(microsecond=0)
+
+            # Land the triggering fire on a THIRD week so WEEK1 & WEEK2 stay tied at 1.
+            # All three are now tied at 1 → the earliest (WEEK1) burns.
+            add_fire(db, settings, units=1, receipt_id="r-w3",
+                     idempotency_key="fire:tie:w3", reason="test", created_at=WEEK3)
+
+            row1 = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws1).first()
+            row2 = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws2).first()
+            assert row1.burnt is True   # earliest tied week burns
+            assert row2.burnt is False
 
     def test_burn_count_reflected_in_dashboard(self):
         settings = _settings()
         with _session() as db:
             _add_receipt_and_state(db, "r-1", WEEK1)
             db.flush()
+            # No water → the first fire burns the week; the rest hit the burnt week.
             for i in range(3):
                 add_fire(db, settings, units=1, receipt_id="r-1",
                          idempotency_key=f"fire:burn:{i}", reason="test", created_at=WEEK1)
@@ -291,7 +360,8 @@ class TestAutoDouse:
         with _session() as db:
             _add_receipt_and_state(db, "r-1", WEEK1)
             db.flush()
-            award_water(db, settings, units=3, receipt_id="r-1", idempotency_key="w:1", reason="test")
+            # water=2 covers the first two fires; the third exceeds and auto-douses.
+            award_water(db, settings, units=2, receipt_id="r-1", idempotency_key="w:1", reason="test")
             add_fire(db, settings, units=1, receipt_id="r-1",
                      idempotency_key="fire:1:0", reason="test", created_at=WEEK1)
             add_fire(db, settings, units=1, receipt_id="r-1",
@@ -303,28 +373,28 @@ class TestAutoDouse:
             assert GameEventType.WATER_SPENT.value in event_types
             assert GameEventType.FIRE_EXTINGUISHED.value in event_types
 
-    def test_auto_douse_second_third_flame_uses_last_water(self):
-        """Auto-douse can only protect once per water unit; second time burns if no more water."""
+    def test_auto_douse_uses_last_droplet_then_burns(self):
+        """Auto-douse spends the last droplet to smother a fire; the next fire burns."""
         settings = _settings()
         with _session() as db:
             _add_receipt_and_state(db, "r-1", WEEK1)
             db.flush()
-            # 1 water.
+            # 1 droplet.
             award_water(db, settings, units=1, receipt_id="r-1", idempotency_key="w:1", reason="test")
 
+            # First fire is covered (board 1 <= water 1): lands, flames=1.
             add_fire(db, settings, units=1, receipt_id="r-1",
                      idempotency_key="fire:1:0", reason="test", created_at=WEEK1)
-            add_fire(db, settings, units=1, receipt_id="r-1",
-                     idempotency_key="fire:1:1", reason="test", created_at=WEEK1)
-            # Auto-douse on 3rd flame: water 1→0.
+            # Second fire would make board 2 > water 1 → auto-douse, water 1→0, flames stay 1.
             result1 = add_fire(db, settings, units=1, receipt_id="r-1",
-                               idempotency_key="fire:1:2", reason="test", created_at=WEEK1)
+                               idempotency_key="fire:1:1", reason="test", created_at=WEEK1)
             assert result1["forced_waters_spent"] == 1
             assert result1["burns_triggered"] == 0
+            assert db.get(GameCorrectnessState, 1).water_units == 0
 
-            # Now no water. 3rd flame attempt again (new idempotency key):
+            # Now out of droplets: the next fire burns the worst week.
             result2 = add_fire(db, settings, units=1, receipt_id="r-1",
-                               idempotency_key="fire:1:3", reason="test", created_at=WEEK1)
+                               idempotency_key="fire:1:2", reason="test", created_at=WEEK1)
             assert result2["burns_triggered"] == 1
 
 
@@ -410,6 +480,8 @@ class TestAddFireIdempotency:
         with _session() as db:
             _add_receipt_and_state(db, "r-idem-1", WEEK1)
             db.flush()
+            # Droplet so the fire lands (covered) rather than burning the board.
+            award_water(db, settings, units=1, receipt_id="r-idem-1", idempotency_key="w:idem:0", reason="test")
 
             result1 = add_fire(db, settings, units=1, receipt_id="r-idem-1",
                                idempotency_key="fire:idem:1", reason="test", created_at=WEEK1)
@@ -434,9 +506,10 @@ class TestAddFireIdempotency:
             _add_receipt_and_state(db, "r-idem-2", WEEK1)
             db.flush()
 
-            award_water(db, settings, units=3, receipt_id="r-idem-2",
+            # water=2 covers two fires; the third exceeds and auto-douses.
+            award_water(db, settings, units=2, receipt_id="r-idem-2",
                         idempotency_key="w:idem:1", reason="test")
-            # 2 normal flames.
+            # 2 covered flames.
             add_fire(db, settings, units=1, receipt_id="r-idem-2",
                      idempotency_key="fire:idem:2:0", reason="test", created_at=WEEK1)
             add_fire(db, settings, units=1, receipt_id="r-idem-2",
@@ -466,15 +539,10 @@ class TestAddFireIdempotency:
         with _session() as db:
             _add_receipt_and_state(db, "r-idem-3", WEEK1)
             db.flush()
-            # 2 normal flames.
-            add_fire(db, settings, units=1, receipt_id="r-idem-3",
-                     idempotency_key="fire:idem:3:0", reason="test", created_at=WEEK1)
-            add_fire(db, settings, units=1, receipt_id="r-idem-3",
-                     idempotency_key="fire:idem:3:1", reason="test", created_at=WEEK1)
 
-            # 3rd flame burns (no water).
+            # With no droplets the first fire burns the worst week.
             result1 = add_fire(db, settings, units=1, receipt_id="r-idem-3",
-                               idempotency_key="fire:idem:3:2", reason="test", created_at=WEEK1)
+                               idempotency_key="fire:idem:3:0", reason="test", created_at=WEEK1)
             assert result1["burns_triggered"] == 1
 
             ws = _week_start(WEEK1, settings).replace(microsecond=0)
@@ -483,7 +551,7 @@ class TestAddFireIdempotency:
 
             # Replay same key.
             result2 = add_fire(db, settings, units=1, receipt_id="r-idem-3",
-                               idempotency_key="fire:idem:3:2", reason="test", created_at=WEEK1)
+                               idempotency_key="fire:idem:3:0", reason="test", created_at=WEEK1)
             db.refresh(row)
 
             assert result2["burns_triggered"] == 0, "Second call must not trigger another burn"
@@ -545,6 +613,8 @@ class TestDerivedWeeklyStreak:
             r2, s2 = _add_receipt_and_state(db, "r-2", WEEK2, state="green")
             _add_receipt_and_state(db, "r-3", WEEK3, state="green")
             db.flush()
+            # Droplet covers the fire so it lands (pauses) instead of burning the week.
+            award_water(db, settings, units=1, receipt_id="r-2", idempotency_key="w:pause:1", reason="test")
             # Add 1 flame to WEEK2.
             add_fire(db, settings, units=1, receipt_id="r-2",
                      idempotency_key="fire:w2:1", reason="test", created_at=WEEK2)
@@ -593,6 +663,8 @@ class TestDerivedWeeklyStreak:
             streak_before, _ = _derive_weekly_streak(all_rows, wf, NOW, settings)
             assert streak_before == 4
 
+            # Droplet covers the fire so WEEK2 pauses (gains a flame) rather than burning.
+            award_water(db, settings, units=1, receipt_id="r-1", idempotency_key="w:retro:1", reason="test")
             # Retroactive flame on WEEK2.
             add_fire(db, settings, units=1, receipt_id="r-1",
                      idempotency_key="fire:retro:w2", reason="test", created_at=WEEK2)
@@ -1051,12 +1123,16 @@ class TestRebuildParity:
         with Session(engine) as db:
             receipt, _ = self._make_synced_receipt(db, "r-sync-1", WEEK1)
 
+            # Droplet covers the fire so it lands (single-flame parity, not a burn).
+            award_water(db, settings, units=1, receipt_id=receipt.id,
+                        idempotency_key="w:sync:1", reason="test")
             add_fire(db, settings, units=1, receipt_id=receipt.id,
                      idempotency_key="fire:r-sync-1:1", reason="test", created_at=WEEK1)
 
             ws = _week_start(WEEK1, settings).replace(microsecond=0)
             row_before = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws).first()
             flames_before = row_before.flames_active if row_before else 0
+            assert flames_before == 1
 
             rebuild_gamification_state(db, settings)
             db.flush()
@@ -1086,8 +1162,8 @@ class TestRebuildParity:
         with Session(engine) as db:
             receipt, _ = self._make_synced_receipt(db, "r-ad-1", WEEK1)
 
-            # Award 1 water so the 3rd flame triggers auto-douse.
-            award_water(db, settings, units=1, receipt_id=receipt.id,
+            # water=2 covers two fires; the 3rd exceeds and auto-douses (flames stay 2).
+            award_water(db, settings, units=2, receipt_id=receipt.id,
                         idempotency_key="w:ad:1", reason="test")
             add_fire(db, settings, units=1, receipt_id=receipt.id,
                      idempotency_key="fire:ad:1:0", reason="test", created_at=WEEK1)
@@ -1168,7 +1244,8 @@ class TestRebuildParity:
     # ------------------------------------------------------------------
 
     def test_rebuild_parity_burnt_week(self):
-        """A week that burned must remain burnt=True with flames_active==3 after rebuild."""
+        """A burned week must remain burnt=True with flames_active==0 (victim cleared)
+        after rebuild."""
         settings = _settings()
         engine = _engine()
         Base.metadata.create_all(engine)
@@ -1176,15 +1253,15 @@ class TestRebuildParity:
         with Session(engine) as db:
             receipt, _ = self._make_synced_receipt(db, "r-bw-1", WEEK1)
 
-            # 3 flames, no water → week burns.
-            for j in range(3):
-                add_fire(db, settings, units=1, receipt_id=receipt.id,
-                         idempotency_key=f"fire:bw:1:{j}", reason="test", created_at=WEEK1)
+            # No water → the first fire burns the week (and clears its flames).
+            add_fire(db, settings, units=1, receipt_id=receipt.id,
+                     idempotency_key="fire:bw:1:0", reason="test", created_at=WEEK1)
 
             ws = _week_start(WEEK1, settings).replace(microsecond=0)
             live_row = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws).first()
             assert live_row is not None
             assert live_row.burnt is True
+            assert live_row.flames_active == 0
             flames_live = live_row.flames_active
             burnt_live = live_row.burnt
 
@@ -1197,6 +1274,48 @@ class TestRebuildParity:
                 f"Rebuild parity (burnt week): live={flames_live} rebuilt={rebuilt_row.flames_active}"
             )
             assert rebuilt_row.burnt == burnt_live
+
+    def test_rebuild_parity_cross_week_victim(self):
+        """The hardest case: a fire lands on WEEK2 but burns WEEK1 (more flames). After
+        rebuild, WEEK1 must be burnt/flames=0 and WEEK2 must keep its landed flame —
+        exercising the FIRE_ADDED(landing) vs WEEK_BURNED(victim) event split."""
+        settings = _settings()
+        engine = _engine()
+        Base.metadata.create_all(engine)
+
+        with Session(engine) as db:
+            r1, _ = self._make_synced_receipt(db, "r-cw-1", WEEK1)
+            r2, _ = self._make_synced_receipt(db, "r-cw-2", WEEK2)
+
+            # WEEK1 to 2 flames (covered), then empty the stash.
+            award_water(db, settings, units=2, receipt_id=r1.id,
+                        idempotency_key="w:cw:1", reason="test")
+            add_fire(db, settings, units=1, receipt_id=r1.id,
+                     idempotency_key="fire:cw:1:0", reason="test", created_at=WEEK1)
+            add_fire(db, settings, units=1, receipt_id=r1.id,
+                     idempotency_key="fire:cw:1:1", reason="test", created_at=WEEK1)
+            db.get(GameCorrectnessState, 1).water_units = 0
+            db.flush()
+
+            # Fire lands on WEEK2 → worst week WEEK1 burns.
+            add_fire(db, settings, units=1, receipt_id=r2.id,
+                     idempotency_key="fire:cw:2:0", reason="test", created_at=WEEK2)
+
+            ws1 = _week_start(WEEK1, settings).replace(microsecond=0)
+            ws2 = _week_start(WEEK2, settings).replace(microsecond=0)
+
+            def _state():
+                a = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws1).first()
+                b = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws2).first()
+                return (a.burnt, a.flames_active, b.burnt, b.flames_active)
+
+            live = _state()
+            assert live == (True, 0, False, 1)
+
+            rebuild_gamification_state(db, settings)
+            db.flush()
+
+            assert _state() == live, f"Cross-week burn parity failed: {_state()} != {live}"
 
     # ------------------------------------------------------------------
     # Seeded flames must survive replay when the event floor masks history
@@ -1274,12 +1393,12 @@ class TestRebuildParity:
             ).first()
             assert row is not None, "apply-to-live must create the current-week fire row"
             assert row.flames_active == 2
-            # Clamped below the burn threshold, like the rebuild injection.
+            # Clamped to the water cap, like the rebuild injection.
             seed.current_week_flames = 99
             apply_debug_seed_to_live_state(db, seed, settings)
             db.flush()
             db.refresh(row)
-            assert row.flames_active == settings.game_fire_burn_threshold - 1
+            assert row.flames_active == settings.game_water_capacity
 
 
 # ---------------------------------------------------------------------------
@@ -1390,3 +1509,17 @@ class TestConfig:
         import pydantic
         with pytest.raises((pydantic.ValidationError, ValueError)):
             Settings(_env_file=None, game_pass_every_green_weeks=0)
+
+    def test_fire_burn_threshold_no_longer_gates_burns(self):
+        """The deprecated threshold must not gate burns: with a huge threshold, a
+        single fire on an empty stash still burns the worst week."""
+        settings = _settings(game_fire_burn_threshold=99)
+        with _session() as db:
+            _add_receipt_and_state(db, "r-1", WEEK1)
+            db.flush()
+            result = add_fire(db, settings, units=1, receipt_id="r-1",
+                              idempotency_key="fire:nogate:1", reason="test", created_at=WEEK1)
+            assert result["burns_triggered"] == 1
+            ws = _week_start(WEEK1, settings).replace(microsecond=0)
+            row = db.query(GameWeekFire).filter(GameWeekFire.week_start_at == ws).first()
+            assert row.burnt is True
