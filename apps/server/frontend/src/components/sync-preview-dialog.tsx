@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -167,6 +169,21 @@ export function SyncPreviewDialog({
 
   // Confirm button is fully disabled
   const confirmFullyDisabled = isConfirmDisabled || isSyncing || !mode.syncEnabled;
+
+  // Double-submit guard. `disabled={confirmFullyDisabled}` only takes effect
+  // after React's async re-render, so a fast double-tap can fire onConfirm twice
+  // before the button visibly disables (→ two POST /sync). A ref blocks the
+  // second click synchronously. Reset it once the sync settles (so an error can
+  // be retried) or the dialog closes.
+  const submittingRef = useRef(false);
+  useEffect(() => {
+    if (!open || !isSyncing) submittingRef.current = false;
+  }, [open, isSyncing]);
+  const handleConfirm = () => {
+    if (submittingRef.current || confirmFullyDisabled) return;
+    submittingRef.current = true;
+    onConfirm();
+  };
 
   return (
     <Dialog
@@ -337,7 +354,7 @@ export function SyncPreviewDialog({
             className="flex-1"
             data-testid="sync-preview-confirm"
             disabled={confirmFullyDisabled}
-            onClick={onConfirm}
+            onClick={handleConfirm}
           >
             {isSyncing ? "Syncing…" : confirmLabel}
           </Button>
