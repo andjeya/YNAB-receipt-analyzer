@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.enums import ReceiptStatus
 from app.models import Receipt
+from app.services.retention import hard_delete_receipt
 from app.services.storage import build_storage_key, guess_mime_type, move_to_storage, sanitize_extension, storage_path
 
 logger = logging.getLogger(__name__)
@@ -116,9 +117,17 @@ def ingest_file(source_path: Path, db: Session, settings: Settings) -> tuple[Rec
     file_hash = compute_file_hash(source_path)
 
     existing = db.scalar(select(Receipt).where(Receipt.file_hash == file_hash))
-    if existing:
+    if existing is not None and existing.deleted_at is None:
+        # A live receipt already holds this content — genuine duplicate scan.
         source_path.unlink(missing_ok=True)
         return existing, False
+    if existing is not None:
+        # The only match is a receipt the user already deleted. The soft-delete
+        # is just an Undo buffer; reviving the old row would resurrect its stale
+        # state/notes, and the unique file_hash blocks a fresh row. Hard-delete
+        # the old one now and ingest this scan as a clean, new receipt.
+        hard_delete_receipt(db, settings, existing)
+        db.flush()
 
     receipt_id = str(uuid.uuid4())
     extension = sanitize_extension(source_path.name)

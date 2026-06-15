@@ -21,13 +21,27 @@ from app.utils import utcnow
 logger = logging.getLogger(__name__)
 
 
+def hard_delete_receipt(db: Session, settings, receipt: Receipt) -> None:
+    """Permanently remove a receipt: unlink its stored file and delete the row
+    (cascading to extraction runs, twins, validations, sync rows).
+
+    Does NOT commit — the caller decides the transaction boundary.
+    """
+    store_root = Path(settings.object_store_root).resolve()
+    # Only unlink files that resolve safely under the object store root.
+    absolute_path = storage_path(store_root, receipt.storage_key).resolve()
+    if str(absolute_path).startswith(str(store_root) + "/"):
+        absolute_path.unlink(missing_ok=True)
+    db.delete(receipt)
+
+
 def purge_soft_deleted_receipts(db: Session, settings, *, now=None) -> int:
     """Hard-delete receipts soft-deleted longer than the purge window.
 
     Returns the number of receipts purged.
     """
     reference = now or utcnow()
-    cutoff = reference - timedelta(hours=settings.soft_delete_purge_hours)
+    cutoff = reference - timedelta(minutes=settings.soft_delete_purge_minutes)
 
     stale = list(
         db.scalars(
@@ -40,13 +54,8 @@ def purge_soft_deleted_receipts(db: Session, settings, *, now=None) -> int:
     if not stale:
         return 0
 
-    store_root = Path(settings.object_store_root).resolve()
     for receipt in stale:
-        # Only unlink files that resolve safely under the object store root.
-        absolute_path = storage_path(store_root, receipt.storage_key).resolve()
-        if str(absolute_path).startswith(str(store_root) + "/"):
-            absolute_path.unlink(missing_ok=True)
-        db.delete(receipt)
+        hard_delete_receipt(db, settings, receipt)
 
     db.commit()
     logger.info("Purged %d soft-deleted receipt(s)", len(stale))

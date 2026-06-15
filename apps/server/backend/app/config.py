@@ -59,9 +59,13 @@ class Settings(BaseSettings):
     stable_min_age_seconds: int = 3
     max_ingest_file_size_bytes: int = 50 * 1024 * 1024  # 50 MB
     stuck_job_timeout_minutes: int = 30
-    # Soft-deleted receipts are kept this long (so the user can Undo) before a
-    # startup sweep hard-deletes the file + rows.
-    soft_delete_purge_hours: int = 24
+    # The soft-delete is only a short Undo buffer: a receipt deleted by the user
+    # is hard-deleted (file + rows) once it has been gone this many minutes, so a
+    # re-scan of the same image starts fresh instead of colliding with the (now
+    # invisible) old row on its unique file_hash.
+    soft_delete_purge_minutes: int = 5
+    # How often the background sweep runs to hard-delete expired soft-deletes.
+    soft_delete_purge_interval_seconds: int = 60
 
     game_green_hours_threshold: float = 24.0
     game_brown_hours_threshold: float = 72.0

@@ -113,6 +113,18 @@ async def _periodic_cache_refresh() -> None:
             logger.exception("Periodic YNAB cache refresh failed")
 
 
+async def _periodic_purge() -> None:
+    """Sweep expired soft-deletes on an interval so the Undo buffer is short
+    (not just cleared on the next restart)."""
+    interval_seconds = max(settings.soft_delete_purge_interval_seconds, 1)
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await asyncio.to_thread(_purge_soft_deleted)
+        except Exception:
+            logger.exception("Periodic soft-delete purge failed")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_logging(settings.log_file_path)
@@ -133,13 +145,16 @@ async def lifespan(_: FastAPI):
             logger.exception("Startup YNAB cache refresh failed")
         refresh_task = asyncio.create_task(_periodic_cache_refresh())
 
+    purge_task = asyncio.create_task(_periodic_purge())
+
     try:
         yield
     finally:
-        if refresh_task:
-            refresh_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await refresh_task
+        for task in (refresh_task, purge_task):
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 

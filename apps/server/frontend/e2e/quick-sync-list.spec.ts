@@ -2,7 +2,7 @@
  * Quick-sync list feature tests.
  *
  * Covers:
- * 1. A list card with sync_ready=true shows the "Looks right - Sync" button.
+ * 1. A list card with sync_ready=true shows the "Quick sync" button.
  * 2. Clicking the button opens the sync PREVIEW dialog (categories visible)
  *    and nothing is sent until Confirm; Confirm fires exactly one sync.
  * 3. Cancelling the preview never fires a sync.
@@ -163,7 +163,7 @@ function buildListRouter(
 // Test 1 — card with sync_ready=true shows the quick-sync button
 // ---------------------------------------------------------------------------
 
-test("sync_ready card shows 'Looks right - Sync' button", async ({ page }) => {
+test("sync_ready card shows 'Quick sync' button", async ({ page }) => {
   const syncPosts: { url: string }[] = [];
 
   await mountApiMocks(page, buildListRouter([SUMMARY_SYNC_READY], syncPosts));
@@ -174,7 +174,7 @@ test("sync_ready card shows 'Looks right - Sync' button", async ({ page }) => {
 
   const quickSyncBtn = page.getByTestId("quick-sync-button");
   await expect(quickSyncBtn).toBeVisible();
-  await expect(quickSyncBtn).toContainText("Looks right - Sync");
+  await expect(quickSyncBtn).toContainText("Quick sync");
 });
 
 // ---------------------------------------------------------------------------

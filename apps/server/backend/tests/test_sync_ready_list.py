@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from app.api.receipts import _batch_sync_ready, list_receipts
+from app.api.receipts import _batch_review_state, _batch_sync_ready, list_receipts
 from app.config import Settings
 from app.enums import ReceiptStatus
 from app.models import Receipt, ReceiptTwin, Validation
@@ -329,3 +329,143 @@ def test_list_endpoint_sync_ready_false_when_disabled(db_with_cache: Any, test_s
     match = next((s for s in summaries if s.id == rid), None)
     assert match is not None
     assert match.sync_ready is False
+
+
+# ---------------------------------------------------------------------------
+# review_hint codes (per-receipt reason surfaced on the list card)
+# ---------------------------------------------------------------------------
+
+
+def _hint(db: Any, receipt: Receipt, *, enabled: bool = True) -> str | None:
+    return _batch_review_state(db, [receipt], sync_enabled=enabled)[receipt.id][1]
+
+
+def test_review_hint_ready_when_all_gates_pass(db_with_cache: Any, test_settings: Settings) -> None:
+    rid = "rh-ready-aaaa-bbbb-cccc-dddddddddddd"
+    receipt = _make_receipt(db_with_cache, rid)
+    _add_validation(db_with_cache, rid)
+    _add_twin(db_with_cache, rid, date_time_confirmed=True, total_confirmed=True)
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt) == "ready"
+
+
+def test_review_hint_generic_review_when_gates_pass_but_sync_disabled(
+    db_with_cache: Any, test_settings: Settings
+) -> None:
+    """Gates pass but sync is off → generic 'review' (never 'ready')."""
+    rid = "rh-disabled-aaaa-bbbb-cccc-dddddddddddd"
+    receipt = _make_receipt(db_with_cache, rid)
+    _add_validation(db_with_cache, rid)
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt, enabled=False) == "review"
+
+
+def test_review_hint_duplicate(db_with_cache: Any, test_settings: Settings) -> None:
+    other_id = "rh-dup-other-aaaa-bbbb-cccc-dddddddd"
+    _make_receipt(db_with_cache, other_id)
+    rid = "rh-dup-aaaa-bbbb-cccc-dddddddddddddddd"
+    receipt = _make_receipt(db_with_cache, rid, duplicate_of=other_id)
+    _add_validation(db_with_cache, rid)
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt) == "duplicate"
+
+
+def test_review_hint_duplicate_review_status(db_with_cache: Any, test_settings: Settings) -> None:
+    rid = "rh-dupstatus-aaaa-bbbb-cccc-dddddddddd"
+    receipt = _make_receipt(db_with_cache, rid, status=ReceiptStatus.DUPLICATE_REVIEW.value)
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt) == "duplicate"
+
+
+def test_review_hint_needs_account_unknown(db_with_cache: Any, test_settings: Settings) -> None:
+    rid = "rh-acct-unknown-aaaa-bbbb-cccc-dddddd"
+    receipt = _make_receipt(db_with_cache, rid)
+    _add_validation(db_with_cache, rid, payload={**VALID_PAYLOAD, "account_id": "__unknown__"})
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt) == "needs_account"
+
+
+def test_review_hint_needs_account_blank(db_with_cache: Any, test_settings: Settings) -> None:
+    rid = "rh-acct-blank-aaaa-bbbb-cccc-dddddddd"
+    receipt = _make_receipt(db_with_cache, rid)
+    _add_validation(db_with_cache, rid, payload={**VALID_PAYLOAD, "account_id": ""})
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt) == "needs_account"
+
+
+def test_review_hint_category_issue_when_invalid_with_account(
+    db_with_cache: Any, test_settings: Settings
+) -> None:
+    """is_valid=False but the account is set → a non-account validation issue."""
+    rid = "rh-cat-issue-aaaa-bbbb-cccc-dddddddd"
+    receipt = _make_receipt(db_with_cache, rid)
+    _add_validation(db_with_cache, rid, is_valid=False)  # default payload has acct-1
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt) == "category_issue"
+
+
+def test_review_hint_confirm_date_missing_date(db_with_cache: Any, test_settings: Settings) -> None:
+    rid = "rh-confirm-date-aaaa-bbbb-cccc-dddddd"
+    receipt = _make_receipt(db_with_cache, rid)
+    _add_validation(db_with_cache, rid, payload={**VALID_PAYLOAD, "transaction_date": None})
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt) == "confirm_date"
+
+
+def test_review_hint_confirm_total_when_twin_total_unconfirmed(
+    db_with_cache: Any, test_settings: Settings
+) -> None:
+    rid = "rh-confirm-total-aaaa-bbbb-cccc-dddd"
+    receipt = _make_receipt(db_with_cache, rid)
+    _add_validation(db_with_cache, rid)
+    _add_twin(db_with_cache, rid, date_time_confirmed=True, total_confirmed=False)
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt) == "confirm_total"
+
+
+def test_review_hint_review_when_no_validation(db_with_cache: Any, test_settings: Settings) -> None:
+    rid = "rh-no-val-aaaa-bbbb-cccc-dddddddddddd"
+    receipt = _make_receipt(db_with_cache, rid)
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt) == "review"
+
+
+def test_review_hint_import_failed(db_with_cache: Any, test_settings: Settings) -> None:
+    rid = "rh-import-fail-aaaa-bbbb-cccc-dddddd"
+    receipt = _make_receipt(db_with_cache, rid, status=ReceiptStatus.ERROR_EXTRACT.value)
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt) == "import_failed"
+
+
+def test_review_hint_sync_failed(db_with_cache: Any, test_settings: Settings) -> None:
+    rid = "rh-sync-fail-aaaa-bbbb-cccc-dddddddd"
+    receipt = _make_receipt(db_with_cache, rid, status=ReceiptStatus.ERROR_SYNC.value)
+    db_with_cache.commit()
+    assert _hint(db_with_cache, receipt) == "sync_failed"
+
+
+def test_review_hint_none_for_processing_and_synced(db_with_cache: Any, test_settings: Settings) -> None:
+    for status in (
+        ReceiptStatus.INGESTED.value,
+        ReceiptStatus.EXTRACTING.value,
+        ReceiptStatus.SYNCING.value,
+        ReceiptStatus.SYNCED.value,
+    ):
+        rid = f"rh-none-{status}-aaaa-bbbb-cccc-dd"
+        receipt = _make_receipt(db_with_cache, rid, status=status)
+        db_with_cache.commit()
+        assert _hint(db_with_cache, receipt) is None
+
+
+def test_list_endpoint_includes_review_hint(db_with_cache: Any, test_settings: Settings) -> None:
+    rid = "rh-list-ep-aaaa-bbbb-cccc-dddddddddddd"
+    _make_receipt(db_with_cache, rid)
+    _add_validation(db_with_cache, rid)
+    _add_twin(db_with_cache, rid, date_time_confirmed=True, total_confirmed=True)
+    db_with_cache.commit()
+
+    settings = _enabled_settings(test_settings)
+    summaries = list_receipts(status=None, sort="newest", limit=200, db=db_with_cache, settings=settings)
+    match = next((s for s in summaries if s.id == rid), None)
+    assert match is not None
+    assert match.review_hint == "ready"

@@ -93,9 +93,56 @@ function setDevtoolsPref(enabled: boolean): void {
 // Processing receipts live at the bottom of To Review with a "working" label,
 // so there are only two places to look: what needs you, and what's done.
 const TABS: Array<{ label: string; bucket: ReceiptBucket; testid: string }> = [
-  { label: "To Review", bucket: "review", testid: "tab-review" },
-  { label: "Done",      bucket: "done",   testid: "tab-done"   },
+  { label: "Needs review", bucket: "review", testid: "tab-review" },
+  { label: "Synced",       bucket: "done",   testid: "tab-done"   },
 ];
+
+// review_hint → short plain-language line shown on the card. Codes are produced
+// by _batch_review_state in apps/server/backend/app/api/receipts.py; keep the
+// two lists in sync. Tone drives the chip colour (and matches StatusBadge).
+const REVIEW_HINT: Record<string, { label: string; tone: "amber" | "emerald" | "orange" | "red" }> = {
+  ready:          { label: "Ready to sync",         tone: "emerald" },
+  needs_account:  { label: "Needs an account",      tone: "amber" },
+  category_issue: { label: "Category needs a look", tone: "amber" },
+  confirm_date:   { label: "Confirm the date",      tone: "amber" },
+  confirm_total:  { label: "Confirm the total",     tone: "amber" },
+  duplicate:      { label: "Possible duplicate",    tone: "orange" },
+  review:         { label: "Needs review",          tone: "amber" },
+  import_failed:  { label: "Couldn't read it",      tone: "red" },
+  sync_failed:    { label: "Sync hiccup",           tone: "red" },
+};
+
+const HINT_TONE: Record<string, { chip: string; dot: string }> = {
+  amber:   { chip: "bg-amber-100 text-amber-800 ring-amber-600/20",     dot: "bg-amber-500" },
+  emerald: { chip: "bg-emerald-100 text-emerald-800 ring-emerald-600/20", dot: "bg-emerald-500" },
+  orange:  { chip: "bg-orange-100 text-orange-800 ring-orange-600/20",  dot: "bg-orange-500" },
+  red:     { chip: "bg-red-100 text-red-700 ring-red-600/20",           dot: "bg-red-500" },
+};
+
+/**
+ * ReviewHintBadge — the specific "why this needs you" chip on a list card
+ * (e.g. "Needs an account", "Confirm the date", "Ready to sync"). It replaces
+ * the generic status badge for actionable receipts so the reason is explicit,
+ * and resolves the "Needs review vs Quick sync" contradiction: a sync-ready
+ * card reads "Ready to sync" next to its green button. Falls back to the raw
+ * status badge for codes it doesn't recognise.
+ */
+function ReviewHintBadge({ hint }: { hint: string }) {
+  const entry = REVIEW_HINT[hint];
+  if (!entry) return <StatusBadge status={hint} />;
+  const tone = HINT_TONE[entry.tone];
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ring-inset",
+        tone.chip,
+      )}
+    >
+      <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tone.dot)} aria-hidden="true" />
+      {entry.label}
+    </span>
+  );
+}
 
 // Whole, friendly units — "7 days", not "7.4d" (dev shorthand reads as jargon).
 function formatWaitTime(value: number | null | undefined): string {
@@ -117,16 +164,19 @@ function formatWaitTime(value: number | null | undefined): string {
 }
 
 /**
- * Formats the wall-clock time since a receipt was ingested as a short
- * "waiting" string (e.g. "3d", "5h", "12m") for the To Review tab.
+ * Formats a receipt's purchase date as a calm, grey-text label ("Jun 12", or
+ * "Jun 12, 2025" when it isn't the current year). Prefers the date printed on
+ * the receipt; falls back to when it was ingested if that's missing.
  */
-function formatWallWait(ingestedAt: string): string {
-  const elapsedMs = Date.now() - parseApiDate(ingestedAt).getTime();
-  const totalMinutes = Math.max(Math.round(elapsedMs / 60_000), 1);
-  const totalHours = elapsedMs / (1000 * 60 * 60);
-  if (totalMinutes < 60) return `${totalMinutes}m`;
-  if (totalHours < 24) return `${Math.round(totalHours)}h`;
-  return `${Math.max(Math.round(totalHours / 24), 1)}d`;
+function formatReceiptDate(displayReceiptDate: string | null | undefined, ingestedAt: string): string {
+  const source = displayReceiptDate ?? ingestedAt;
+  const date = parseApiDate(source);
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
 }
 
 function deriveIconState(tile: GameForestTile | undefined): ReceiptIconState | null {
@@ -223,13 +273,14 @@ function ReceiptLookup({ onNavigate }: { onNavigate: (path: string) => void }) {
       <button
         type="button"
         data-testid="receipt-lookup-toggle"
-        className="rounded-full p-2 text-ink/60 transition hover:bg-ink/10 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70"
+        className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full px-2.5 text-ink/60 transition hover:bg-ink/10 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70"
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
         aria-label="Find a receipt"
         title="Find a receipt"
       >
-        <Search className="h-5 w-5" />
+        <Search className="h-5 w-5" aria-hidden="true" />
+        <span className="hidden text-sm font-semibold sm:inline">Search</span>
       </button>
       {open ? (
         <Card className="absolute right-0 top-full z-30 mt-2 w-[20rem] rounded-2xl p-3">
@@ -344,10 +395,14 @@ function StatChip({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// "How to play" dialog content
+// Help dialog — one place for help, split into "Using the app" and "The game".
+// (Previously this was a game-only "How to play" dialog; app guidance now lives
+// alongside it under its own tab so there's a single help destination.)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function HowToPlayDialog({
+type HelpTab = "app" | "game";
+
+function HelpDialog({
   open,
   onClose,
   avgValidationAgeHours,
@@ -365,51 +420,152 @@ function HowToPlayDialog({
   const greenHours = rules?.green_hours_threshold ?? 24;
   const brownHours = rules?.brown_hours_threshold ?? 72;
 
+  const [tab, setTab] = useState<HelpTab>("app");
+  // Always land on "Using the app" each time it's opened — the app guidance is
+  // the general-purpose help; the game is the optional extra.
+  useEffect(() => {
+    if (open) setTab("app");
+  }, [open]);
+
+  const TAB_DEFS: Array<{ id: HelpTab; label: string }> = [
+    { id: "app", label: "Using the app" },
+    { id: "game", label: "The game" },
+  ];
+
   return (
-    <Dialog open={open} onClose={onClose} labelledById="how-to-play-heading">
+    <Dialog open={open} onClose={onClose} labelledById="help-heading">
       <Card className="w-full max-w-sm space-y-4 border-0 shadow-none">
-        <h2 id="how-to-play-heading" className="text-base font-semibold">How to play</h2>
+        <h2 id="help-heading" className="text-base font-semibold">Help</h2>
 
-        <section className="space-y-2 text-sm text-ink/80">
-          <p className="font-semibold text-ink">Keep your receipts crisp</p>
-          <p>
-            Each week shows that week&apos;s slowest receipt, aging by how long it took to reach YNAB
-            &mdash; measured from the date on the receipt to when it synced. Within{" "}
-            {formatWaitTime(greenHours)} &rarr; crisp and green; within {formatWaitTime(brownHours)}{" "}
-            &rarr; dog-eared and yellow; longer &rarr; crumpled and brown. Weeks with no receipts
-            don&apos;t count for &mdash; or against &mdash; you.
-          </p>
-        </section>
+        {/* Tab switcher — one help destination, separated by app vs game. */}
+        <div role="tablist" aria-label="Help topics" className="flex gap-2 rounded-2xl bg-ink/5 p-1">
+          {TAB_DEFS.map((t) => {
+            const isActive = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                data-testid={`help-tab-${t.id}`}
+                onClick={() => setTab(t.id)}
+                className={cn(
+                  "flex-1 rounded-xl px-3 py-1.5 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70",
+                  isActive ? "bg-surface text-ink shadow-soft" : "text-ink/55 hover:text-ink",
+                )}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
 
-        <section className="space-y-2 text-sm text-ink/80">
-          <p className="font-semibold text-ink">Droplets &amp; fires</p>
-          <p>
-            Catch one of Snappy&apos;s category mistakes while reviewing and you earn a droplet
-            (you can hold {waterCap}). If a synced transaction has to be fixed in YNAB later,
-            a fire lands on that receipt&apos;s week. Keep your droplets up: while you have more
-            droplets than fires you&apos;re safe, and Snappy will auto-spend one to smother a fire
-            you can&apos;t cover. But if a fire breaks out while you&apos;re out of droplets, your
-            worst week (the one with the most fires) burns to ash for good. Tap a flaming week to
-            douse it, one droplet per fire.
-          </p>
-        </section>
+        {tab === "app" ? (
+          <div className="space-y-4">
+            <section className="space-y-2 text-sm text-ink/80">
+              <p className="font-semibold text-ink">What Snappy does</p>
+              <p>
+                Snappy reads each receipt and drafts a YNAB transaction from it &mdash; payee,
+                amount, date, and category. You check the draft, then send it to YNAB. Nothing
+                reaches YNAB until you say so.
+              </p>
+            </section>
 
-        <section className="space-y-2 text-sm text-ink/80">
-          <p className="font-semibold text-ink">Streak &amp; shred tokens</p>
-          <p>
-            Green, flame-free weeks in a row build your streak; an active flame pauses it until
-            you douse it. Every {passEvery} streak weeks earns a shred token &mdash; shred a late receipt
-            and it won&apos;t count against its week.
-          </p>
-        </section>
+            <section className="space-y-2 text-sm text-ink/80">
+              <p className="font-semibold text-ink">Reviewing a receipt</p>
+              <p>
+                Tap any card to open it. Confirm the payee, amount, and date, pick or fix the
+                category, then sync. Receipts Snappy isn&apos;t sure about are marked{" "}
+                <span className="font-semibold text-ink">Needs review</span> so they rise to the
+                top of your list.
+              </p>
+            </section>
 
-        <section className="rounded-xl bg-ink/5 px-3 py-2 text-sm">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink/50">Your average time to YNAB</p>
-          <p className="mt-1 text-lg font-bold text-ink">
-            {avgValidationAgeHours == null ? "Nothing synced yet" : formatWaitTime(avgValidationAgeHours)}
-          </p>
-          <p className="text-xs text-ink/60">Average time from a receipt&apos;s purchase date to landing in YNAB.</p>
-        </section>
+            <section className="space-y-2 rounded-xl bg-emerald-50 px-3 py-2.5 text-sm text-ink/80 ring-1 ring-inset ring-emerald-600/15">
+              <p className="flex items-center gap-1.5 font-semibold text-emerald-800">
+                <Zap className="h-3.5 w-3.5" aria-hidden="true" />
+                The Quick sync button
+              </p>
+              <p>
+                The green <span className="font-semibold">Quick sync</span> button only appears on
+                receipts Snappy is highly confident about &mdash; where the amount, date, and payee
+                came through cleanly with nothing ambiguous. One tap sends it to YNAB without opening
+                it (you still get a quick confirm first). For anything Snappy is unsure about, the
+                button stays hidden so you review it yourself before it syncs.
+              </p>
+            </section>
+
+            <section className="space-y-2 text-sm text-ink/80">
+              <p className="font-semibold text-ink">Reading a card</p>
+              <p>
+                The amount sits top-right &mdash; dark for money spent, green for money coming back
+                (a refund). The grey line shows the receipt&apos;s date and where it is in the
+                pipeline.
+              </p>
+            </section>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <section className="space-y-2 text-sm text-ink/80">
+              <p className="font-semibold text-ink">Keep your receipts crisp</p>
+              <p>
+                Each week shows that week&apos;s slowest receipt, aging by how long it took to reach YNAB
+                &mdash; measured from the date on the receipt to when it synced. Within{" "}
+                {formatWaitTime(greenHours)} &rarr; crisp and green; within {formatWaitTime(brownHours)}{" "}
+                &rarr; dog-eared and yellow; longer &rarr; crumpled and brown. Weeks with no receipts
+                don&apos;t count for &mdash; or against &mdash; you.
+              </p>
+            </section>
+
+            <section className="space-y-2 text-sm text-ink/80">
+              <p className="font-semibold text-ink">Droplets &amp; fires</p>
+              <p>
+                Catch one of Snappy&apos;s category mistakes while reviewing and you earn a droplet
+                (you can hold {waterCap}). If a synced transaction has to be fixed in YNAB later,
+                a fire lands on that receipt&apos;s week. Keep your droplets up: while you have more
+                droplets than fires you&apos;re safe, and Snappy will auto-spend one to smother a fire
+                you can&apos;t cover. But if a fire breaks out while you&apos;re out of droplets, your
+                worst week (the one with the most fires) burns to ash for good. Tap a flaming week to
+                douse it, one droplet per fire.
+              </p>
+              {/* Full trail legend (the row only shows the timeliness states). */}
+              <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1.5 rounded-xl bg-ink/5 px-3 py-2.5 text-xs text-ink/75">
+                <span className="flex items-center gap-1.5">
+                  <ReceiptStateIcon state="green" className="h-4 w-4" /> on time
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <ReceiptStateIcon state="yellow" className="h-4 w-4" /> a bit late
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <ReceiptStateIcon state="brown" className="h-4 w-4" /> very late
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <Flame className="h-3.5 w-3.5 text-orange-500" aria-hidden="true" /> fire (fix needed in YNAB)
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <ReceiptStateIcon state="burnt" className="h-4 w-4" /> burned to ash
+                </span>
+              </div>
+            </section>
+
+            <section className="space-y-2 text-sm text-ink/80">
+              <p className="font-semibold text-ink">Streak &amp; shred tokens</p>
+              <p>
+                Green, flame-free weeks in a row build your streak; an active flame pauses it until
+                you douse it. Every {passEvery} streak weeks earns a shred token &mdash; shred a late receipt
+                and it won&apos;t count against its week.
+              </p>
+            </section>
+
+            <section className="rounded-xl bg-ink/5 px-3 py-2 text-sm">
+              <p className="text-xs font-semibold uppercase tracking-wide text-ink/50">Your average time to YNAB</p>
+              <p className="mt-1 text-lg font-bold text-ink">
+                {avgValidationAgeHours == null ? "Nothing synced yet" : formatWaitTime(avgValidationAgeHours)}
+              </p>
+              <p className="text-xs text-ink/60">Average time from a receipt&apos;s purchase date to landing in YNAB.</p>
+            </section>
+          </div>
+        )}
 
         <div className="flex justify-end">
           <Button variant="outline" onClick={onClose}>Got it</Button>
@@ -583,7 +739,7 @@ function WeekTrail({
           {slotGlyph(slot, "h-9 w-9")}
           {slot.flames > 0 && !slot.burnt ? renderFlameBadge(slot.flames, false) : null}
         </button>
-        <p className="text-[9px] text-sand/50 whitespace-nowrap">{formatWeekStart(slot.start_at, gameTimezone)}</p>
+        <p className="text-[10px] text-sand/70 whitespace-nowrap">{formatWeekStart(slot.start_at, gameTimezone)}</p>
 
         {/* Popover — anchored on whichever edge keeps it on-screen */}
         {isOpen ? (
@@ -609,7 +765,7 @@ function WeekTrail({
                 {isDousingPending ? "Dousing…" : `Douse (${slot.flames} droplet${slot.flames === 1 ? "" : "s"})`}
               </button>
             ) : slot.flames > 0 && !slot.burnt ? (
-              <p className="mt-1 text-[10px] text-sand/60">No droplets to douse with.</p>
+              <p className="mt-1 text-[10px] text-sand/75">No droplets to douse with.</p>
             ) : null}
           </div>
         ) : null}
@@ -657,7 +813,7 @@ function WeekTrail({
             )}
             {heroSlot.flames > 0 && !heroSlot.burnt ? renderFlameBadge(heroSlot.flames, true) : null}
           </button>
-          <p className="text-[9px] font-semibold text-sand/80 whitespace-nowrap">This week</p>
+          <p className="text-[10px] font-semibold text-sand/80 whitespace-nowrap">This week</p>
 
           {/* Hero popover — left-aligned (hero is the leftmost cell). */}
           {heroIsOpen ? (
@@ -680,7 +836,7 @@ function WeekTrail({
                   {isDousingPending ? "Dousing…" : `Douse (${heroSlot.flames} droplet${heroSlot.flames === 1 ? "" : "s"})`}
                 </button>
               ) : heroSlot.flames > 0 && !heroSlot.burnt ? (
-                <p className="mt-1 text-[10px] text-sand/60">No droplets to douse with.</p>
+                <p className="mt-1 text-[10px] text-sand/75">No droplets to douse with.</p>
               ) : null}
             </div>
           ) : null}
@@ -692,8 +848,11 @@ function WeekTrail({
         ))}
       </div>
 
-      {/* Micro-legend — the actual receipt glyphs so the row reads itself. */}
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-sand/60">
+      {/* Micro-legend — just the timeliness glyphs (self-explanatory, higher
+          contrast). Fires and ash are rarer and sound alarming, so their
+          meaning lives in Help and in each flaming/burnt week's own tap
+          popover, instead of always sitting in the legend. */}
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-sand/80">
         <span className="flex items-center gap-1.5">
           <ReceiptStateIcon state="green" className="h-3.5 w-3.5" />
           on time
@@ -706,14 +865,7 @@ function WeekTrail({
           <ReceiptStateIcon state="brown" className="h-3.5 w-3.5" />
           very late
         </span>
-        <span className="flex items-center gap-1.5">
-          <Flame className="h-3 w-3 text-orange-400" aria-hidden="true" />
-          miscategorization fire
-        </span>
-        <span className="flex items-center gap-1.5">
-          <ReceiptStateIcon state="burnt" className="h-3.5 w-3.5" />
-          burned to ash
-        </span>
+        <span className="text-sand/60">· tap a week for details</span>
       </div>
     </div>
   );
@@ -770,8 +922,8 @@ function ReceiptListHeader({
   // Which stat chip currently has its popover open (null = none)
   const [openTile, setOpenTile] = useState<StatTileId | null>(null);
 
-  // "How to play" dialog
-  const [howToPlayOpen, setHowToPlayOpen] = useState(false);
+  // Help dialog (app + game)
+  const [helpOpen, setHelpOpen] = useState(false);
 
   // Mobile collapse state — persisted in localStorage.
   // null = SSR/unhydrated (always show full content so no layout shift on desktop).
@@ -838,7 +990,7 @@ function ReceiptListHeader({
         style={{ background: "linear-gradient(135deg, #172026 0%, #0e2a2f 60%, #0d2535 100%)" }}
       >
         {/* ── Top section: always visible ────────────────────────────────── */}
-        <div className="flex items-center gap-3 px-4 pt-4 pb-3">
+        <div className="flex items-center gap-3 px-4 pt-3 pb-2.5">
           {/* Snappy hero */}
           <div className="shrink-0">
             <Snappy pose={pose} size="h-20 w-20 sm:h-24 sm:w-24" />
@@ -870,7 +1022,7 @@ function ReceiptListHeader({
                   {derived.attribution ? <>&ldquo;{derived.line}&rdquo;</> : derived.line}
                 </p>
                 {derived.attribution ? (
-                  <p className="mt-1 text-[11px] text-sand/60" title={derived.attributionSource}>
+                  <p className="mt-1 text-[11px] text-sand/70" title={derived.attributionSource}>
                     — {derived.attribution}
                   </p>
                 ) : null}
@@ -884,14 +1036,14 @@ function ReceiptListHeader({
             onClick={toggleExpanded}
             aria-expanded={isExpanded}
             aria-label={isExpanded ? "Collapse header" : "Expand header"}
-            className="ml-auto shrink-0 rounded-full p-1.5 text-sand/60 transition hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-mint/70 sm:hidden"
+            className="ml-auto inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-sand/75 transition hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-mint/70 sm:hidden"
           >
             {isExpanded ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
           </button>
         </div>
 
         {/* ── Expandable section: chips + trail ──────────────────────────── */}
-        <div className={cn("px-4 pb-4 space-y-4", isExpanded ? "block" : "hidden sm:block")}>
+        <div className={cn("px-4 pb-3.5 space-y-3", isExpanded ? "block" : "hidden sm:block")}>
           {/* Stat chips row — every chip shares one structure (icon + number +
               label) so they stay the same height however many are shown. */}
           <div ref={headerRef} className="flex flex-wrap gap-2">
@@ -945,19 +1097,19 @@ function ReceiptListHeader({
 
           {/* Trail section */}
           <div>
-            <div className="mb-3 flex items-center justify-between">
-              <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sand/60">
-                <Receipt className="h-3.5 w-3.5 text-mint/70" aria-hidden="true" />
+            <div className="mb-2.5 flex items-center justify-between">
+              <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sand/80">
+                <Receipt className="h-3.5 w-3.5 text-mint/80" aria-hidden="true" />
                 Paper trail
               </p>
               <button
                 type="button"
-                onClick={() => setHowToPlayOpen(true)}
-                className="flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-sand/70 transition hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-mint/70"
-                aria-label="How to play"
+                onClick={() => setHelpOpen(true)}
+                className="flex min-h-11 items-center gap-1 rounded-full bg-white/10 px-3 py-1 text-[11px] font-semibold text-sand/85 transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70"
+                aria-label="Help — how the paper trail and the game work"
               >
-                <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
-                How to play
+                <HelpCircle className="h-4 w-4" aria-hidden="true" />
+                Help
               </button>
             </div>
 
@@ -974,9 +1126,9 @@ function ReceiptListHeader({
         </div>
       </Card>
 
-      <HowToPlayDialog
-        open={howToPlayOpen}
-        onClose={() => setHowToPlayOpen(false)}
+      <HelpDialog
+        open={helpOpen}
+        onClose={() => setHelpOpen(false)}
         avgValidationAgeHours={dashboardData?.summary?.avg_validation_age_hours}
         rules={dashboardData?.rules}
       />
@@ -1011,7 +1163,7 @@ function TabBar({
   };
 
   return (
-    <section className="animate-reveal flex items-center gap-2 rounded-3xl border border-ink/[0.06] bg-surface/85 p-2.5 shadow-soft backdrop-blur-[2px]" style={{ animationDelay: "90ms" }}>
+    <section className="animate-reveal relative z-30 flex items-center gap-2 rounded-3xl border border-ink/[0.06] bg-surface/85 p-2 shadow-soft backdrop-blur-[2px]" style={{ animationDelay: "90ms" }}>
       <div role="tablist" aria-label="Receipt queue tabs" className="flex flex-1 gap-2">
         {TABS.map((tab) => {
           const isActive = activeTab === tab.bucket;
@@ -1025,9 +1177,11 @@ function TabBar({
               data-testid={tab.testid}
               onClick={() => setActiveTab(tab.bucket)}
               className={cn(
+                // Active uses the on-brand mint rather than a heavy dark fill,
+                // so it reads as selected without competing with the dark header.
                 "rounded-full px-4 py-1.5 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2",
                 isActive
-                  ? "bg-ink text-white shadow-sm"
+                  ? "bg-mint text-ink shadow-sm"
                   : "bg-ink/10 text-ink hover:bg-ink/15",
               )}
             >
@@ -1036,7 +1190,7 @@ function TabBar({
               <span
                 className={cn(
                   "inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold",
-                  isActive ? "bg-white/20" : "bg-ink/10",
+                  isActive ? "bg-ink/15 text-ink" : "bg-ink/10",
                 )}
               >
                 {count}
@@ -1051,7 +1205,7 @@ function TabBar({
 }
 
 function ReceiptListItem({
-  receipt, tile, currentWeekSlot, spendableNow, shredWindowWeeks, onShred, isShredPending, onQuickSync, isQuickSyncPending, onDelete, isDeletePending, index, showWaiting,
+  receipt, tile, currentWeekSlot, spendableNow, shredWindowWeeks, onShred, isShredPending, onQuickSync, isQuickSyncPending, onDelete, isDeletePending, index,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   receipt: any;
@@ -1067,8 +1221,6 @@ function ReceiptListItem({
   onDelete: (receiptId: string) => void;
   isDeletePending: boolean;
   index: number;
-  /** When true (To Review tab), show a prominent "Xd waiting" label. */
-  showWaiting?: boolean;
 }) {
   const iconState = deriveIconState(tile);
   const isProcessing = isProcessingStatus(receipt.status);
@@ -1130,59 +1282,62 @@ function ReceiptListItem({
           </div>
 
           <div className="min-w-0 flex-1">
-            {/* Title row — payee on the left, status badge pinned top-right on
-                BOTH tabs so the badge never wraps under the action buttons. */}
+            {/* Title row — payee on the left, the transaction amount pinned
+                top-right (dark for an outflow/purchase, green for an inflow/
+                refund) so the number you care about reads first. */}
             <div className="flex items-start justify-between gap-3">
               <p className="min-w-0 flex-1 truncate text-sm font-semibold leading-snug">
                 {receipt.display_payee_name ?? receipt.original_filename}
               </p>
-              <div className="shrink-0">
-                <StatusBadge status={receipt.status} />
-              </div>
+              {(() => {
+                const kind = receipt.transaction_kind ?? "purchase";
+                const millis = receipt.display_total_milliunits;
+                if (millis == null) {
+                  return <span className="shrink-0 text-base font-bold tabular-nums text-ink/40">--</span>;
+                }
+                const formatted = formatSignedDollars(signedDollars(millis / 1000, kind));
+                const isInflow = kind === "refund";
+                return (
+                  <span
+                    className={cn(
+                      "shrink-0 text-base font-bold tabular-nums leading-snug",
+                      isInflow ? "text-emerald-600" : "text-ink",
+                    )}
+                  >
+                    {formatted}
+                  </span>
+                );
+              })()}
             </div>
 
-            {/* Subtitle — the one metadata line (working / waiting / synced-ago). */}
-            {isProcessing ? (
-              <p className="mt-1 text-xs font-medium text-ink/55">
-                Snappy is working on this one — no action needed
-              </p>
-            ) : showWaiting ? (
-              <p className="mt-1 text-xs font-semibold text-amber-700">
-                {formatWallWait(receipt.ingested_at)} waiting
-              </p>
-            ) : (
-              <p className="mt-1 text-xs text-ink/65">
-                {formatDistanceToNow(parseApiDate(receipt.ingested_at), { addSuffix: true })}
-              </p>
-            )}
+            {/* Meta line — status badge plus a calm grey detail: the working
+                note while processing, otherwise the receipt's date (and, on the
+                Done tab, how long it took to reach YNAB). */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+              {/* The specific reason ("Needs an account", "Ready to sync", …)
+                  when we have one; otherwise the raw pipeline status. */}
+              {receipt.review_hint ? (
+                <ReviewHintBadge hint={receipt.review_hint} />
+              ) : (
+                <StatusBadge status={receipt.status} />
+              )}
+              <span className="text-xs text-ink/55">
+                {isProcessing
+                  ? "Snappy is working on this one — no action needed"
+                  : formatReceiptDate(receipt.display_receipt_date, receipt.ingested_at)}
+                {!isProcessing && tile?.age_hours_at_validation != null
+                  ? ` · ${formatWaitTime(tile.age_hours_at_validation)} to YNAB`
+                  : ""}
+              </span>
+            </div>
 
             {receipt.correction_message ? (
               <p className="mt-1 text-[11px] font-semibold text-ink/70">{receipt.correction_message}</p>
             ) : null}
 
-            {/* Footer — amount (+ subtle review-time meta) on the left, actions
-                on the right. Same skeleton on every card. */}
+            {/* Footer — actions, right-aligned. The amount now lives in the
+                title row, so this row carries the buttons alone. */}
             <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-              <div className="flex min-w-0 shrink-0 items-baseline gap-2">
-                {(() => {
-                  const kind = receipt.transaction_kind ?? "purchase";
-                  const millis = receipt.display_total_milliunits;
-                  if (millis == null) return <span className="text-sm font-semibold">--</span>;
-                  const dollars = signedDollars(millis / 1000, kind);
-                  const formatted = formatSignedDollars(dollars);
-                  const isRefund = kind === "refund";
-                  return (
-                    <span className={cn("text-sm font-semibold", isRefund ? "text-emerald-700" : undefined)}>
-                      {formatted}
-                    </span>
-                  );
-                })()}
-                {tile?.age_hours_at_validation != null ? (
-                  <span className="whitespace-nowrap text-[11px] text-ink/50">
-                    {formatWaitTime(tile.age_hours_at_validation)} to YNAB
-                  </span>
-                ) : null}
-              </div>
               <div className="relative z-10 ml-auto flex flex-wrap items-center justify-end gap-1.5">
                 {tile?.display_state === "shredded" ? (
                   <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700">
@@ -1207,7 +1362,8 @@ function ReceiptListItem({
                     data-testid="quick-sync-button"
                     size="sm"
                     variant="success"
-                    className="h-8 gap-1"
+                    className="h-8 gap-1.5 px-3"
+                    title="Quick sync — available because Snappy is highly confident about this receipt"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1215,16 +1371,28 @@ function ReceiptListItem({
                     }}
                     disabled={isQuickSyncPending}
                   >
-                    {isQuickSyncPending ? "Syncing…" : "Looks right - Sync"}
+                    <Zap className="h-3.5 w-3.5" aria-hidden="true" />
+                    {isQuickSyncPending ? "Syncing…" : "Quick sync"}
                   </Button>
+                ) : !isProcessing && receipt.status !== "synced" ? (
+                  // Every actionable card gets a visible primary action, so no
+                  // card ever shows the trash icon as its only button. (The whole
+                  // card is also a link; this is the explicit affordance.)
+                  <Link
+                    href={`/receipts/${receipt.id}`}
+                    data-testid="review-receipt-button"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-xl2 border border-ink/15 bg-surface px-3 text-sm font-semibold text-ink shadow-soft transition hover:border-ink/30 hover:bg-cream/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-sand"
+                  >
+                    Review
+                  </Link>
                 ) : null}
                 {receipt.status !== "synced" && receipt.status !== "syncing" ? (
                   <button
                     type="button"
                     data-testid="delete-receipt-button"
                     aria-label="Delete receipt"
-                    title="Delete receipt"
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink/40 opacity-70 transition hover:bg-red-50 hover:text-red-600 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-40"
+                    title="Delete receipt (you can undo)"
+                    className="group inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-40"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1232,7 +1400,11 @@ function ReceiptListItem({
                     }}
                     disabled={isDeletePending}
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    {/* 44px hit area; the visible glyph stays small + quiet so
+                        the (reversible, undo-toasted) delete isn't over-exposed. */}
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full text-ink/40 opacity-70 transition group-hover:bg-red-50 group-hover:text-red-600 group-hover:opacity-100 group-focus-visible:opacity-100">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </span>
                   </button>
                 ) : null}
               </div>
@@ -2164,7 +2336,6 @@ export function ReceiptList() {
               onDelete={(receiptId) => deleteMutation.mutate(receiptId)}
               isDeletePending={deletingId === receipt.id}
               index={index}
-              showWaiting={activeTab === "review"}
             />
           ),
         )}

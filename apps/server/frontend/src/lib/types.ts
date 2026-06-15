@@ -24,6 +24,9 @@ export interface ReceiptSummary {
   correction_message: string | null;
   duplicate_of_receipt_id: string | null;
   sync_ready: boolean;
+  /** Short reason code for why this receipt needs attention (or "ready").
+   *  Display copy lives in REVIEW_HINT_LABELS (receipt-list.tsx). */
+  review_hint: string | null;
 }
 
 export interface AppConfig {

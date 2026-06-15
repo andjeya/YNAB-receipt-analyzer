@@ -414,13 +414,61 @@ def _batch_latest_validation_kinds(db: Session, receipt_ids: list[str]) -> dict[
     return result
 
 
-def _batch_sync_ready(
+# review_hint codes surfaced on the list card (display copy lives in the
+# frontend, mirroring the statusLabels pattern). Keep these in sync with
+# REVIEW_HINT_LABELS in apps/server/frontend/src/components/receipt-list.tsx.
+#   ready          — passes every sync gate; the green Quick sync button shows
+#   duplicate      — flagged as a possible duplicate
+#   needs_account  — no YNAB account chosen yet
+#   category_issue — validation failed for a non-account reason
+#   confirm_date   — date missing / an unconfirmed AI guess / twin date unconfirmed
+#   confirm_total  — twin total not confirmed yet
+#   review         — needs a look, no more specific reason available
+#   import_failed  — extraction errored (error_extract)
+#   sync_failed    — a YNAB sync errored (error_sync)
+# Processing/synced receipts get None (the card already explains those states).
+
+
+def _candidate_block_hint(
+    *,
+    has_validation: bool,
+    is_valid: bool,
+    payload: Any,
+    twin_confirmed: dict[str, bool] | None,
+) -> str | None:
+    """Return the review_hint code blocking a needs_review candidate from
+    syncing, or None when every gate passes (sync-ready). Mirrors the gate
+    order in sync_receipt / _batch_sync_ready."""
+    if not has_validation:
+        return "review"
+    if not is_valid or not isinstance(payload, dict):
+        acct = ""
+        if isinstance(payload, dict):
+            acct = str(payload.get("account_id") or "").strip()
+        if not acct or acct == UNKNOWN_ACCOUNT_ID:
+            return "needs_account"
+        return "category_issue"
+    acct = str(payload.get("account_id") or "").strip()
+    if not acct or acct == UNKNOWN_ACCOUNT_ID:
+        return "needs_account"
+    if date_sync_block_reason(payload) is not None:
+        return "confirm_date"
+    if twin_confirmed is not None:
+        if not twin_confirmed["date_time"]:
+            return "confirm_date"
+        if not twin_confirmed["total"]:
+            return "confirm_total"
+    return None
+
+
+def _batch_review_state(
     db: Session,
     receipts: list[Receipt],
     *,
     sync_enabled: bool,
-) -> dict[str, bool]:
-    """Batch compute sync_ready for a list of receipts — no N+1 queries.
+) -> dict[str, tuple[bool, str | None]]:
+    """Batch compute (sync_ready, review_hint) for a list of receipts — no
+    N+1 queries.
 
     sync_ready is True iff ALL of:
     - sync_enabled is True
@@ -428,101 +476,114 @@ def _batch_sync_ready(
     - receipt.duplicate_of_receipt_id is None
     - latest validation exists, is_valid True
     - validation payload has a non-blank account_id that is not UNKNOWN_ACCOUNT_ID
+    - date gate passes (no missing / unconfirmed-guess date)
     - twin gate: if a latest twin exists, both confirmed_sections date_time and total
       must be True; if no twin exists, the gate passes (mirrors sync_receipt logic)
 
-    Uses a single subquery join per table (Validation, ReceiptTwin) to avoid per-receipt
-    round trips.
+    review_hint is the short reason code shown on the list card (see the table
+    above). It is computed for every receipt regardless of sync_enabled so the
+    user always sees *why* a receipt needs attention; only the `ready` code and
+    sync_ready=True are gated on sync_enabled.
+
+    Uses a single subquery join per table (Validation, ReceiptTwin) to avoid
+    per-receipt round trips.
     """
     if not receipts:
         return {}
 
-    # Short-circuit: if sync is disabled, all False
-    if not sync_enabled:
-        return {r.id: False for r in receipts}
-
-    # Pre-filter to candidates: needs_review + no duplicate link
-    candidates = [
-        r for r in receipts
+    # Candidates that could become sync-ready: needs_review + no duplicate link.
+    # (duplicate_review / duplicate-linked receipts short-circuit to the
+    # "duplicate" hint and never need validation/twin rows.)
+    candidate_ids = [
+        r.id for r in receipts
         if r.status == ReceiptStatus.NEEDS_REVIEW.value and r.duplicate_of_receipt_id is None
     ]
-    candidate_ids = [r.id for r in candidates]
 
-    if not candidate_ids:
-        return {r.id: False for r in receipts}
+    val_by_id: dict[str, tuple[bool, Any]] = {}
+    twin_confirmed_by_id: dict[str, dict[str, bool]] = {}
 
-    # --- Batch latest validation (max version per receipt_id) ---
-    val_max_sq = (
-        select(Validation.receipt_id, func.max(Validation.version).label("max_version"))
-        .where(Validation.receipt_id.in_(candidate_ids))
-        .group_by(Validation.receipt_id)
-        .subquery()
-    )
-    val_rows = db.execute(
-        select(Validation.receipt_id, Validation.is_valid, Validation.payload)
-        .join(
-            val_max_sq,
-            (Validation.receipt_id == val_max_sq.c.receipt_id)
-            & (Validation.version == val_max_sq.c.max_version),
+    if candidate_ids:
+        # --- Batch latest validation (max version per receipt_id) ---
+        val_max_sq = (
+            select(Validation.receipt_id, func.max(Validation.version).label("max_version"))
+            .where(Validation.receipt_id.in_(candidate_ids))
+            .group_by(Validation.receipt_id)
+            .subquery()
         )
-    ).all()
+        val_rows = db.execute(
+            select(Validation.receipt_id, Validation.is_valid, Validation.payload)
+            .join(
+                val_max_sq,
+                (Validation.receipt_id == val_max_sq.c.receipt_id)
+                & (Validation.version == val_max_sq.c.max_version),
+            )
+        ).all()
+        for row_receipt_id, is_valid, payload in val_rows:
+            val_by_id[row_receipt_id] = (bool(is_valid), payload)
 
-    valid_account_ids: set[str] = set()
-    for row_receipt_id, is_valid, payload in val_rows:
-        if not is_valid:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        account_id = str(payload.get("account_id") or "").strip()
-        if not account_id or account_id == UNKNOWN_ACCOUNT_ID:
-            continue
-        # Date gate: a missing or unconfirmed-guess date blocks sync.
-        if date_sync_block_reason(payload) is not None:
-            continue
-        valid_account_ids.add(row_receipt_id)
-
-    # Further filter to candidates that passed validation gate
-    val_candidates = [rid for rid in candidate_ids if rid in valid_account_ids]
-
-    if not val_candidates:
-        return {r.id: False for r in receipts}
-
-    # --- Batch latest twin (max version per receipt_id) ---
-    twin_max_sq = (
-        select(ReceiptTwin.receipt_id, func.max(ReceiptTwin.version).label("max_version"))
-        .where(ReceiptTwin.receipt_id.in_(val_candidates))
-        .group_by(ReceiptTwin.receipt_id)
-        .subquery()
-    )
-    twin_rows = db.execute(
-        select(ReceiptTwin.receipt_id, ReceiptTwin.confirmed_sections)
-        .join(
-            twin_max_sq,
-            (ReceiptTwin.receipt_id == twin_max_sq.c.receipt_id)
-            & (ReceiptTwin.version == twin_max_sq.c.max_version),
+        # --- Batch latest twin (max version per receipt_id) ---
+        twin_max_sq = (
+            select(ReceiptTwin.receipt_id, func.max(ReceiptTwin.version).label("max_version"))
+            .where(ReceiptTwin.receipt_id.in_(candidate_ids))
+            .group_by(ReceiptTwin.receipt_id)
+            .subquery()
         )
-    ).all()
+        twin_rows = db.execute(
+            select(ReceiptTwin.receipt_id, ReceiptTwin.confirmed_sections)
+            .join(
+                twin_max_sq,
+                (ReceiptTwin.receipt_id == twin_max_sq.c.receipt_id)
+                & (ReceiptTwin.version == twin_max_sq.c.max_version),
+            )
+        ).all()
+        for row_receipt_id, confirmed_sections in twin_rows:
+            twin_confirmed_by_id[row_receipt_id] = _normalize_confirmed_sections(confirmed_sections)
 
-    # Build twin-gate result: True = gate passes (confirmed or no twin)
-    twin_gate: dict[str, bool] = {}
-    for row_receipt_id, confirmed_sections in twin_rows:
-        confirmed = _normalize_confirmed_sections(confirmed_sections)
-        twin_gate[row_receipt_id] = confirmed["date_time"] and confirmed["total"]
-
-    # Build result map
-    result: dict[str, bool] = {}
+    result: dict[str, tuple[bool, str | None]] = {}
     for receipt in receipts:
         rid = receipt.id
-        if rid not in valid_account_ids:
-            result[rid] = False
+        status = receipt.status
+
+        if status == ReceiptStatus.ERROR_EXTRACT.value:
+            result[rid] = (False, "import_failed")
             continue
-        # twin_gate: absent key means no twin → gate passes
-        if not twin_gate.get(rid, True):
-            result[rid] = False
+        if status == ReceiptStatus.ERROR_SYNC.value:
+            result[rid] = (False, "sync_failed")
             continue
-        result[rid] = True
+        if status not in (ReceiptStatus.NEEDS_REVIEW.value, ReceiptStatus.DUPLICATE_REVIEW.value):
+            # ingested / extracting / syncing / synced — no hint needed.
+            result[rid] = (False, None)
+            continue
+
+        # Possible-duplicate receipts: surface the duplicate hint directly.
+        if status == ReceiptStatus.DUPLICATE_REVIEW.value or receipt.duplicate_of_receipt_id is not None:
+            result[rid] = (False, "duplicate")
+            continue
+
+        is_valid, payload = val_by_id.get(rid, (False, None))
+        blocker = _candidate_block_hint(
+            has_validation=rid in val_by_id,
+            is_valid=is_valid,
+            payload=payload,
+            twin_confirmed=twin_confirmed_by_id.get(rid),
+        )
+        if blocker is None:
+            # Every gate passes. Only flag ready (and sync_ready) when sync is on.
+            result[rid] = (sync_enabled, "ready" if sync_enabled else "review")
+        else:
+            result[rid] = (False, blocker)
 
     return result
+
+
+def _batch_sync_ready(
+    db: Session,
+    receipts: list[Receipt],
+    *,
+    sync_enabled: bool,
+) -> dict[str, bool]:
+    """Backwards-compatible boolean view over _batch_review_state."""
+    return {rid: state[0] for rid, state in _batch_review_state(db, receipts, sync_enabled=sync_enabled).items()}
 
 
 def _latest_correction(db: Session, receipt_id: str) -> ReceiptCorrection | None:
@@ -621,12 +682,13 @@ def list_receipts(
     now = utcnow()
     receipt_ids = [r.id for r in receipts]
     kind_map = _batch_latest_validation_kinds(db, receipt_ids)
-    sync_ready_map = _batch_sync_ready(db, receipts, sync_enabled=settings.ynab_sync_enabled)
+    review_state_map = _batch_review_state(db, receipts, sync_enabled=settings.ynab_sync_enabled)
     summaries: list[ReceiptSummary] = []
     for receipt in receipts:
         correction = _latest_correction(db, receipt.id)
         shade = _correction_shade_opacity(correction, now)
         kind = kind_map.get(receipt.id, "purchase")
+        sync_ready, review_hint = review_state_map.get(receipt.id, (False, None))
         summaries.append(
             ReceiptSummary(
                 id=receipt.id,
@@ -643,7 +705,8 @@ def list_receipts(
                 correction_shade_opacity=shade,
                 correction_message=_correction_note_for_display(correction),
                 duplicate_of_receipt_id=receipt.duplicate_of_receipt_id,
-                sync_ready=sync_ready_map.get(receipt.id, False),
+                sync_ready=sync_ready,
+                review_hint=review_hint,
             )
         )
     return summaries
