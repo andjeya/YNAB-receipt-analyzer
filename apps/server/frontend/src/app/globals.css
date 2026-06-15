@@ -82,6 +82,32 @@ a {
   background-color: rgba(23, 32, 38, 0.32);
 }
 
+/* iOS/WebKit date & time inputs overflow their box: the native
+   ::-webkit-date-and-time-value pseudo carries an intrinsic min-width and is
+   centered, so it ignores width:100% and won't shrink — the value spills past
+   the right edge (text inputs and selects don't have this quirk). Reset the
+   native appearance, zero the value pseudo's min-width and left-align it, and
+   pin the calendar-picker indicator to the right so the control fits.
+   Regression-tested in src/lib/ios-datetime-css.test.ts — keep these rules. */
+input[type="date"],
+input[type="time"] {
+  -webkit-appearance: none;
+  appearance: none;
+  min-width: 0;
+}
+
+input[type="date"]::-webkit-date-and-time-value,
+input[type="time"]::-webkit-date-and-time-value {
+  text-align: left;
+  min-width: 0;
+  margin: 0;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  margin-left: auto;
+}
+
 @keyframes incident-enter {
   0% {
     opacity: 0;

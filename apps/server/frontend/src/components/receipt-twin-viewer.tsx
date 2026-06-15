@@ -341,15 +341,19 @@ export function ReceiptTwinViewer({
             )}
           </div>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
+        {/* min-w-0 lets the date/time inputs shrink inside the grid track so the
+            native iOS/WebKit value pseudo can't force overflow (see globals.css). */}
+        <div className="grid min-w-0 gap-2 sm:grid-cols-2">
           <Input
             type="date"
+            className="min-w-0"
             value={draft.transaction_date ?? ""}
             readOnly={!isDateTimeEditing}
             onChange={(event) => setDraft({ ...draft, transaction_date: event.target.value || null })}
           />
           <Input
             type="time"
+            className="min-w-0"
             value={normalizeTwinTimeForInput(draft.transaction_time)}
             readOnly={!isDateTimeEditing}
             onChange={(event) => {
