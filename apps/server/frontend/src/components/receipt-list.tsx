@@ -101,7 +101,7 @@ const TABS: Array<{ label: string; bucket: ReceiptBucket; testid: string }> = [
 // by _batch_review_state in apps/server/backend/app/api/receipts.py; keep the
 // two lists in sync. Tone drives the chip colour (and matches StatusBadge).
 const REVIEW_HINT: Record<string, { label: string; tone: "amber" | "emerald" | "orange" | "red" }> = {
-  ready:          { label: "Ready to sync",         tone: "emerald" },
+  ready:          { label: "Auto Review Pass",      tone: "emerald" },
   needs_account:  { label: "Needs an account",      tone: "amber" },
   category_issue: { label: "Category needs a look", tone: "amber" },
   confirm_date:   { label: "Confirm the date",      tone: "amber" },
@@ -121,10 +121,10 @@ const HINT_TONE: Record<string, { chip: string; dot: string }> = {
 
 /**
  * ReviewHintBadge — the specific "why this needs you" chip on a list card
- * (e.g. "Needs an account", "Confirm the date", "Ready to sync"). It replaces
+ * (e.g. "Needs an account", "Confirm the date", "Auto Review Pass"). It replaces
  * the generic status badge for actionable receipts so the reason is explicit,
  * and resolves the "Needs review vs Quick sync" contradiction: a sync-ready
- * card reads "Ready to sync" next to its green button. Falls back to the raw
+ * card reads "Auto Review Pass" next to its green button. Falls back to the raw
  * status badge for codes it doesn't recognise.
  */
 function ReviewHintBadge({ hint }: { hint: string }) {
@@ -349,7 +349,7 @@ function StatTilePopover({ text, id }: { text: string; id: string; align?: "left
 }
 
 /**
- * StatChip — one game-stat tile in the header (streak / droplets / shred).
+ * StatChip — one game-stat tile in the header (streak / water / shred).
  * Every chip shares ONE internal structure — leading icon, then a stacked
  * number + short label — so all visible chips sit on the same baseline and at
  * the same height regardless of which ones are conditionally shown. The label
@@ -518,15 +518,15 @@ function HelpDialog({
             </section>
 
             <section className="space-y-2 text-sm text-ink/80">
-              <p className="font-semibold text-ink">Droplets &amp; fires</p>
+              <p className="font-semibold text-ink">Water &amp; fires</p>
               <p>
-                Catch one of Snappy&apos;s category mistakes while reviewing and you earn a droplet
+                Catch one of Snappy&apos;s category mistakes while reviewing and you earn water
                 (you can hold {waterCap}). If a synced transaction has to be fixed in YNAB later,
-                a fire lands on that receipt&apos;s week. Keep your droplets up: while you have more
-                droplets than fires you&apos;re safe, and Snappy will auto-spend one to smother a fire
-                you can&apos;t cover. But if a fire breaks out while you&apos;re out of droplets, your
+                a fire lands on that receipt&apos;s week. Keep your water up: while you have more
+                water than fires you&apos;re safe, and Snappy will auto-spend some to smother a fire
+                you can&apos;t cover. But if a fire breaks out while you&apos;re out of water, your
                 worst week (the one with the most fires) burns to ash for good. Tap a flaming week to
-                douse it, one droplet per fire.
+                extinguish it, one water per fire.
               </p>
               {/* Full trail legend (the row only shows the timeliness states). */}
               <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1.5 rounded-xl bg-ink/5 px-3 py-2.5 text-xs text-ink/75">
@@ -604,7 +604,7 @@ function BlankReceipt({ className }: { className?: string }) {
  *   - Mobile: show last 4 past cells (hidden sm:flex for older 4)
  *   - EXCEPTION: any hidden-on-mobile slot with flames or burnt gets forced-shown
  * - Flames: a small corner badge (with a count) on flaming weeks
- * - Tap popover explains what the week's state means + Douse action
+ * - Tap popover explains what the week's state means + Extinguish action
  * - One-line micro-legend below the row
  */
 function WeekTrail({
@@ -674,8 +674,8 @@ function WeekTrail({
 
   /** Plain-English explanation of the slot's state, shown in the tap popover. */
   function slotMeaning(slot: GameWeeklySlot): string | null {
-    if (slot.burnt) return "Fires outnumbered your droplets, so this week burned to ash. It can't be brought back.";
-    if (slot.flames > 0) return "A flame means a synced receipt had to be corrected in YNAB afterwards. Douse it with a droplet before fires outnumber your droplets.";
+    if (slot.burnt) return "Fires outnumbered your water, so this week burned to ash. It can't be brought back.";
+    if (slot.flames > 0) return "A flame means a synced receipt had to be corrected in YNAB afterwards. Extinguish it with water before fires outnumber your water.";
     if (slot.display_state === "green") return `Every receipt reached YNAB within ${formatWaitTime(greenHours)} of its purchase. Crisp.`;
     if (slot.display_state === "yellow") return `The slowest receipt took up to ${formatWaitTime(brownHours)} to reach YNAB — a little dog-eared.`;
     if (slot.display_state === "brown") return `The slowest receipt took more than ${formatWaitTime(brownHours)} to reach YNAB — crumpled.`;
@@ -693,16 +693,17 @@ function WeekTrail({
     return null;
   }
 
-  /** A small corner badge showing the fire count — never overflows the cell. */
+  /** A bold corner badge showing the fire count — deliberately oversized and
+      pushed past the cell edge so an active fire is impossible to miss. */
   function renderFlameBadge(count: number, large: boolean) {
     return (
       <span
-        className="absolute -right-1.5 -top-1.5 z-10 flex items-center gap-0.5 rounded-full bg-stone-900/90 px-1 py-0.5 shadow-sm animate-fire-fade"
+        className="absolute -right-2 -top-2 z-10 flex items-center gap-0.5 rounded-full bg-stone-900/80 px-1 py-0.5 shadow-sm animate-fire-fade"
         aria-hidden="true"
       >
-        <Flame className={cn("text-orange-400", large ? "h-3 w-3" : "h-2.5 w-2.5")} />
+        <Flame className={cn("text-orange-400 drop-shadow", large ? "h-5 w-5" : "h-4 w-4")} />
         {count > 1 ? (
-          <span className={cn("font-bold leading-none text-orange-200", large ? "text-[9px]" : "text-[8px]")}>{count}</span>
+          <span className={cn("font-bold leading-none text-orange-200", large ? "text-[11px]" : "text-[10px]")}>{count}</span>
         ) : null}
       </span>
     );
@@ -762,10 +763,10 @@ function WeekTrail({
                 disabled={isDousingPending}
               >
                 <Droplets className="h-3 w-3" />
-                {isDousingPending ? "Dousing…" : `Douse (${slot.flames} droplet${slot.flames === 1 ? "" : "s"})`}
+                {isDousingPending ? "Extinguishing…" : `Extinguish (${slot.flames} water)`}
               </button>
             ) : slot.flames > 0 && !slot.burnt ? (
-              <p className="mt-1 text-[10px] text-sand/75">No droplets to douse with.</p>
+              <p className="mt-1 text-[10px] text-sand/75">No water to extinguish with.</p>
             ) : null}
           </div>
         ) : null}
@@ -833,10 +834,10 @@ function WeekTrail({
                   disabled={isDousingPending}
                 >
                   <Droplets className="h-3 w-3" />
-                  {isDousingPending ? "Dousing…" : `Douse (${heroSlot.flames} droplet${heroSlot.flames === 1 ? "" : "s"})`}
+                  {isDousingPending ? "Extinguishing…" : `Extinguish (${heroSlot.flames} water)`}
                 </button>
               ) : heroSlot.flames > 0 && !heroSlot.burnt ? (
-                <p className="mt-1 text-[10px] text-sand/75">No droplets to douse with.</p>
+                <p className="mt-1 text-[10px] text-sand/75">No water to extinguish with.</p>
               ) : null}
             </div>
           ) : null}
@@ -905,6 +906,17 @@ function ReceiptListHeader({
   const tokenBalance: number = dashboardData?.momentum?.token_balance ?? 0;
   const weekSlots: GameWeeklySlot[] = dashboardData?.forest?.weekly_slots ?? [];
 
+  // Flaming-week context for the mascot's fire nudge. Name the week when exactly
+  // one is on fire; otherwise the nudge falls back to a count. Only consumed when
+  // activeFlames>0 (i.e. mounted), so the SSR path never touches these.
+  const flamingWeeks = weekSlots.filter((s) => s.flames > 0 && !s.burnt);
+  const flameWeekCount = flamingWeeks.length;
+  const flameWeekLabel =
+    flameWeekCount === 1
+      ? formatWeekStart(flamingWeeks[0].start_at, dashboardData?.rules?.timezone ?? "UTC")
+      : null;
+  const hasWater = waterUnitsVal > 0;
+
   const derived = useMemo(
     () =>
       deriveSnappyPose({
@@ -912,10 +924,13 @@ function ReceiptListHeader({
         totalCount: isEmpty ? 0 : 1,
         userName,
         activeFlames: mounted ? totalActiveFlames : 0,
+        hasWater,
+        flameWeekLabel,
+        flameWeekCount,
         ...(mounted ? {} : { random: () => 0.5, now: new Date(2026, 0, 1, 12, 0, 0) }),
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [mounted, highlightedCount, isEmpty, userName, totalActiveFlames],
+    [mounted, highlightedCount, isEmpty, userName, totalActiveFlames, hasWater, flameWeekLabel, flameWeekCount],
   );
   const pose = celebratingStreak ? "celebrating" : derived.pose;
 
@@ -1068,11 +1083,11 @@ function ReceiptListHeader({
                 testid="droplets-pill"
                 icon={<Droplets className="h-5 w-5 text-white/90" />}
                 value={waterUnitsVal}
-                label="Droplets"
+                label="Water"
                 gradient="linear-gradient(135deg, #0ea5e9 0%, #14b8a6 100%)"
                 popoverId="tile-popover-droplets"
-                popoverText={`Droplets — earned by catching Snappy's mistakes during review. You can hold up to ${dashboardData?.rules?.water_capacity ?? 5}. Tap a flaming week on your trail to spend them.`}
-                ariaLabel={`Droplets — ${waterUnitsVal} available. Earned by catching Snappy's mistakes during review`}
+                popoverText={`Water — earned by catching Snappy's mistakes during review. You can hold up to ${dashboardData?.rules?.water_capacity ?? 5}. Tap a flaming week on your trail to spend it.`}
+                ariaLabel={`Water — ${waterUnitsVal} available. Earned by catching Snappy's mistakes during review`}
                 open={openTile === "droplets"}
                 onToggle={() => toggleTile("droplets")}
               />
@@ -1286,7 +1301,7 @@ function ReceiptListItem({
                 top-right (dark for an outflow/purchase, green for an inflow/
                 refund) so the number you care about reads first. */}
             <div className="flex items-start justify-between gap-3">
-              <p className="min-w-0 flex-1 truncate text-sm font-semibold leading-snug">
+              <p className="min-w-0 flex-1 truncate text-base font-semibold leading-snug">
                 {receipt.display_payee_name ?? receipt.original_filename}
               </p>
               {(() => {
@@ -1310,34 +1325,34 @@ function ReceiptListItem({
               })()}
             </div>
 
-            {/* Meta line — status badge plus a calm grey detail: the working
-                note while processing, otherwise the receipt's date (and, on the
-                Done tab, how long it took to reach YNAB). */}
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-              {/* The specific reason ("Needs an account", "Ready to sync", …)
+            {/* Date directly under the payee — the working note while
+                processing, otherwise the receipt's date (and, on the Done tab,
+                how long it took to reach YNAB). The status badge now lives on
+                the action row below to save a line. */}
+            <p className="mt-0.5 text-xs text-ink/55">
+              {isProcessing
+                ? "Snappy's working on this one"
+                : formatReceiptDate(receipt.display_receipt_date, receipt.ingested_at)}
+              {!isProcessing && tile?.age_hours_at_validation != null
+                ? ` · ${formatWaitTime(tile.age_hours_at_validation)} to YNAB`
+                : ""}
+            </p>
+
+            {receipt.correction_message ? (
+              <p className="mt-1 text-[11px] font-semibold text-ink/70">{receipt.correction_message}</p>
+            ) : null}
+
+            {/* Action row — the "why it needs you" badge on the left, the
+                buttons pushed hard-right (ml-auto). Sharing one line with the
+                badge keeps the card compact. */}
+            <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
+              {/* The specific reason ("Needs an account", "Auto Review Pass", …)
                   when we have one; otherwise the raw pipeline status. */}
               {receipt.review_hint ? (
                 <ReviewHintBadge hint={receipt.review_hint} />
               ) : (
                 <StatusBadge status={receipt.status} />
               )}
-              <span className="text-xs text-ink/55">
-                {isProcessing
-                  ? "Snappy is working on this one — no action needed"
-                  : formatReceiptDate(receipt.display_receipt_date, receipt.ingested_at)}
-                {!isProcessing && tile?.age_hours_at_validation != null
-                  ? ` · ${formatWaitTime(tile.age_hours_at_validation)} to YNAB`
-                  : ""}
-              </span>
-            </div>
-
-            {receipt.correction_message ? (
-              <p className="mt-1 text-[11px] font-semibold text-ink/70">{receipt.correction_message}</p>
-            ) : null}
-
-            {/* Footer — actions, right-aligned. The amount now lives in the
-                title row, so this row carries the buttons alone. */}
-            <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
               <div className="relative z-10 ml-auto flex flex-wrap items-center justify-end gap-1.5">
                 {tile?.display_state === "shredded" ? (
                   <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700">
@@ -1362,7 +1377,7 @@ function ReceiptListItem({
                     data-testid="quick-sync-button"
                     size="sm"
                     variant="success"
-                    className="h-8 gap-1.5 px-3"
+                    className="h-8 min-h-8 gap-1.5 px-3"
                     title="Quick sync — available because Snappy is highly confident about this receipt"
                     onClick={(e) => {
                       e.preventDefault();
@@ -1779,7 +1794,7 @@ function DebugPanel({
             </label>
 
             <div className="grid grid-cols-2 gap-2">
-              {numField("water_units", "Droplets")}
+              {numField("water_units", "Water")}
               {numField("current_week_flames", "Current Week Flames")}
               {numField("token_balance", "Shred Token Balance")}
               {numField("token_earned_count", "Shred Tokens Earned")}

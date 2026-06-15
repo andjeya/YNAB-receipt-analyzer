@@ -21,9 +21,48 @@ export interface SnappyPoseInput {
   random?: () => number;
   /**
    * Number of active flames across all weeks. When > 0 (and not celebrating),
-   * Snappy switches to "concerned" pose with a fire-dousing nudge.
+   * Snappy switches to "concerned" pose with a fire-extinguish nudge.
    */
   activeFlames?: number;
+  /** Whether the user holds any water to extinguish a flame. */
+  hasWater?: boolean;
+  /** Label of the single flaming week (e.g. "Jun 7"); null when 0 or >1 weeks. */
+  flameWeekLabel?: string | null;
+  /** How many distinct weeks currently carry flames. */
+  flameWeekCount?: number;
+}
+
+/**
+ * Compose the fire-nudge speech line. Names the flaming week when there's
+ * exactly one, falls back to a week count for several, and switches the
+ * call-to-action on whether the user has water to spend.
+ */
+export function fireNudgeLine({
+  activeFlames,
+  hasWater,
+  flameWeekLabel,
+  flameWeekCount,
+}: {
+  activeFlames: number;
+  hasWater: boolean;
+  flameWeekLabel: string | null;
+  flameWeekCount: number;
+}): string {
+  const subject = activeFlames === 1 ? "A fire started" : "Fires started";
+  const where =
+    flameWeekCount === 1 && flameWeekLabel
+      ? ` in the week of ${flameWeekLabel}`
+      : flameWeekCount > 1
+        ? ` across ${flameWeekCount} weeks`
+        : "";
+  const cause =
+    activeFlames === 1
+      ? " after a receipt was corrected in YNAB."
+      : " after receipts were corrected in YNAB.";
+  const action = hasWater
+    ? ` Tap the flame on your trail to extinguish ${activeFlames === 1 ? "it" : "them"}.`
+    : " Collect water by catching Snappy's mistakes during review, then extinguish.";
+  return `${subject}${where}${cause}${action}`;
 }
 
 /**
@@ -71,16 +110,17 @@ export function deriveSnappyPose({
   now = new Date(),
   random = Math.random,
   activeFlames = 0,
+  hasWater = false,
+  flameWeekLabel = null,
+  flameWeekCount = 0,
 }: SnappyPoseInput): SnappyPoseResult {
   const name = userName.trim() || "Anna";
+  const fireLine = () => fireNudgeLine({ activeFlames, hasWater, flameWeekLabel, flameWeekCount });
 
   if (totalCount === 0) {
     // activeFlames nudge still applies even when queue is empty
     if (activeFlames > 0) {
-      return {
-        pose: "concerned",
-        line: "A fix-up slipped through to YNAB — tap the flame on your trail to douse it!",
-      };
+      return { pose: "concerned", line: fireLine() };
     }
     if (random() < QUOTE_CHANCE) {
       const quote = pick(SNAPPY_QUOTES, random);
@@ -92,10 +132,7 @@ export function deriveSnappyPose({
   if (needsReviewCount > 0) {
     // Active flames take priority over generic "needs attention" when both apply
     if (activeFlames > 0) {
-      return {
-        pose: "concerned",
-        line: "A fix-up slipped through to YNAB — tap the flame on your trail to douse it!",
-      };
+      return { pose: "concerned", line: fireLine() };
     }
     const noun = needsReviewCount === 1 ? "receipt" : "receipts";
     return {
@@ -106,10 +143,7 @@ export function deriveSnappyPose({
 
   // Queue all reviewed — fire nudge takes priority over greetings/quotes
   if (activeFlames > 0) {
-    return {
-      pose: "concerned",
-      line: "A fix-up slipped through to YNAB — tap the flame on your trail to douse it!",
-    };
+    return { pose: "concerned", line: fireLine() };
   }
 
   if (random() < QUOTE_CHANCE) {

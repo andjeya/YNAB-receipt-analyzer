@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { deriveSnappyPose, greetingsForHour, isStreakMilestone } from "./snappy-pose.js";
+import { deriveSnappyPose, fireNudgeLine, greetingsForHour, isStreakMilestone } from "./snappy-pose.js";
 import { SNAPPY_QUOTES } from "./snappy-quotes";
 
 // Deterministic RNG helpers
@@ -112,37 +112,85 @@ describe("SNAPPY_QUOTES integrity", () => {
   });
 });
 
+describe("fireNudgeLine", () => {
+  it("names the single flaming week, singular cause, water → tap to extinguish it", () => {
+    const line = fireNudgeLine({ activeFlames: 1, hasWater: true, flameWeekLabel: "Jun 7", flameWeekCount: 1 });
+    assert.equal(
+      line,
+      "A fire started in the week of Jun 7 after a receipt was corrected in YNAB. Tap the flame on your trail to extinguish it.",
+    );
+  });
+
+  it("pluralizes across multiple weeks, plural cause, water → extinguish them", () => {
+    const line = fireNudgeLine({ activeFlames: 3, hasWater: true, flameWeekLabel: null, flameWeekCount: 2 });
+    assert.equal(
+      line,
+      "Fires started across 2 weeks after receipts were corrected in YNAB. Tap the flame on your trail to extinguish them.",
+    );
+  });
+
+  it("switches the call to action to collect-water when out of water", () => {
+    const line = fireNudgeLine({ activeFlames: 1, hasWater: false, flameWeekLabel: "Jun 7", flameWeekCount: 1 });
+    assert.equal(
+      line,
+      "A fire started in the week of Jun 7 after a receipt was corrected in YNAB. Collect water by catching Snappy's mistakes during review, then extinguish.",
+    );
+  });
+
+  it("omits the location when the flaming week is unknown", () => {
+    const line = fireNudgeLine({ activeFlames: 1, hasWater: true, flameWeekLabel: null, flameWeekCount: 0 });
+    assert.equal(
+      line,
+      "A fire started after a receipt was corrected in YNAB. Tap the flame on your trail to extinguish it.",
+    );
+  });
+});
+
 describe("deriveSnappyPose — activeFlames", () => {
-  const FIRE_LINE = "A fix-up slipped through to YNAB — tap the flame on your trail to douse it!";
+  // The computed fire line (no-water default, no known week).
+  const fireFor = (activeFlames: number) =>
+    fireNudgeLine({ activeFlames, hasWater: false, flameWeekLabel: null, flameWeekCount: 0 });
 
   it("concerned + fire line when activeFlames>0 and queue empty", () => {
     const result = deriveSnappyPose({ needsReviewCount: 0, totalCount: 0, activeFlames: 1, random: never });
     assert.equal(result.pose, "concerned");
-    assert.equal(result.line, FIRE_LINE);
+    assert.equal(result.line, fireFor(1));
     assert.equal(result.attribution, undefined);
+  });
+
+  it("threads week + water context into the fire line", () => {
+    const result = deriveSnappyPose({
+      needsReviewCount: 0, totalCount: 0, activeFlames: 1,
+      hasWater: true, flameWeekLabel: "Jun 7", flameWeekCount: 1, random: never,
+    });
+    assert.equal(result.pose, "concerned");
+    assert.equal(
+      result.line,
+      "A fire started in the week of Jun 7 after a receipt was corrected in YNAB. Tap the flame on your trail to extinguish it.",
+    );
   });
 
   it("concerned + fire line when activeFlames>0 and needsReviewCount>0", () => {
     const result = deriveSnappyPose({ needsReviewCount: 2, totalCount: 3, activeFlames: 2, random: never });
     assert.equal(result.pose, "concerned");
-    assert.equal(result.line, FIRE_LINE);
+    assert.equal(result.line, fireFor(2));
   });
 
   it("concerned + fire line when activeFlames>0 and queue all reviewed", () => {
     const result = deriveSnappyPose({ needsReviewCount: 0, totalCount: 5, activeFlames: 3, random: never });
     assert.equal(result.pose, "concerned");
-    assert.equal(result.line, FIRE_LINE);
+    assert.equal(result.line, fireFor(3));
   });
 
   it("does NOT show fire line when activeFlames is 0", () => {
     const result = deriveSnappyPose({ needsReviewCount: 0, totalCount: 5, activeFlames: 0, random: never, now: NOON, userName: "Anna" });
-    assert.notEqual(result.line, FIRE_LINE);
+    assert.notEqual(result.line, fireFor(0));
     assert.equal(result.pose, "idle");
   });
 
   it("does NOT show fire line when activeFlames is undefined (default)", () => {
     const result = deriveSnappyPose({ needsReviewCount: 0, totalCount: 5, random: never, now: NOON, userName: "Anna" });
-    assert.notEqual(result.line, FIRE_LINE);
+    assert.notEqual(result.line, fireFor(0));
   });
 });
 
