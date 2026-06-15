@@ -201,3 +201,37 @@ def test_sync_proceeds_when_no_twin_exists(
         )
 
     assert result.job_id == "job-no-twin"
+
+
+# ---------------------------------------------------------------------------
+# Test: blank payee on the draft → 400 payee_required (endpoint gate is wired)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_blocked_when_payee_blank(db_with_cache: Any, test_settings: Settings) -> None:
+    """sync_receipt raises 400 payee_required when the draft payee is empty.
+
+    Guards the endpoint wiring of payee_sync_block_reason: deleting the gate
+    block in sync_receipt must fail this test.
+    """
+    receipt = _seed_receipt_with_validation(db_with_cache, test_settings)
+    # Blank the payee on the latest validation payload (a no-merchant receipt).
+    from sqlalchemy import select as _select
+    val = db_with_cache.scalar(
+        _select(Validation).where(Validation.receipt_id == receipt.id, Validation.version == 1)
+    )
+    val.payload = {**val.payload, "payee_name": ""}
+    db_with_cache.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        sync_receipt(
+            receipt_id=RECEIPT_ID,
+            request=SyncRequest(),
+            db=db_with_cache,
+            settings=_enabled_settings(test_settings),
+        )
+
+    exc = exc_info.value
+    assert exc.status_code == 400
+    assert isinstance(exc.detail, dict)
+    assert exc.detail.get("code") == "payee_required"

@@ -17,6 +17,7 @@ from app.log_setup import configure_logging
 from app.models import Receipt, YNABSync
 from app.services.ynab import refresh_ynab_cache
 from app.services.retention import purge_soft_deleted_receipts
+from app.services.recovery import recover_orphaned_ingested
 from app.migrations import ensure_schema_current
 from app.utils import utcnow
 
@@ -89,6 +90,11 @@ def _purge_soft_deleted() -> None:
         purge_soft_deleted_receipts(db, settings)
 
 
+def _recover_orphaned_ingested() -> None:
+    with SessionLocal() as db:
+        recover_orphaned_ingested(db, settings)
+
+
 def _refresh_cache_once() -> None:
     if not settings.ynab_access_token or not settings.ynab_budget_id:
         return
@@ -125,6 +131,18 @@ async def _periodic_purge() -> None:
             logger.exception("Periodic soft-delete purge failed")
 
 
+async def _periodic_reenqueue_ingested() -> None:
+    """Re-enqueue receipts stranded at INGESTED on an interval, so a lost
+    extraction job self-heals without waiting for a restart."""
+    interval_seconds = max(settings.ingested_reenqueue_interval_seconds, 1)
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await asyncio.to_thread(_recover_orphaned_ingested)
+        except Exception:
+            logger.exception("Periodic orphaned-ingested recovery failed")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_logging(settings.log_file_path)
@@ -137,6 +155,10 @@ async def lifespan(_: FastAPI):
         await asyncio.to_thread(_purge_soft_deleted)
     except Exception:
         logger.exception("Soft-delete purge failed on startup")
+    try:
+        await asyncio.to_thread(_recover_orphaned_ingested)
+    except Exception:
+        logger.exception("Orphaned-ingested recovery failed on startup")
     refresh_task: asyncio.Task[None] | None = None
     if settings.ynab_access_token and settings.ynab_budget_id:
         try:
@@ -146,11 +168,12 @@ async def lifespan(_: FastAPI):
         refresh_task = asyncio.create_task(_periodic_cache_refresh())
 
     purge_task = asyncio.create_task(_periodic_purge())
+    reenqueue_task = asyncio.create_task(_periodic_reenqueue_ingested())
 
     try:
         yield
     finally:
-        for task in (refresh_task, purge_task):
+        for task in (refresh_task, purge_task, reenqueue_task):
             if task:
                 task.cancel()
                 with suppress(asyncio.CancelledError):

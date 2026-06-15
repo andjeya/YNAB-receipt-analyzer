@@ -154,5 +154,11 @@ def ingest_file(source_path: Path, db: Session, settings: Settings) -> tuple[Rec
 
     from app.jobs.queue import enqueue_extraction_job
 
-    enqueue_extraction_job(receipt.id)
+    try:
+        enqueue_extraction_job(receipt.id)
+    except Exception:
+        # The row is already committed at INGESTED. Don't fail the whole scan over
+        # a transient queue error — the orphaned-ingested recovery sweep will
+        # re-enqueue it shortly. See app/services/recovery.py.
+        logger.exception("Failed to enqueue extraction for receipt %s; left for recovery sweep", receipt.id)
     return receipt, True

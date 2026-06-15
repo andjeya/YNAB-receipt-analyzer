@@ -255,7 +255,11 @@ class ValidationSplit(BaseModel):
 class ValidationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    payee_name: str = Field(min_length=1)
+    # Empty-tolerant so a receipt with no readable merchant still becomes a
+    # needs_review draft (twin + every other field filled) instead of hard-failing
+    # extraction.  Sync is hard-gated separately on a non-blank payee — see
+    # validation.payee_sync_block_reason.  Mirrors transaction_date below.
+    payee_name: str = ""
     account_id: str = Field(min_length=1)
     # Nullable so a receipt with no confident date can still exist as a draft in
     # needs_review (the user fills it in).  Sync is hard-gated separately on a

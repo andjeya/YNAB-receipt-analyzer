@@ -46,6 +46,7 @@ import { ReceiptTwinViewer } from "@/components/receipt-twin-viewer";
 import { AllocationBoard } from "@/components/allocation-board";
 import { SnappyCelebration } from "@/components/snappy/celebration";
 import { parseApiDate } from "@/lib/dates";
+import { cn } from "@/lib/utils";
 
 const UNKNOWN_ACCOUNT_ID = "__unknown__";
 const PAYEE_SUGGESTION_LIMIT = 12;
@@ -410,7 +411,7 @@ function TwinAndScanSection({ receiptId, receipt, mobileView, setMobileView, mob
   return (
     <section className="animate-reveal space-y-3" style={{ animationDelay: "55ms" }}>
       <div className="hidden gap-3 md:grid md:grid-cols-2">
-        <ReceiptTwinViewer receiptId={receiptId} twin={receipt.latest_twin} onUpdated={onTwinUpdated} autoConfirmed={autoConfirmed} />
+        <ReceiptTwinViewer receiptId={receiptId} twin={receipt.latest_twin} status={receipt.status} onUpdated={onTwinUpdated} autoConfirmed={autoConfirmed} />
         {scanPanel}
       </div>
       <div className="space-y-2 md:hidden">
@@ -432,7 +433,7 @@ function TwinAndScanSection({ receiptId, receipt, mobileView, setMobileView, mob
         </div>
         <div ref={mobilePanelRef} className="max-h-[32rem] overflow-auto">
           {mobileView === "twin" ? (
-            <ReceiptTwinViewer receiptId={receiptId} twin={receipt.latest_twin} onUpdated={onTwinUpdated} autoConfirmed={autoConfirmed} />
+            <ReceiptTwinViewer receiptId={receiptId} twin={receipt.latest_twin} status={receipt.status} onUpdated={onTwinUpdated} autoConfirmed={autoConfirmed} />
           ) : (
             scanPanel
           )}
@@ -454,6 +455,48 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
   cardLastFour?: string | null;
   latestValidationPayload?: Record<string, unknown> | null;
 }) {
+  const [activeIndex, setActiveIndex] = useState(-1);
+
+  const acceptPayee = (name: string) => {
+    setDraft({ ...draft, payee_name: name });
+    setDirty(true);
+    setPayeeMenuOpen(false);
+    setActiveIndex(-1);
+  };
+
+  const typed = draft.payee_name.trim();
+  // A typed name that matches no cached payee will create a new YNAB payee on
+  // sync — surface that so the user knows free text is allowed, not an error.
+  const isNewPayee =
+    typed.length > 0 && !payeeSuggestions.some((p) => p.name.toLowerCase() === typed.toLowerCase());
+
+  const onPayeeKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!payeeMenuOpen || payeeSuggestions.length === 0) {
+      if (event.key === "ArrowDown") {
+        setPayeeMenuOpen(true);
+        setActiveIndex(0);
+        event.preventDefault();
+      }
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      setActiveIndex((i) => (i + 1) % payeeSuggestions.length);
+      event.preventDefault();
+    } else if (event.key === "ArrowUp") {
+      setActiveIndex((i) => (i <= 0 ? payeeSuggestions.length - 1 : i - 1));
+      event.preventDefault();
+    } else if (event.key === "Enter" || event.key === "Tab") {
+      // Accept the highlighted suggestion (Tab fills without leaving via blur).
+      if (activeIndex >= 0 && activeIndex < payeeSuggestions.length) {
+        acceptPayee(payeeSuggestions[activeIndex].name);
+        if (event.key === "Enter") event.preventDefault();
+      }
+    } else if (event.key === "Escape") {
+      setPayeeMenuOpen(false);
+      setActiveIndex(-1);
+    }
+  };
+
   return (
     <Card className="animate-reveal space-y-3" style={{ animationDelay: "70ms" }}>
       <h2 className="font-semibold">Payee + Account</h2>
@@ -464,37 +507,54 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
             id="payee-input"
             value={draft.payee_name}
             role="combobox"
+            placeholder="Start typing or pick a YNAB payee"
             aria-expanded={payeeMenuOpen && payeeSuggestions.length > 0}
             aria-controls={payeeMenuOpen && payeeSuggestions.length > 0 ? "payee-suggestions-listbox" : undefined}
+            aria-activedescendant={
+              payeeMenuOpen && activeIndex >= 0 ? `payee-option-${activeIndex}` : undefined
+            }
             aria-autocomplete="list"
+            className={!draft.payee_name.trim() ? "border-amber-500 bg-amber-50 focus:ring-amber-300" : undefined}
             onFocus={() => setPayeeMenuOpen(true)}
-            onBlur={() => { setTimeout(() => setPayeeMenuOpen(false), 120); }}
+            onBlur={() => { setTimeout(() => { setPayeeMenuOpen(false); setActiveIndex(-1); }, 120); }}
+            onKeyDown={onPayeeKeyDown}
             onChange={(event) => {
               setDraft({ ...draft, payee_name: event.target.value });
               setDirty(true);
               setPayeeMenuOpen(true);
+              setActiveIndex(-1);
             }}
           />
           {payeeMenuOpen && payeeSuggestions.length > 0 ? (
             <div id="payee-suggestions-listbox" role="listbox" className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
-              {payeeSuggestions.map((payee) => (
+              {payeeSuggestions.map((payee, index) => (
                 <button
                   key={payee.entity_id}
+                  id={`payee-option-${index}`}
                   type="button"
                   role="option"
-                  aria-selected={draft.payee_name === payee.name}
-                  className="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-sand/70 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2"
+                  aria-selected={index === activeIndex || draft.payee_name === payee.name}
+                  className={cn(
+                    "block w-full px-3 py-2 text-left text-sm text-ink hover:bg-sand/70 focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2",
+                    index === activeIndex && "bg-sand/70",
+                  )}
+                  onMouseEnter={() => setActiveIndex(index)}
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => {
-                    setDraft({ ...draft, payee_name: payee.name });
-                    setDirty(true);
-                    setPayeeMenuOpen(false);
-                  }}
+                  onClick={() => acceptPayee(payee.name)}
                 >
                   {payee.name}
                 </button>
               ))}
             </div>
+          ) : null}
+          {!draft.payee_name.trim() ? (
+            <p className="mt-1 text-xs font-semibold text-amber-700">
+              No merchant found — pick a payee or type one. Sync stays paused until you do.
+            </p>
+          ) : isNewPayee ? (
+            <p className="mt-1 text-xs text-ink/60">
+              New payee — &ldquo;{typed}&rdquo; will be created in YNAB on sync.
+            </p>
           ) : null}
         </div>
         <div>
@@ -1290,12 +1350,14 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
   const payeeSuggestions = useMemo(() => {
     if (!draft) return [];
     const query = draft.payee_name.trim().toLowerCase();
-    if (!query) return [];
     const seen = new Set<string>();
     return payees
       .filter((payee) => {
         const normalizedName = String(payee.name ?? "").toLowerCase();
-        if (!normalizedName.includes(query) || seen.has(normalizedName)) return false;
+        // Empty query (e.g. a receipt with no readable merchant) lists the YNAB
+        // payees so the user can pick/tab one; a query filters by substring.
+        if (query && !normalizedName.includes(query)) return false;
+        if (seen.has(normalizedName)) return false;
         seen.add(normalizedName);
         return true;
       })

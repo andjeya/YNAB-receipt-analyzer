@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     stable_min_age_seconds: int = 3
     max_ingest_file_size_bytes: int = 50 * 1024 * 1024  # 50 MB
     stuck_job_timeout_minutes: int = 30
+    # A receipt stranded at INGESTED (its extraction job was enqueued but lost —
+    # e.g. Redis restarted before the worker drained it, or the enqueue itself
+    # failed) is re-enqueued once it has sat this long. The delay keeps the sweep
+    # from racing the normal at-ingest enqueue, which advances within seconds.
+    ingested_reenqueue_after_seconds: int = 180
+    # How often the background sweep looks for orphaned INGESTED receipts.
+    ingested_reenqueue_interval_seconds: int = 120
     # The soft-delete is only a short Undo buffer: a receipt deleted by the user
     # is hard-deleted (file + rows) once it has been gone this many minutes, so a
     # re-scan of the same image starts fresh instead of colliding with the (now

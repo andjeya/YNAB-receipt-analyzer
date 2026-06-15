@@ -32,8 +32,9 @@ class ReceiptSummary(BaseModel):
     correction_message: str | None = None
     duplicate_of_receipt_id: str | None = None
     sync_ready: bool = False
-    # Short reason code (e.g. "ready", "needs_account", "confirm_date",
-    # "duplicate"). Display copy lives in the frontend. See _batch_review_state.
+    # Short reason code (e.g. "ready", "needs_account", "needs_payee",
+    # "confirm_date", "duplicate"). Display copy lives in the frontend. See
+    # _batch_review_state.
     review_hint: str | None = None
 
 

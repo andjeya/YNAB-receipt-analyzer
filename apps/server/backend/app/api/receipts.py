@@ -53,7 +53,7 @@ from app.services.correctness import award_water
 from app.services.duplicates import apply_semantic_duplicate_state, build_semantic_signature
 from app.services.incidents import record_incident
 from app.services.storage import storage_path
-from app.services.validation import payloads_equivalent, validate_payload, UNKNOWN_ACCOUNT_ID
+from app.services.validation import payee_sync_block_reason, payloads_equivalent, validate_payload, UNKNOWN_ACCOUNT_ID
 from app.services.date_resolution import date_sync_block_reason
 from app.services.ynab import get_cached_reference_data
 from receipt_shared.contracts import ReceiptTwinExtraction
@@ -451,6 +451,8 @@ def _candidate_block_hint(
     acct = str(payload.get("account_id") or "").strip()
     if not acct or acct == UNKNOWN_ACCOUNT_ID:
         return "needs_account"
+    if payee_sync_block_reason(payload) is not None:
+        return "needs_payee"
     if date_sync_block_reason(payload) is not None:
         return "confirm_date"
     if twin_confirmed is not None:
@@ -1096,6 +1098,7 @@ def save_draft(
         can_sync=(
             is_valid
             and receipt.status != ReceiptStatus.DUPLICATE_REVIEW.value
+            and payee_sync_block_reason(normalized_payload) is None
             and date_sync_block_reason(normalized_payload) is None
         ),
         lock_warnings=lock_warnings,
@@ -1274,8 +1277,19 @@ def sync_receipt(
     if validation is None or not validation.is_valid:
         raise HTTPException(status_code=400, detail="Receipt must have a valid draft before sync")
 
+    sync_payload = validation.payload if isinstance(validation.payload, dict) else {}
+
+    # Payee gate (safety-critical): a YNAB transaction needs a payee, so never
+    # sync a blank one. Empty payee is a valid needs_review draft until filled.
+    payee_block = payee_sync_block_reason(sync_payload)
+    if payee_block is not None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "payee_required", "message": payee_block},
+        )
+
     # Date gate (safety-critical): never sync a missing or unconfirmed-guess date.
-    date_block = date_sync_block_reason(validation.payload if isinstance(validation.payload, dict) else {})
+    date_block = date_sync_block_reason(sync_payload)
     if date_block is not None:
         raise HTTPException(
             status_code=400,

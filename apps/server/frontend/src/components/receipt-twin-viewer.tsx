@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { AlertTriangle, Check, Pencil, RefreshCw, Save, X } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Pencil, RefreshCw, Save, X } from "lucide-react";
 
 import { confirmTwinSection, retryTwinExtraction, saveReceiptTwin } from "@/lib/api";
-import { ReceiptLineItem, ReceiptTwin, ReceiptTwinPayload } from "@/lib/types";
+import { ReceiptLineItem, ReceiptStatus, ReceiptTwin, ReceiptTwinPayload } from "@/lib/types";
 import { cloneTwinPayload, computeTwinEditWarnings, isRealLineItem, normalizeTwinTimeForInput } from "@/lib/receipt-twin";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -58,11 +58,14 @@ function patchNumberField(
 export function ReceiptTwinViewer({
   receiptId,
   twin,
+  status,
   onUpdated,
   autoConfirmed,
 }: {
   receiptId: string;
   twin: ReceiptTwin | null;
+  /** Receipt status — drives the copy shown when no twin exists yet. */
+  status?: ReceiptStatus;
   onUpdated: () => void;
   /** True when both sections were auto-confirmed for this receipt and are still confirmed. */
   autoConfirmed?: boolean;
@@ -148,22 +151,43 @@ export function ReceiptTwinViewer({
   }, [draft]);
 
   if (!twin || !draft) {
+    // No twin yet means extraction hasn't produced one — distinct from the
+    // "Gemini ran but couldn't find a payee" case, where a twin DOES exist and
+    // the normal editor below renders with the payee field blank for the user.
+    const isPending = status === "ingested" || status === "extracting";
     return (
       <Card className="space-y-3">
         <div>
           <h2 className="font-semibold">Receipt details</h2>
-          <p className="mt-1 text-xs text-ink/70">Twin unavailable for this receipt.</p>
+          {isPending ? (
+            <p className="mt-1 text-xs text-ink/70">
+              Still reading this receipt. Its details will appear here automatically once it&apos;s done —
+              usually just a few moments.
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-ink/70">
+              We couldn&apos;t read this receipt automatically. Try again, or open it below to enter the
+              details yourself.
+            </p>
+          )}
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-2"
-          onClick={() => retryMutation.mutate()}
-          disabled={retryMutation.isPending}
-        >
-          <RefreshCw className="h-4 w-4" />
-          {retryMutation.isPending ? "Retrying extraction..." : "Retry extraction"}
-        </Button>
+        {isPending ? (
+          <Button variant="outline" size="sm" className="gap-2" onClick={() => onUpdated()}>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Check again
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            onClick={() => retryMutation.mutate()}
+            disabled={retryMutation.isPending}
+          >
+            <RefreshCw className="h-4 w-4" />
+            {retryMutation.isPending ? "Retrying..." : "Try again"}
+          </Button>
+        )}
         {actionError ? <p className="text-xs text-red-700">{actionError}</p> : null}
       </Card>
     );

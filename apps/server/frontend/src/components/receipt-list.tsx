@@ -103,6 +103,7 @@ const TABS: Array<{ label: string; bucket: ReceiptBucket; testid: string }> = [
 const REVIEW_HINT: Record<string, { label: string; tone: "amber" | "emerald" | "orange" | "red" }> = {
   ready:          { label: "Auto Review Pass",      tone: "emerald" },
   needs_account:  { label: "Needs an account",      tone: "amber" },
+  needs_payee:    { label: "Add a payee",           tone: "amber" },
   category_issue: { label: "Category needs a look", tone: "amber" },
   confirm_date:   { label: "Confirm the date",      tone: "amber" },
   confirm_total:  { label: "Confirm the total",     tone: "amber" },

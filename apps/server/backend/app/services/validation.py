@@ -124,6 +124,19 @@ def payloads_equivalent(old: dict[str, Any], new: dict[str, Any]) -> bool:
     return a == b
 
 
+def payee_sync_block_reason(payload: dict[str, Any]) -> str | None:
+    """Return a human reason why ``payload``'s payee blocks sync, else None.
+
+    Safety gate: a YNAB transaction needs a payee, so sync must never send a
+    blank one.  An empty payee is allowed on the draft (the receipt sits in
+    needs_review) but blocks sync until the user fills it in.  Mirrors
+    date_resolution.date_sync_block_reason.
+    """
+    if not str(payload.get("payee_name") or "").strip():
+        return "A payee is required before syncing."
+    return None
+
+
 def build_initial_validation_payload(
     parsed_extraction: dict[str, Any],
     default_account_id: str | None,
