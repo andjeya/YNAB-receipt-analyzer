@@ -7,6 +7,15 @@ import { SNAPPY_QUOTES } from "./snappy-quotes";
 const never = () => 0.99; // above QUOTE_CHANCE → greeting branch, picks last variant
 const always = () => 0.0; // below QUOTE_CHANCE → quote branch, picks first quote
 
+// Stateful RNG: returns each value in order, then repeats the last forever.
+const seq = (...vals: number[]) => {
+  let i = 0;
+  return () => vals[Math.min(i++, vals.length - 1)];
+};
+// random() that enters the quote branch (first draw 0 < QUOTE_CHANCE) and makes
+// pick() land on `index` (second draw at the middle of that index's slice).
+const quoteAt = (index: number) => seq(0, (index + 0.5) / SNAPPY_QUOTES.length);
+
 const NOON = new Date("2026-06-12T12:00:00");
 
 describe("deriveSnappyPose", () => {
@@ -23,12 +32,23 @@ describe("deriveSnappyPose", () => {
     assert.equal(result.pose, "asleep");
   });
 
-  it("asleep can offer a quote with attribution", () => {
+  it("asleep can offer a Snappy line (first quote is unattributed)", () => {
     const result = deriveSnappyPose({ needsReviewCount: 0, totalCount: 0, random: always });
     assert.equal(result.pose, "asleep");
     assert.equal(result.line, SNAPPY_QUOTES[0].text);
-    assert.equal(result.attribution, SNAPPY_QUOTES[0].author);
+    assert.equal(result.attribution, SNAPPY_QUOTES[0].author); // undefined for Snappy's own lines
     assert.equal(result.attributionSource, SNAPPY_QUOTES[0].source);
+  });
+
+  it("threads author and source when the picked quote is attributed", () => {
+    const idx = SNAPPY_QUOTES.findIndex((q) => q.author);
+    assert.ok(idx >= 0, "expected at least one attributed quote");
+    const quote = SNAPPY_QUOTES[idx];
+    const result = deriveSnappyPose({ needsReviewCount: 0, totalCount: 0, random: quoteAt(idx) });
+    assert.equal(result.pose, "asleep");
+    assert.equal(result.line, quote.text);
+    assert.equal(result.attribution, quote.author);
+    assert.equal(result.attributionSource, quote.source);
   });
 
   it("returns concerned with singular when needsReviewCount is 1", () => {
@@ -52,7 +72,7 @@ describe("deriveSnappyPose", () => {
     assert.equal(result.line, "Anna returns!"); // last of the afternoon variants
   });
 
-  it("idle can offer a quote with attribution", () => {
+  it("idle can offer a Snappy line", () => {
     const result = deriveSnappyPose({ needsReviewCount: 0, totalCount: 5, random: always });
     assert.equal(result.pose, "idle");
     assert.equal(result.line, SNAPPY_QUOTES[0].text);
@@ -96,13 +116,28 @@ describe("greetingsForHour", () => {
 });
 
 describe("SNAPPY_QUOTES integrity", () => {
-  it("every quote has text, author, and source", () => {
+  it("every quote has non-empty text", () => {
     assert.ok(SNAPPY_QUOTES.length >= 20, "wants plenty of variety");
     for (const q of SNAPPY_QUOTES) {
       assert.ok(q.text.trim().length > 0);
-      assert.ok(q.author.trim().length > 0);
-      assert.ok(q.source.trim().length > 0);
     }
+  });
+
+  it("attribution is all-or-nothing per quote and non-empty when present", () => {
+    // Snappy's own lines (quips/parodies) carry no author; only genuinely
+    // attributed quotes do. A source without an author would never render.
+    for (const q of SNAPPY_QUOTES) {
+      if (q.author !== undefined) assert.ok(q.author.trim().length > 0, `blank author: ${q.text}`);
+      if (q.source !== undefined) {
+        assert.ok(q.source.trim().length > 0, `blank source: ${q.text}`);
+        assert.ok(q.author, `source without author: ${q.text}`);
+      }
+    }
+  });
+
+  it("includes a handful of genuinely attributed quotes", () => {
+    const attributed = SNAPPY_QUOTES.filter((q) => q.author);
+    assert.ok(attributed.length >= 5, "wants some real attributed wisdom in the mix");
   });
 
   it("quotes are short enough for the speech bubble", () => {

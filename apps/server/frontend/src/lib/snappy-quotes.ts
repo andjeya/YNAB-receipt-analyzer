@@ -1,72 +1,83 @@
 /**
  * snappy-quotes.ts
  *
- * Verified historical quotes about money, thrift, and time for Snappy's
- * speech bubble. EVERY entry was checked against an authoritative source
- * (Founders Online, Project Gutenberg #43855 "Franklin's Way to Wealth",
- * Wikisource public-domain translations, Berkshire Hathaway letters, etc.)
- * during the 2026-06-12 research pass — see
- * plans/2026/06/week-24/session-2026-06-12-1828-claude-mascot-quote-verification-research.md.
+ * Lines for Snappy's speech bubble. Two kinds live here:
  *
- * DO NOT add quotes from memory or quote-aggregator sites: most famous
- * money quotes are misattributed (e.g. Einstein never said the compound-
- * interest line; Franklin never wrote "a penny saved is a penny earned").
- * Verify against Quote Investigator / primary sources first.
+ *  1. Snappy's own voice — original quips, affectionate pop-culture riffs, and
+ *     literary / wizarding-world PARODIES. These are NOT real quotes, so they
+ *     carry no `author` and render as plain speech (no quotation marks, no
+ *     attribution line). Do NOT attribute a parody to the work it riffs on —
+ *     "It is a truth universally acknowledged that a mystery transaction…" is
+ *     Snappy, not Jane Austen, and labeling it otherwise would be a
+ *     misattribution.
  *
- * Wording is kept exactly as in the cited source (including Franklin's
- * 18th-century spelling) — authenticity over modernization.
+ *  2. Genuinely attributed wisdom — real quotes about money, thrift, and time.
+ *     Each was checked against an authoritative primary source (Berkshire
+ *     Hathaway shareholder letters, Franklin's "The Way to Wealth", Seneca's
+ *     Moral Letters, Thoreau's Walden, etc.) during the 2026-06-12 research
+ *     pass — see
+ *     plans/2026/06/week-24/session-2026-06-12-1828-claude-mascot-quote-verification-research.md.
+ *
+ * For the attributed entries: DO NOT add quotes from memory or quote-aggregator
+ * sites — most famous money quotes are misattributed. Verify against Quote
+ * Investigator / primary sources first.
  */
 
 export interface SnappyQuote {
   text: string;
-  author: string;
+  /** Omitted for Snappy's own lines; set only for genuinely attributed quotes. */
+  author?: string;
   /** Source work + year, shown in the title tooltip on the attribution. */
-  source: string;
+  source?: string;
 }
 
+// Order is irrelevant — deriveSnappyPose picks at random. Grouped only for
+// readability. Snappy's own lines carry no author and render as plain speech.
 export const SNAPPY_QUOTES: SnappyQuote[] = [
-  // ── Benjamin Franklin ────────────────────────────────────────────────
-  { text: "Remember that Time is Money.", author: "Benjamin Franklin", source: "Advice to a Young Tradesman, 1748" },
-  { text: "A penny saved is two pence clear.", author: "Benjamin Franklin", source: "Poor Richard's Almanack, 1737" },
-  { text: "Beware of little Expences; a small Leak will sink a great Ship.", author: "Benjamin Franklin", source: "The Way to Wealth, 1758" },
-  { text: "Lost time is never found again.", author: "Benjamin Franklin", source: "The Way to Wealth, 1758" },
-  { text: "Early to bed, and early to rise, makes a man healthy, wealthy, and wise.", author: "Benjamin Franklin", source: "Poor Richard's Almanack, 1735" },
-  { text: "Diligence is the mother of good luck.", author: "Benjamin Franklin", source: "The Way to Wealth, 1758" },
-  { text: "Little strokes fell great oaks.", author: "Benjamin Franklin", source: "The Way to Wealth, 1758" },
-  { text: "Many a little makes a mickle.", author: "Benjamin Franklin", source: "The Way to Wealth, 1758" },
-  { text: "He that goes a borrowing, goes a sorrowing.", author: "Benjamin Franklin", source: "The Way to Wealth, 1758" },
-  { text: "Rather go to bed supper-less, than rise in debt.", author: "Benjamin Franklin", source: "The Way to Wealth, 1758" },
-  { text: "If you would be wealthy, think of saving, as well as of getting.", author: "Benjamin Franklin", source: "The Way to Wealth, 1758" },
-  { text: "A fat kitchen makes a lean will.", author: "Benjamin Franklin", source: "The Way to Wealth, 1758" },
-  { text: "For age and want save while you may.", author: "Benjamin Franklin", source: "The Way to Wealth, 1758" },
+  // ── Snappy originals: quips with budget / science energy ─────────────────
+  { text: "Snappy has questions, but Snappy is choosing grace." },
+  { text: "Snappy loves this journey for Future You." },
+  { text: "Entropy increases unless Snappy intervenes." },
+  { text: "The category signal has emerged from the noise." },
+  { text: "Calibration complete. The vibes are within tolerance." },
+  { text: "Financial uncertainty principle: the longer you wait, the fuzzier it gets." },
+  { text: "The transaction has achieved orbital stability." },
+  { text: "This budget has excellent signal-to-noise ratio." },
+  { text: "The receipts were unstructured data. Now they have meaning." },
+  { text: "A tidy budget is a cozy budget." },
+  { text: "Snappy found a tiny fire and brought a tiny bucket." },
+  { text: "The merchant name was cryptic, but Snappy speaks fluent chaos." },
+  { text: "This receipt required detective work and emotional resilience." },
+  { text: "Snappy cleaned up the mess and left only tiny paw prints." },
 
-  // ── Classical ────────────────────────────────────────────────────────
-  { text: "Nothing, Lucilius, is ours, except time.", author: "Seneca", source: "Moral Letters to Lucilius, Letter 1 (Gummere trans.)" },
-  { text: "While we are postponing, life speeds by.", author: "Seneca", source: "Moral Letters to Lucilius, Letter 1 (Gummere trans.)" },
-  { text: "It is not the man who has too little, but the man who craves more, that is poor.", author: "Seneca", source: "Moral Letters to Lucilius, Letter 2 (Gummere trans.)" },
-  { text: "Contented poverty is an honourable estate.", author: "Seneca", source: "Moral Letters to Lucilius, Letter 2 (Gummere trans.)" },
-  { text: "Time is the most valuable thing a man can spend.", author: "Theophrastus", source: "via Diogenes Laertius, Lives of Eminent Philosophers, Book V" },
-  { text: "Men do not realize how great a revenue parsimony can be.", author: "Cicero", source: "Paradoxa Stoicorum VI, 46 BC" },
-  { text: "A good reputation is more valuable than money.", author: "Publilius Syrus", source: "Sententiae, 1st c. BC (Lyman trans.)" },
-  { text: "Carpe diem — seize the day.", author: "Horace", source: "Odes I.11, 23 BC" },
+  // ── Pop-culture riffs (TV / film allusions) ──────────────────────────────
+  { text: "Smort." },
+  { text: "Love that journey for me." },
+  { text: "Cool cool cool. The budget survived." },
+  { text: "Snappy is folding in the receipts." },
+  { text: "Best wishes, warmest ledgers." },
+  { text: "The receipt has been voted off Ambiguity Island." },
 
-  // ── Literary & Enlightenment ─────────────────────────────────────────
-  { text: "Annual income twenty pounds, annual expenditure nineteen nineteen and six, result happiness.", author: "Mr. Micawber (Charles Dickens)", source: "David Copperfield, ch. 12, 1850" },
-  { text: "A large income is the best recipe for happiness I ever heard of.", author: "Mary Crawford (Jane Austen)", source: "Mansfield Park, ch. 22, 1814" },
-  { text: "A man is rich in proportion to the number of things which he can afford to let alone.", author: "Henry David Thoreau", source: "Walden, 1854" },
-  { text: "Resolve not to be poor: whatever you have, spend less.", author: "Samuel Johnson", source: "Letter to Boswell, 1782" },
-  { text: "Money, says the proverb, makes money. When you have got a little, it is often easy to get more.", author: "Adam Smith", source: "The Wealth of Nations, 1776" },
+  // ── Literary parodies — Snappy riffing, NOT the original authors ─────────
+  { text: "Reader, the receipt was categorized." },
+  { text: "It is a truth universally acknowledged that a mystery transaction must be in want of a category." },
+  { text: "All happy budgets are alike; each messy receipt is messy in its own way." },
+  { text: "To spend, or not to spend: that is above Snappy's pay grade." },
 
-  // ── Scripture & traditional proverbs (honestly labeled) ─────────────
-  { text: "Go to the ant, thou sluggard; consider her ways, and be wise.", author: "Book of Proverbs", source: "Proverbs 6:6, KJV" },
-  { text: "The borrower is servant to the lender.", author: "Book of Proverbs", source: "Proverbs 22:7, KJV" },
-  { text: "Take care of the pence, and the pounds will take care of themselves.", author: "William Lowndes", source: "quoted in Chesterfield's Letters, 1747" },
-  { text: "Slow and steady wins the race.", author: "Aesop's Fables", source: "The Hare and the Tortoise (trad. moral)" },
-  { text: "Little by little does the trick.", author: "Aesop's Fables", source: "The Crow and the Pitcher (Jacobs trans., 1894)" },
-  { text: "A stitch in time may save nine.", author: "English proverb", source: "Thomas Fuller, Gnomologia, 1732" },
+  // ── Wizarding-world riffs (parodies, unattributed) ───────────────────────
+  { text: "Mischief managed. The receipt is categorized." },
+  { text: "Expecto Categorum." },
+  { text: "The receipt was hiding under an invisibility cloak." },
+  { text: "Ten points to Future You." },
+  { text: "Snappy solemnly swears this transaction is up to something." },
+
+  // ── Genuinely attributed wisdom (verified against primary sources) ───────
   { text: "Waste not, want not.", author: "English proverb", source: "first recorded 1772" },
-
-  // ── Modern (primary-source letters only) ─────────────────────────────
   { text: "Price is what you pay; value is what you get.", author: "Warren Buffett, crediting Ben Graham", source: "Berkshire Hathaway shareholder letter, 2008" },
   { text: "You only find out who is swimming naked when the tide goes out.", author: "Warren Buffett", source: "Berkshire Hathaway shareholder letter, 2001" },
+  { text: "It is not the man who has too little, but the man who craves more, that is poor.", author: "Seneca", source: "Moral Letters to Lucilius, Letter 2 (Gummere trans.)" },
+  { text: "Beware of little expenses; a small leak will sink a great ship.", author: "Benjamin Franklin", source: "The Way to Wealth, 1758" },
+  { text: "A man is rich in proportion to the number of things which he can afford to let alone.", author: "Henry David Thoreau", source: "Walden, 1854" },
+  { text: "The size of that circle is not very important; knowing its boundaries, however, is vital.", author: "Warren Buffett", source: "Berkshire Hathaway shareholder letter, 1996" },
+  { text: "Slow and steady wins the race.", author: "Aesop", source: "The Hare and the Tortoise" },
 ];
