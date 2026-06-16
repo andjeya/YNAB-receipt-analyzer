@@ -141,6 +141,8 @@ export interface ReceiptDetail {
   extraction_primary: ExtractionRun | null;
   latest_validation: Validation | null;
   model_validation: Validation | null;
+  /** The validation last successfully pushed to YNAB; the baseline "Restore synced" reverts to. */
+  synced_validation: Validation | null;
   latest_twin: ReceiptTwin | null;
   locked_fields: LockedFields;
   ingested_at: string;

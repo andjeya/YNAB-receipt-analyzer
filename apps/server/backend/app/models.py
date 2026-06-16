@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, true
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -184,6 +184,11 @@ class YNABSync(Base):
     raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     error_text: Mapped[str | None] = mapped_column(Text)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
+    # False when a "successful" (matched_updated) sync to YNAB had its split/category
+    # structure IGNORED by YNAB (bank-imported lock) — the receipt is then left at
+    # NEEDS_REVIEW for manual fixing. Such rows do NOT represent state YNAB holds, so
+    # "Restore synced" must not treat them as a restore source.
+    structure_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=true())
 
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

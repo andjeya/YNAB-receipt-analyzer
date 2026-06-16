@@ -103,6 +103,13 @@ export function recomputeAllocationWorkspace(
   });
 }
 
+export function resetToSynced(receiptId: string) {
+  return request<ReceiptDetail>(`/receipts/${receiptId}/reset-to-synced`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
 export function enqueueSync(receiptId: string) {
   return request<SyncEnqueueResponse>(`/receipts/${receiptId}/sync`, {
     method: "POST",

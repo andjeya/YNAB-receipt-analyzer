@@ -18,6 +18,7 @@ import {
   overrideDuplicateReceipt,
   recomputeAllocationWorkspace,
   receiptFileUrl,
+  resetToSynced,
   restoreReceipt,
   saveDraft,
 } from "@/lib/api";
@@ -129,7 +130,7 @@ function CategorySearchSelect({
         }}
       />
       {open ? (
-        <div id={listboxId} role="listbox" className="absolute z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
+        <div id={listboxId} role="listbox" className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
           {filteredCategories.length ? (
             filteredCategories.map((category) => (
               <button
@@ -526,7 +527,7 @@ function PayeeAccountCard({ draft, setDraft, setDirty, accounts, payeeSuggestion
             }}
           />
           {payeeMenuOpen && payeeSuggestions.length > 0 ? (
-            <div id="payee-suggestions-listbox" role="listbox" className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
+            <div id="payee-suggestions-listbox" role="listbox" className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-ink/15 bg-white shadow-float">
               {payeeSuggestions.map((payee, index) => (
                 <button
                   key={payee.entity_id}
@@ -953,10 +954,12 @@ function DuplicateReviewSection({
   );
 }
 
-function ActionButtonBar({ isSyncing, onReset, canReset, isAutosaving, onSync, canSync, syncButtonLabel, stripReasons }: {
+function ActionButtonBar({ isSyncing, onReset, canReset, resetButtonLabel, resetPending, isAutosaving, onSync, canSync, syncButtonLabel, stripReasons }: {
   isSyncing: boolean;
   onReset: () => void;
   canReset: boolean;
+  resetButtonLabel: string;
+  resetPending: boolean;
   isAutosaving: boolean;
   onSync: () => void;
   canSync: boolean;
@@ -974,8 +977,8 @@ function ActionButtonBar({ isSyncing, onReset, canReset, isAutosaving, onSync, c
         </div>
       ) : null}
       <div className="mx-auto flex max-w-6xl items-center gap-2">
-        <Button variant="outline" className="shrink-0 px-5" onClick={onReset} disabled={!canReset || isAutosaving}>
-          Reset
+        <Button variant="outline" className="shrink-0 px-5" onClick={onReset} disabled={!canReset || isAutosaving || resetPending || isSyncing}>
+          {resetButtonLabel}
         </Button>
         <Button className="flex-1 whitespace-nowrap" variant={isSyncing ? "outline" : "success"} onClick={onSync} disabled={!canSync || isSyncing} data-testid="sync-button">
           {syncButtonLabel}
@@ -1036,10 +1039,21 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     const nextWorkspace = receiptQuery.data.latest_validation?.source === "model"
       ? clearWorkspacePins(rawWorkspace)
       : rawWorkspace;
+    // Reset baseline: for already-synced receipts, "Restore synced" reverts to the
+    // exact last-synced state (so accidental edits while browsing history can be
+    // undone without leaving the Synced tab). Otherwise it reverts to the AI's
+    // original extraction, as before.
+    const synced = receiptQuery.data.has_successful_sync ? receiptQuery.data.synced_validation : null;
+    const syncedBaseline = synced
+      ? toDraftFromPayload(synced.payload, receiptQuery.data.display_payee_name ?? "")
+      : null;
+    const syncedBaselineWorkspace = synced && syncedBaseline
+      ? workspaceFromApi(synced.allocation_workspace ?? null, syncedBaseline, receiptQuery.data.latest_twin)
+      : null;
     if (baselineReceiptId !== receiptQuery.data.id) {
       setBaselineReceiptId(receiptQuery.data.id);
-      setCancelBaseline(toModelBaselineDraft(receiptQuery.data));
-      setCancelBaselineWorkspace(nextWorkspace);
+      setCancelBaseline(syncedBaseline ?? toModelBaselineDraft(receiptQuery.data));
+      setCancelBaselineWorkspace(syncedBaselineWorkspace ?? nextWorkspace);
       setDraft(nextDraft);
       setAllocationWorkspace(nextWorkspace);
       setAllocationWarnings(nextWorkspace.warnings ?? []);
@@ -1117,6 +1131,24 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
         variant: "error",
         message: e instanceof Error && e.message ? e.message : "Failed to enqueue sync",
         title: "Sync failed",
+      });
+    },
+  });
+
+  const resetToSyncedMutation = useMutation({
+    mutationFn: () => resetToSynced(receiptId),
+    onSuccess: () => {
+      setDirty(false);
+      queryClient.invalidateQueries({ queryKey: ["receipt", receiptId] });
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      toast({ variant: "success", message: "Reverted to the last version synced to YNAB", title: "Restored synced" });
+    },
+    onError: (e) => {
+      toast({
+        variant: "error",
+        message: e instanceof Error && e.message ? e.message : "Couldn't restore the synced version",
+        title: "Restore failed",
       });
     },
   });
@@ -1450,6 +1482,22 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     setSelectedAllocationItemIds(new Set());
     saveMutation.mutate({ nextDraft: cancelBaseline, nextWorkspace: cancelBaselineWorkspace });
   };
+  // Synced receipts: "Restore synced" reverts to the exact last-synced state via a
+  // dedicated endpoint that also restores SYNCED status (so the receipt stays in the
+  // Synced tab). setDirty(false) first cancels any pending autosave of the accidental
+  // edit; the optimistic local restore makes the revert feel instant.
+  const isSynced = receipt.has_successful_sync;
+  const restoreSynced = () => {
+    setDirty(false);
+    setPayeeMenuOpen(false);
+    if (cancelBaseline) {
+      setDraft(cancelBaseline);
+      setAllocationWorkspace(cancelBaselineWorkspace);
+      setAllocationWarnings(cancelBaselineWorkspace?.warnings ?? []);
+      setSelectedAllocationItemIds(new Set());
+    }
+    resetToSyncedMutation.mutate();
+  };
   const runAllocationRecompute = (
     mode: "discard_manual_amounts" | "keep_manual_amounts",
     workspaceOverride?: AllocationWorkspace,
@@ -1713,8 +1761,10 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
 
           <ActionButtonBar
             isSyncing={isSyncing}
-            onReset={resetDraft}
+            onReset={isSynced ? restoreSynced : resetDraft}
             canReset={canResetToBaseline}
+            resetButtonLabel={isSynced ? "Restore synced" : "Reset"}
+            resetPending={resetToSyncedMutation.isPending}
             isAutosaving={saveMutation.isPending}
             onSync={() => {
               let skipEnabled = false;

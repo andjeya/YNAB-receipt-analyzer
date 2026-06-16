@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 from sqlalchemy import func, select, update as sa_update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import app_settings, db_session
@@ -333,6 +334,31 @@ def _latest_sync(db: Session, receipt_id: str) -> YNABSync | None:
         .order_by(YNABSync.completed_at.desc().nullslast(), YNABSync.id.desc())
         .limit(1)
     )
+
+
+def _last_synced_validation(db: Session, receipt_id: str) -> Validation | None:
+    """The Validation that was last successfully pushed to YNAB.
+
+    Resolved via the most recent successful YNABSync's validation_id. This is the
+    authoritative "what YNAB holds" snapshot — used both to expose
+    synced_validation on the detail response and to power "Restore synced".
+    """
+    sync = db.scalar(
+        select(YNABSync)
+        .where(
+            YNABSync.receipt_id == receipt_id,
+            YNABSync.status.in_([YNABSyncStatus.MATCHED_UPDATED.value, YNABSyncStatus.CREATED.value]),
+            # structure_applied=False means YNAB ignored the split/category structure,
+            # so YNAB never actually held this payload — not a valid restore source.
+            YNABSync.structure_applied.is_(True),
+            YNABSync.validation_id.is_not(None),
+        )
+        .order_by(YNABSync.completed_at.desc().nullslast(), YNABSync.id.desc())
+        .limit(1)
+    )
+    if sync is None or sync.validation_id is None:
+        return None
+    return db.get(Validation, sync.validation_id)
 
 
 def _to_sync_schema(sync: YNABSync) -> YNABSyncOut:
@@ -724,6 +750,7 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
     extraction_primary = _primary_extraction(db, receipt_id)
     validation = _latest_validation(db, receipt_id)
     model_validation = _latest_model_validation(db, receipt_id)
+    synced_validation = _last_synced_validation(db, receipt_id)
     twin = _latest_twin(db, receipt_id)
     has_successful_sync = _has_successful_sync(db, receipt_id)
     latest_sync_row = _latest_sync(db, receipt_id)
@@ -752,6 +779,7 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
         extraction_primary=_to_extraction_schema(extraction_primary) if extraction_primary else None,
         latest_validation=_to_validation_schema(validation) if validation else None,
         model_validation=_to_validation_schema(model_validation) if model_validation else None,
+        synced_validation=_to_validation_schema(synced_validation) if synced_validation else None,
         latest_twin=_to_twin_schema(twin) if twin else None,
         locked_fields=_locked_fields_for_twin(twin),
         ingested_at=receipt.ingested_at,
@@ -1103,6 +1131,66 @@ def save_draft(
         ),
         lock_warnings=lock_warnings,
     )
+
+
+@router.post("/{receipt_id}/reset-to-synced", response_model=ReceiptDetailOut)
+def reset_to_synced(receipt_id: str, db: Session = Depends(db_session)) -> ReceiptDetailOut:
+    """Revert a receipt's local draft back to the exact state last synced to YNAB.
+
+    For receipts that have already been synced, the UI's "Restore synced" button
+    calls this to undo accidental edits made while browsing history. Editing a
+    synced receipt autosaves and flips it to NEEDS_REVIEW; this recreates the
+    last-synced validation as the latest version AND restores SYNCED status so the
+    receipt stays in the Synced tab. No YNAB write occurs — YNAB already holds this
+    exact state, so we only realign local state to match it.
+    """
+    receipt = db.get(Receipt, receipt_id)
+    if receipt is None or receipt.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    # A sync is mid-flight (the worker owns SYNCING→SYNCED/ERROR_SYNC). Restoring now
+    # would race the worker's status write, so refuse until it settles.
+    if receipt.status == ReceiptStatus.SYNCING.value:
+        raise HTTPException(status_code=409, detail="sync_in_progress")
+
+    synced = _last_synced_validation(db, receipt.id)
+    if synced is None:
+        raise HTTPException(status_code=400, detail="no_successful_sync")
+
+    # Copy the synced validation verbatim (payload + workspace + validity) into a
+    # fresh version so it becomes the one the UI loads. No re-validation: the goal
+    # is to mirror what YNAB holds exactly, not to re-judge it against current refs.
+    # Savepoint + retry guards the unique (receipt_id, version) constraint against a
+    # racing autosave, mirroring reconciliation.py.
+    def _restore() -> None:
+        _create_validation_version(
+            db,
+            receipt=receipt,
+            payload=synced.payload,
+            allocation_workspace=synced.allocation_workspace,
+            source="user",
+            is_valid=synced.is_valid,
+            errors=synced.errors or [],
+        )
+
+    try:
+        with db.begin_nested():
+            _restore()
+    except IntegrityError:
+        db.refresh(receipt)
+        _restore()
+
+    # Realign semantic-duplicate fields to the restored payload (the accidental edit's
+    # autosave may have left them reflecting the edited values). The receipt is already
+    # in YNAB at this state, so force SYNCED regardless of duplicate detection and drop
+    # any pending-duplicate pointer.
+    apply_semantic_duplicate_state(db, receipt=receipt, payload=synced.payload)
+    receipt.duplicate_of_receipt_id = None
+    receipt.status = ReceiptStatus.SYNCED.value
+    receipt.status_reason = None
+    db.commit()
+
+    return get_receipt_detail(receipt_id, db)
 
 
 @router.post("/{receipt_id}/allocation/recompute", response_model=AllocationRecomputeResponse)

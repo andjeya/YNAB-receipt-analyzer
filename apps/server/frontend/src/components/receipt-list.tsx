@@ -101,7 +101,7 @@ const TABS: Array<{ label: string; bucket: ReceiptBucket; testid: string }> = [
 // by _batch_review_state in apps/server/backend/app/api/receipts.py; keep the
 // two lists in sync. Tone drives the chip colour (and matches StatusBadge).
 const REVIEW_HINT: Record<string, { label: string; tone: "amber" | "emerald" | "orange" | "red" }> = {
-  ready:          { label: "Auto Review Pass",      tone: "emerald" },
+  ready:          { label: "Auto Reviewed",         tone: "emerald" },
   needs_account:  { label: "Needs an account",      tone: "amber" },
   needs_payee:    { label: "Add a payee",           tone: "amber" },
   category_issue: { label: "Category needs a look", tone: "amber" },
@@ -122,10 +122,10 @@ const HINT_TONE: Record<string, { chip: string; dot: string }> = {
 
 /**
  * ReviewHintBadge — the specific "why this needs you" chip on a list card
- * (e.g. "Needs an account", "Confirm the date", "Auto Review Pass"). It replaces
+ * (e.g. "Needs an account", "Confirm the date", "Auto Reviewed"). It replaces
  * the generic status badge for actionable receipts so the reason is explicit,
  * and resolves the "Needs review vs Quick sync" contradiction: a sync-ready
- * card reads "Auto Review Pass" next to its green button. Falls back to the raw
+ * card reads "Auto Reviewed" next to its green button. Falls back to the raw
  * status badge for codes it doesn't recognise.
  */
 function ReviewHintBadge({ hint }: { hint: string }) {
@@ -1264,7 +1264,10 @@ function ReceiptListItem({
     <div className="relative">
       <Card
         className={cn(
-          "animate-reveal transition",
+          // px-3 trims the shared Card's p-4 horizontal padding (twMerge keeps py-4)
+          // so the title/action rows start closer to the left edge — on mobile this
+          // is the width the review-hint badge + Quick-sync need to share one line.
+          "animate-reveal transition px-3",
           receipt.status === "needs_review"
             ? "border-amber-300 bg-amber-50/70"
             : receipt.status === "duplicate_review"
@@ -1279,10 +1282,10 @@ function ReceiptListItem({
           className="absolute inset-0 rounded-[inherit] z-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/70 focus-visible:ring-offset-2 focus-visible:ring-offset-sand"
           aria-label={`Open receipt: ${receipt.display_payee_name ?? receipt.original_filename}`}
         />
-        <div className="flex items-start gap-3">
+        <div className="flex items-start gap-2">
           {/* Leading state-icon column — fixed width so every card's title
               starts on the same vertical line, icon present or not. */}
-          <div className="mt-0.5 flex shrink-0 items-center gap-1.5">
+          <div className="mt-0.5 flex shrink-0 items-center gap-1">
             {correctionVisible ? (
               <span title="YNAB correction tracked" aria-label="YNAB correction tracked">
                 <Flame
@@ -1292,7 +1295,7 @@ function ReceiptListItem({
                 />
               </span>
             ) : null}
-            <div className="flex w-6 justify-center">
+            <div className="flex w-5 justify-center">
               {iconState ? <ReceiptStateIcon state={iconState} className={cn("h-5 w-5", sproutClass)} /> : null}
             </div>
           </div>
@@ -1347,7 +1350,7 @@ function ReceiptListItem({
                 buttons pushed hard-right (ml-auto). Sharing one line with the
                 badge keeps the card compact. */}
             <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-              {/* The specific reason ("Needs an account", "Auto Review Pass", …)
+              {/* The specific reason ("Needs an account", "Auto Reviewed", …)
                   when we have one; otherwise the raw pipeline status. */}
               {receipt.review_hint ? (
                 <ReviewHintBadge hint={receipt.review_hint} />

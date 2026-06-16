@@ -957,6 +957,7 @@ def _apply_post_sync(
     # --- Commit 1: YNAB write result (durable before bookkeeping) ---
     sync_row.duration_ms = duration_ms
     sync_row.completed_at = finished_at
+    sync_row.structure_applied = structure_applied
     receipt.sync_completed_at = finished_at
     if not structure_applied:
         # YNAB ignored split/category structure changes — write NEEDS_REVIEW directly.

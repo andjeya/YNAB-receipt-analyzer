@@ -108,6 +108,10 @@ class ReceiptDetailOut(BaseModel):
     extraction_primary: ExtractionRunOut | None = None
     latest_validation: ValidationOut | None = None
     model_validation: ValidationOut | None = None
+    # The validation that was last successfully pushed to YNAB (resolved via the
+    # last successful YNABSync.validation_id). Lets the UI offer "Restore synced"
+    # — revert local edits back to the exact state YNAB holds.
+    synced_validation: ValidationOut | None = None
     latest_twin: ReceiptTwinOut | None = None
     locked_fields: LockedFieldsOut = Field(default_factory=LockedFieldsOut)
     ingested_at: datetime
