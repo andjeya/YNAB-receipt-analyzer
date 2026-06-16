@@ -175,6 +175,36 @@ export const RECEIPT_MATCHED: Record<string, unknown> = {
   status: "needs_review",
 };
 
+/**
+ * synced — but the only successful YNABSync was a STRUCTURE-IGNORED matched
+ * update (YNAB kept the top-level amount, ignored the local split/category
+ * structure). The backend deliberately leaves `synced_validation` null for this
+ * case (YNAB never held that local payload), while `has_successful_sync` stays
+ * true (a real write did happen → "Resync" copy still applies).
+ *
+ * Regression guard for commit 56acf84: the "Restore synced" button must NOT be
+ * offered here, because POST /reset-to-synced returns 400 no_successful_sync
+ * when there is no restorable synced_validation.
+ */
+export const RECEIPT_SYNCED_STRUCTURE_IGNORED: Record<string, unknown> = {
+  ...RECEIPT_TWIN_UNCONFIRMED,
+  status: "synced",
+  latest_twin: TWIN_CONFIRMED,
+  has_successful_sync: true,
+  synced_validation: null,
+  sync_completed_at: "2026-06-08T20:00:00Z",
+};
+
+/**
+ * synced with a restorable last-synced state: `synced_validation` is present
+ * (YNAB holds exactly this payload). "Restore synced" SHOULD be offered and
+ * clicking it calls POST /reset-to-synced.
+ */
+export const RECEIPT_SYNCED_RESTORABLE: Record<string, unknown> = {
+  ...RECEIPT_SYNCED_STRUCTURE_IGNORED,
+  synced_validation: makeValidation(VALIDATION_PAYLOAD_READY as Record<string, unknown>, 20),
+};
+
 // ---------------------------------------------------------------------------
 // Config fixtures
 // ---------------------------------------------------------------------------

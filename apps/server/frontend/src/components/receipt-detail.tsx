@@ -977,7 +977,7 @@ function ActionButtonBar({ isSyncing, onReset, canReset, resetButtonLabel, reset
         </div>
       ) : null}
       <div className="mx-auto flex max-w-6xl items-center gap-2">
-        <Button variant="outline" className="shrink-0 px-5" onClick={onReset} disabled={!canReset || isAutosaving || resetPending || isSyncing}>
+        <Button variant="outline" className="shrink-0 px-5" onClick={onReset} disabled={!canReset || isAutosaving || resetPending || isSyncing} data-testid="reset-button">
           {resetButtonLabel}
         </Button>
         <Button className="flex-1 whitespace-nowrap" variant={isSyncing ? "outline" : "success"} onClick={onSync} disabled={!canSync || isSyncing} data-testid="sync-button">
@@ -1043,7 +1043,7 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     // exact last-synced state (so accidental edits while browsing history can be
     // undone without leaving the Synced tab). Otherwise it reverts to the AI's
     // original extraction, as before.
-    const synced = receiptQuery.data.has_successful_sync ? receiptQuery.data.synced_validation : null;
+    const synced = receiptQuery.data.synced_validation;
     const syncedBaseline = synced
       ? toDraftFromPayload(synced.payload, receiptQuery.data.display_payee_name ?? "")
       : null;
@@ -1482,11 +1482,12 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
     setSelectedAllocationItemIds(new Set());
     saveMutation.mutate({ nextDraft: cancelBaseline, nextWorkspace: cancelBaselineWorkspace });
   };
-  // Synced receipts: "Restore synced" reverts to the exact last-synced state via a
-  // dedicated endpoint that also restores SYNCED status (so the receipt stays in the
-  // Synced tab). setDirty(false) first cancels any pending autosave of the accidental
-  // edit; the optimistic local restore makes the revert feel instant.
-  const isSynced = receipt.has_successful_sync;
+  // Receipts with a restorable synced validation: "Restore synced" reverts to the
+  // exact last-synced state via a dedicated endpoint that also restores SYNCED status.
+  // A broad successful-sync flag is not enough here: structure-ignored matched updates
+  // are successful rows for history/resync purposes, but are deliberately excluded
+  // from synced_validation because YNAB never held that local structure.
+  const canRestoreSynced = Boolean(receipt.synced_validation);
   const restoreSynced = () => {
     setDirty(false);
     setPayeeMenuOpen(false);
@@ -1761,9 +1762,9 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
 
           <ActionButtonBar
             isSyncing={isSyncing}
-            onReset={isSynced ? restoreSynced : resetDraft}
+            onReset={canRestoreSynced ? restoreSynced : resetDraft}
             canReset={canResetToBaseline}
-            resetButtonLabel={isSynced ? "Restore synced" : "Reset"}
+            resetButtonLabel={canRestoreSynced ? "Restore synced" : "Reset"}
             resetPending={resetToSyncedMutation.isPending}
             isAutosaving={saveMutation.isPending}
             onSync={() => {
