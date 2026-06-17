@@ -52,6 +52,47 @@ def test_validate_payload_allows_unknown_account_when_flag_enabled():
 
 
 # ---------------------------------------------------------------------------
+# T2-05: stale/unknown category must not produce a syncable validation
+# ---------------------------------------------------------------------------
+
+
+def test_validate_payload_rejects_unknown_single_category():
+    """A category_id not in the cached set (e.g. deleted in YNAB) is rejected,
+    so a stale cache reference can never reach a YNAB write."""
+    payload = _payload("acct-1")
+    payload["category_id"] = "cat-deleted"
+
+    _normalized, is_valid, errors = validate_payload(
+        payload,
+        allowed_category_ids={"cat-1"},
+        allowed_account_ids={"acct-1"},
+    )
+
+    assert is_valid is False
+    assert "Invalid category_id: cat-deleted" in errors
+
+
+def test_validate_payload_rejects_unknown_split_category():
+    """A split referencing a stale category is rejected."""
+    payload = _split_payload(
+        30.0,
+        [
+            {"category_id": "cat-1", "amount": 20.0, "memo": ""},
+            {"category_id": "cat-stale", "amount": 10.0, "memo": ""},
+        ],
+    )
+
+    _normalized, is_valid, errors = validate_payload(
+        payload,
+        allowed_category_ids={"cat-1"},
+        allowed_account_ids={"acct-1"},
+    )
+
+    assert is_valid is False
+    assert "Invalid category_id in split: cat-stale" in errors
+
+
+# ---------------------------------------------------------------------------
 # Finding 1: ValidationSplit.amount ge=0 produces friendly error message
 # ---------------------------------------------------------------------------
 

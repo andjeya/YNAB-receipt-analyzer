@@ -89,6 +89,27 @@ const VALIDATION_PAYLOAD_SPLIT_MISMATCH = {
   ],
 };
 
+// Refund (inflow). Memo has NO prefix → preview must prepend "Return: ".
+const VALIDATION_PAYLOAD_REFUND = {
+  ...VALIDATION_PAYLOAD_READY,
+  memo: "Coffee maker",
+  transaction_kind: "refund",
+};
+
+// Refund with splits summing exactly to the total. Memo already starts with
+// "Return: " → preview must NOT double-prefix it.
+const VALIDATION_PAYLOAD_REFUND_SPLIT = {
+  ...VALIDATION_PAYLOAD_READY,
+  memo: "Return: assorted items",
+  transaction_kind: "refund",
+  category_id: "",
+  splits: [
+    { category_id: CATEGORY_ID, amount: 20.62, memo: "Item A" },
+    { category_id: CATEGORY_ID, amount: 5.00, memo: "Item B" },
+    // sum = 25.62 == total_amount
+  ],
+};
+
 function makeValidation(payload: Record<string, unknown>, id = 10): Record<string, unknown> {
   return {
     id,
@@ -144,6 +165,18 @@ export const RECEIPT_TWIN_UNCONFIRMED: Record<string, unknown> = {
 export const RECEIPT_SYNC_READY: Record<string, unknown> = {
   ...RECEIPT_TWIN_UNCONFIRMED,
   latest_twin: TWIN_CONFIRMED,
+};
+
+/** needs_review — refund (inflow), twin confirmed, sync-ready */
+export const RECEIPT_REFUND_READY: Record<string, unknown> = {
+  ...RECEIPT_SYNC_READY,
+  latest_validation: makeValidation(VALIDATION_PAYLOAD_REFUND as Record<string, unknown>, 12),
+};
+
+/** needs_review — refund with splits (inflow), twin confirmed, sync-ready */
+export const RECEIPT_REFUND_SPLIT_READY: Record<string, unknown> = {
+  ...RECEIPT_SYNC_READY,
+  latest_validation: makeValidation(VALIDATION_PAYLOAD_REFUND_SPLIT as Record<string, unknown>, 13),
 };
 
 /** needs_review — unknown account (validation error) */
