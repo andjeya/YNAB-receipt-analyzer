@@ -145,6 +145,45 @@ def apply_semantic_duplicate_state(
     receipt.semantic_signature = signature
 
     if signature is None:
+        # No full signature (typically a missing transaction_time). B-02: rather than
+        # bypass duplicate detection entirely, look for a time-agnostic near-match on
+        # payee + date + total and surface a NON-BLOCKING warning so a human can verify
+        # it is not a duplicate. This never hard-blocks sync (duplicate_of stays None).
+        if payee_key is not None and date_key is not None and total_cents is not None:
+            timeless_matches = list(
+                db.scalars(
+                    select(Receipt)
+                    .where(
+                        Receipt.semantic_payee_key == payee_key,
+                        Receipt.semantic_transaction_date == date.fromisoformat(date_key),
+                        Receipt.semantic_total_cents == total_cents,
+                        Receipt.id != receipt.id,
+                        Receipt.deleted_at.is_(None),
+                    )
+                    .order_by(Receipt.ingested_at.asc(), Receipt.id.asc())
+                )
+            )
+            # Don't treat a duplicate-review row as a canonical target (mirror the
+            # full-signature path below).
+            near_pool = [row for row in timeless_matches if row.status != ReceiptStatus.DUPLICATE_REVIEW.value]
+            if near_pool:
+                near_target = near_pool[0]
+                near_reason = (
+                    f"Near-match: same payee/date/total as receipt {near_target.id} "
+                    f"but transaction time is missing. Not blocked — verify this is not a duplicate."
+                )
+                receipt.duplicate_of_receipt_id = None
+                if receipt.status == ReceiptStatus.DUPLICATE_REVIEW.value:
+                    receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+                receipt.status_reason = near_reason
+                return DuplicateCheckResult(
+                    signature=None,
+                    duplicate_of_receipt_id=None,
+                    match_count=len(near_pool),
+                    near_match=True,
+                    near_match_reason=near_reason,
+                )
+
         receipt.duplicate_of_receipt_id = None
         if receipt.status == ReceiptStatus.DUPLICATE_REVIEW.value:
             receipt.status = ReceiptStatus.NEEDS_REVIEW.value

@@ -607,6 +607,12 @@ _STRUCTURE_IGNORED_REASON = (
     "The YNAB transaction was left unchanged; fix the split structure manually in YNAB."
 )
 
+_PRIOR_TRANSACTION_DELETED_REASON = (
+    "The previously-synced YNAB transaction was deleted in YNAB. A new transaction "
+    "was NOT created to avoid duplication — review and re-sync manually if it should "
+    "be re-added."
+)
+
 
 def _create_transaction_idempotent(
     client: YNABClient,
@@ -673,11 +679,15 @@ def _sync_update_existing(
     validation_payload: dict[str, Any],
     *,
     receipt: Receipt,
-) -> bool:
+) -> tuple[bool, str | None]:
     """Update the YNAB transaction from a previous successful sync.
 
-    Returns structure_applied (True = YNAB applied the change; False = YNAB ignored
-    the split/category structure change, caller must write NEEDS_REVIEW status).
+    Returns (structure_applied, review_reason):
+      - structure_applied True = YNAB applied the change.
+      - structure_applied False = caller must write NEEDS_REVIEW; review_reason (when
+        set) overrides the default structure-ignored message. False is returned both
+        when YNAB ignored the split/category structure change AND when the
+        previously-synced transaction was deleted in YNAB (B-01: we do NOT recreate).
     """
     target_transaction_id = (
         prior_success_sync.created_transaction_id
@@ -708,7 +718,6 @@ def _sync_update_existing(
             existing_target_transaction = matched_exact
 
     updated_flag_color = settings.ynab_updated_transaction_flag_color
-    new_flag_color = settings.ynab_new_transaction_flag_color
 
     if existing_target_transaction is not None:
         update_payload_with_flags = dict(transaction_payload)
@@ -724,26 +733,21 @@ def _sync_update_existing(
         sync_row.matched_transaction_id = final_id
         sync_row.raw_response = ynab_response
 
-        return structure_applied
+        return structure_applied, None
     else:
-        # Previously-synced transaction was deleted from YNAB (manually).
-        # Create a fresh one instead of leaving the user stuck in an error loop.
+        # Previously-synced transaction was deleted in YNAB (manually) and no exact
+        # match was found. B-01: do NOT recreate — that would silently duplicate or
+        # resurrect a deliberately-removed transaction. Flag the receipt for human
+        # review instead; the caller writes NEEDS_REVIEW with the reason below.
         logger.warning(
-            "Cannot find previous YNAB transaction for receipt_id=%s; creating new",
+            "Previously-synced YNAB transaction missing for receipt_id=%s; "
+            "flagging for review instead of recreating",
             sync_row.receipt_id,
         )
-        new_transaction_payload = dict(transaction_payload)
-        new_transaction_payload["approved"] = False
-        if new_flag_color:
-            new_transaction_payload["flag_color"] = new_flag_color
-        sync_row.raw_request = {"transaction": new_transaction_payload}
-        ynab_response = _create_transaction_idempotent(
-            client, budget_id, new_transaction_payload, receipt_id=sync_row.receipt_id
-        )
-        sync_row.status = YNABSyncStatus.CREATED.value
-        sync_row.created_transaction_id = ynab_response.get("id")
-        sync_row.raw_response = ynab_response
-        return True
+        sync_row.raw_request = {"transaction": transaction_payload}
+        sync_row.status = YNABSyncStatus.FAILED.value
+        sync_row.error_text = _PRIOR_TRANSACTION_DELETED_REASON
+        return False, _PRIOR_TRANSACTION_DELETED_REASON
 
 
 def _sync_match_or_create(
@@ -937,6 +941,7 @@ def _apply_post_sync(
     started_perf: float,
     *,
     structure_applied: bool = True,
+    review_reason: str | None = None,
 ) -> dict[str, Any]:
     """Persist YNAB write result, then run bookkeeping (gamification + corrections).
 
@@ -960,10 +965,11 @@ def _apply_post_sync(
     sync_row.structure_applied = structure_applied
     receipt.sync_completed_at = finished_at
     if not structure_applied:
-        # YNAB ignored split/category structure changes — write NEEDS_REVIEW directly.
-        # This avoids the previous transient SYNCED → NEEDS_REVIEW two-commit pattern.
+        # Write NEEDS_REVIEW directly (no transient SYNCED → NEEDS_REVIEW window).
+        # review_reason lets callers supply a specific message (e.g. B-01 deleted-txn);
+        # default is the structure-ignored message.
         receipt.status = ReceiptStatus.NEEDS_REVIEW.value
-        receipt.status_reason = _STRUCTURE_IGNORED_REASON
+        receipt.status_reason = review_reason or _STRUCTURE_IGNORED_REASON
     else:
         receipt.status = ReceiptStatus.SYNCED.value
         receipt.status_reason = None
@@ -1295,8 +1301,9 @@ def sync_receipt_to_ynab(
             sync_row.raw_response = None
 
         # Note: dry_run→live reuses the same sync_row; only error_text is cleared above.
+        review_reason: str | None = None
         if prior_success_sync is not None and not force_create:
-            structure_applied = _sync_update_existing(
+            structure_applied, review_reason = _sync_update_existing(
                 client, settings.ynab_budget_id, settings, sync_row,
                 transaction_payload, prior_success_sync, validation.payload,
                 receipt=receipt,
@@ -1316,6 +1323,7 @@ def sync_receipt_to_ynab(
         result = _apply_post_sync(
             db, receipt, validation, sync_row, settings, idempotency_key, started_perf,
             structure_applied=structure_applied,
+            review_reason=review_reason,
         )
         result["structure_applied"] = structure_applied
         return result
