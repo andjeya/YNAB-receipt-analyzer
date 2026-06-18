@@ -86,6 +86,14 @@ export interface SyncPreviewDialogProps {
    * the option to avoid implying this dialog can be skipped.
    */
   showSkipPreviewOption?: boolean;
+  /**
+   * Optional content rendered between the header and the bank-register body.
+   * Quick review uses it to inject the candidate selector chips so the user can
+   * switch between guesses and watch this same preview update.
+   */
+  extraHeader?: React.ReactNode;
+  /** Overrides the confirm button label (Quick review uses "Quick sync this one"). */
+  confirmLabelOverride?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +115,8 @@ export function SyncPreviewDialog({
   totalConfirmed,
   onConfirm,
   showSkipPreviewOption = true,
+  extraHeader,
+  confirmLabelOverride,
 }: SyncPreviewDialogProps) {
   const kind = draft.transaction_kind;
   const signed = signedDollars(draft.total_amount, kind);
@@ -134,6 +144,9 @@ export function SyncPreviewDialog({
     confirmLabel = "Update in YNAB";
   } else {
     confirmLabel = "Add to YNAB";
+  }
+  if (confirmLabelOverride) {
+    confirmLabel = confirmLabelOverride;
   }
 
   // Mode badge
@@ -206,6 +219,9 @@ export function SyncPreviewDialog({
           </p>
         )}
       </div>
+
+      {/* Optional injected content (Quick review's candidate selector). */}
+      {extraHeader ? <div className="border-b border-ink/10 px-4 py-3">{extraHeader}</div> : null}
 
       {/* Body — dense bank-register table */}
       <div className="px-4 py-3 text-xs">

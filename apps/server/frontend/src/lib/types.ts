@@ -27,6 +27,34 @@ export interface ReceiptSummary {
   /** Short reason code for why this receipt needs attention (or "ready").
    *  Display copy lives in REVIEW_HINT_LABELS (receipt-list.tsx). */
   review_hint: string | null;
+  /** True when an unresolved category/split candidate set exists (Quick review).
+   *  Additive — does not affect sync_ready. */
+  has_candidates: boolean;
+}
+
+/** One ranked category/split arrangement offered in Quick review. Carries only
+ *  category/splits — never money fields. */
+export interface CandidateArrangement {
+  label: string;
+  rationale: string;
+  confidence: number;
+  category_id: string | null;
+  splits: { category_id: string; amount: number; memo: string }[];
+  provenance: string;
+}
+
+export interface ReceiptCandidateSet {
+  id: number;
+  version: number;
+  source: string;
+  chosen_index: number | null;
+  candidates: CandidateArrangement[];
+  created_at: string;
+}
+
+/** Transient type-to-organize proposals (not persisted). */
+export interface OrganizeProposalsOut {
+  proposals: CandidateArrangement[];
 }
 
 export interface AppConfig {
@@ -144,6 +172,8 @@ export interface ReceiptDetail {
   /** The validation last successfully pushed to YNAB; the baseline "Restore synced" reverts to. */
   synced_validation: Validation | null;
   latest_twin: ReceiptTwin | null;
+  /** Latest category/split candidate set (Quick review). Null when none generated. */
+  candidate_set: ReceiptCandidateSet | null;
   locked_fields: LockedFields;
   ingested_at: string;
   extraction_started_at: string | null;

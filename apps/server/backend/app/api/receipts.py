@@ -18,12 +18,26 @@ from app.api.deps import app_settings, db_session
 from app.config import Settings
 from app.enums import ReceiptStatus, YNABSyncStatus
 from app.jobs.queue import EXTRACTION_QUEUE_NAME, SYNC_QUEUE_NAME, enqueue_extraction_job, enqueue_sync_job
-from app.models import ExtractionRun, Receipt, ReceiptCorrection, ReceiptTwin, TimingMetric, Validation, YNABSync
+from app.models import (
+    ExtractionRun,
+    Receipt,
+    ReceiptCandidateSet,
+    ReceiptCorrection,
+    ReceiptTwin,
+    TimingMetric,
+    Validation,
+    YNABSync,
+)
 from app.schemas import (
     AllocationRecomputeRequest,
     AllocationRecomputeResponse,
+    CandidateArrangementOut,
+    ChooseCandidateRequest,
     ConfirmedSectionsOut,
     DeleteReceiptResponse,
+    OrganizeAllocationRequest,
+    OrganizeProposalsOut,
+    ReceiptCandidateSetOut,
     DuplicateConfirmResponse,
     RestoreReceiptResponse,
     DuplicateOverrideRequest,
@@ -50,6 +64,7 @@ from app.services.allocation_workspace import (
     reconcile_allocation_workspace,
     recompute_payload_from_workspace,
 )
+from app.services.category_resolution import materialize_proposals
 from app.services.correctness import award_water
 from app.services.duplicates import apply_semantic_duplicate_state, build_semantic_signature
 from app.services.incidents import record_incident
@@ -57,8 +72,10 @@ from app.services.storage import storage_path
 from app.services.validation import payee_sync_block_reason, payloads_equivalent, validate_payload, UNKNOWN_ACCOUNT_ID
 from app.services.date_resolution import date_sync_block_reason
 from app.services.ynab import get_cached_reference_data
-from receipt_shared.contracts import ReceiptTwinExtraction
+from receipt_shared.contracts import OrganizeProposal, ReceiptTwinExtraction
+from receipt_shared.gemini import GeminiAnalyzer, build_organize_prompt
 from receipt_shared.money import dollars_to_milliunits
+from receipt_shared.ynab_client import Category
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 logger = logging.getLogger(__name__)
@@ -390,6 +407,69 @@ def _to_correction_schema(correction: ReceiptCorrection) -> ReceiptCorrectionOut
     )
 
 
+def _latest_candidate_set(db: Session, receipt_id: str) -> ReceiptCandidateSet | None:
+    return db.scalar(
+        select(ReceiptCandidateSet)
+        .where(ReceiptCandidateSet.receipt_id == receipt_id)
+        .order_by(ReceiptCandidateSet.version.desc())
+        .limit(1)
+    )
+
+
+def _candidate_set_by_version(db: Session, receipt_id: str, version: int) -> ReceiptCandidateSet | None:
+    return db.scalar(
+        select(ReceiptCandidateSet).where(
+            ReceiptCandidateSet.receipt_id == receipt_id,
+            ReceiptCandidateSet.version == version,
+        )
+    )
+
+
+def _to_candidate_set_schema(candidate_set: ReceiptCandidateSet) -> ReceiptCandidateSetOut:
+    arrangements: list[CandidateArrangementOut] = []
+    for item in candidate_set.candidates or []:
+        if not isinstance(item, dict):
+            continue
+        splits = item.get("splits")
+        arrangements.append(
+            CandidateArrangementOut(
+                label=str(item.get("label") or ""),
+                rationale=str(item.get("rationale") or ""),
+                confidence=float(item.get("confidence") or 0.0),
+                category_id=item.get("category_id"),
+                splits=splits if isinstance(splits, list) else [],
+                provenance=str(item.get("provenance") or ""),
+            )
+        )
+    return ReceiptCandidateSetOut(
+        id=candidate_set.id,
+        version=candidate_set.version,
+        source=candidate_set.source,
+        chosen_index=candidate_set.chosen_index,
+        candidates=arrangements,
+        created_at=candidate_set.created_at,
+    )
+
+
+def _batch_has_candidates(db: Session, receipt_ids: list[str]) -> set[str]:
+    """Receipt ids with at least one UNRESOLVED candidate set (chosen_index IS NULL).
+
+    Additive Quick-review signal; the frontend combines it with review_hint to
+    decide whether to surface the button. Does not affect sync_ready.
+    """
+    if not receipt_ids:
+        return set()
+    rows = db.execute(
+        select(ReceiptCandidateSet.receipt_id)
+        .where(
+            ReceiptCandidateSet.receipt_id.in_(receipt_ids),
+            ReceiptCandidateSet.chosen_index.is_(None),
+        )
+        .distinct()
+    ).all()
+    return {row[0] for row in rows}
+
+
 def _latest_validation_kind(db: Session, receipt_id: str) -> str:
     """Return transaction_kind from the latest validation payload, defaulting to 'purchase'."""
     row = db.scalar(
@@ -711,6 +791,7 @@ def list_receipts(
     receipt_ids = [r.id for r in receipts]
     kind_map = _batch_latest_validation_kinds(db, receipt_ids)
     review_state_map = _batch_review_state(db, receipts, sync_enabled=settings.ynab_sync_enabled)
+    candidate_ids = _batch_has_candidates(db, receipt_ids)
     summaries: list[ReceiptSummary] = []
     for receipt in receipts:
         correction = _latest_correction(db, receipt.id)
@@ -735,6 +816,7 @@ def list_receipts(
                 duplicate_of_receipt_id=receipt.duplicate_of_receipt_id,
                 sync_ready=sync_ready,
                 review_hint=review_hint,
+                has_candidates=receipt.id in candidate_ids,
             )
         )
     return summaries
@@ -752,6 +834,7 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
     model_validation = _latest_model_validation(db, receipt_id)
     synced_validation = _last_synced_validation(db, receipt_id)
     twin = _latest_twin(db, receipt_id)
+    candidate_set = _latest_candidate_set(db, receipt_id)
     has_successful_sync = _has_successful_sync(db, receipt_id)
     latest_sync_row = _latest_sync(db, receipt_id)
     correction = _latest_correction(db, receipt.id)
@@ -781,6 +864,7 @@ def get_receipt_detail(receipt_id: str, db: Session = Depends(db_session)) -> Re
         model_validation=_to_validation_schema(model_validation) if model_validation else None,
         synced_validation=_to_validation_schema(synced_validation) if synced_validation else None,
         latest_twin=_to_twin_schema(twin) if twin else None,
+        candidate_set=_to_candidate_set_schema(candidate_set) if candidate_set else None,
         locked_fields=_locked_fields_for_twin(twin),
         ingested_at=receipt.ingested_at,
         extraction_started_at=receipt.extraction_started_at,
@@ -1191,6 +1275,255 @@ def reset_to_synced(receipt_id: str, db: Session = Depends(db_session)) -> Recei
     db.commit()
 
     return get_receipt_detail(receipt_id, db)
+
+
+@router.post("/{receipt_id}/candidates/{version}/choose", response_model=SaveDraftResponse)
+def choose_candidate(
+    receipt_id: str,
+    version: int,
+    request: ChooseCandidateRequest,
+    db: Session = Depends(db_session),
+    settings: Settings = Depends(app_settings),
+) -> SaveDraftResponse:
+    """Promote one category/split candidate to the active draft.
+
+    Candidates carry ONLY category/splits. This merges the chosen arrangement onto
+    the CURRENT latest validation (date/total/account/payee untouched), re-validates
+    against the live YNAB cache, and writes a normal user Validation — so every
+    existing gate, duplicate-state, and review-hint recomputation applies unchanged.
+    The money write still happens only via the explicit /sync call afterward.
+
+    Game economy: accepting a generated guess (model_topk/tier0) earns no
+    manual-correction water; a type_to_organize edit (real user input) can.
+    """
+    receipt = db.get(Receipt, receipt_id)
+    if receipt is None or receipt.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    # A sync is mid-flight (the worker owns SYNCING→SYNCED/ERROR_SYNC); writing a new
+    # draft now would race the worker's status write. Refuse until it settles.
+    if receipt.status == ReceiptStatus.SYNCING.value:
+        raise HTTPException(status_code=409, detail="sync_in_progress")
+
+    candidate_set = _candidate_set_by_version(db, receipt_id, version)
+    if candidate_set is None:
+        raise HTTPException(status_code=404, detail="candidate_set_not_found")
+
+    candidates = candidate_set.candidates if isinstance(candidate_set.candidates, list) else []
+    if request.index >= len(candidates) or not isinstance(candidates[request.index], dict):
+        raise HTTPException(status_code=422, detail="invalid_index")
+
+    latest_validation = _latest_validation(db, receipt.id)
+    if latest_validation is None or not isinstance(latest_validation.payload, dict):
+        raise HTTPException(status_code=409, detail="no_validation")
+
+    # Staleness guard: if the twin moved, the total / locked fields may have changed
+    # underneath the candidate (its split amounts were sized to the old total). Force a
+    # refresh rather than risk merging stale splits.
+    latest_twin = _latest_twin(db, receipt.id)
+    current_twin_version = latest_twin.version if latest_twin else 0
+    if candidate_set.twin_version is not None and candidate_set.twin_version != current_twin_version:
+        raise HTTPException(status_code=409, detail="candidates_stale")
+
+    candidate = candidates[request.index]
+    # Merge ONLY category/splits onto the current validated payload. Money fields
+    # (date/total/account/payee) are preserved verbatim from the latest validation.
+    merged = dict(latest_validation.payload)
+    splits = candidate.get("splits")
+    if isinstance(splits, list) and splits:
+        merged["splits"] = splits
+        merged["category_id"] = None
+    else:
+        merged["category_id"] = candidate.get("category_id")
+        merged["splits"] = []
+    # The category came from an AI guess, not learned payee memory — clear any stale
+    # provenance pill.
+    merged.pop("category_source", None)
+    # Apply twin locks for parity with save_draft — notably this clears a stale
+    # date_source="ai_guess" once the twin date is confirmed, so the date gate can
+    # pass. Money fields already come from the current validation, so locking them to
+    # the twin is idempotent.
+    locked_payload, lock_warnings = _apply_twin_locks_to_payload(merged, latest_twin)
+
+    reference_data = get_cached_reference_data(db, settings)
+    allowed_category_ids = {item.entity_id for item in reference_data["categories"]}
+    allowed_account_ids = {item.entity_id for item in reference_data["accounts"]}
+    normalized_payload, is_valid, errors = validate_payload(
+        locked_payload,
+        allowed_category_ids=allowed_category_ids,
+        allowed_account_ids=allowed_account_ids,
+    )
+    # An invalid merge means the candidate no longer fits (category deleted from YNAB,
+    # or the total drifted so splits don't sum). Reject without writing — never persist
+    # an invalid draft from a one-tap accept.
+    if not is_valid:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+
+    twin_payload = latest_twin.payload if latest_twin and isinstance(latest_twin.payload, dict) else None
+    allocation_workspace = reconcile_allocation_workspace(
+        normalized_payload,
+        candidate.get("allocation_workspace"),
+        twin_payload=twin_payload,
+        twin_version=current_twin_version,
+    )
+
+    model_validation = _first_model_validation(db, receipt.id)
+    latest_validation_before = latest_validation
+
+    validation = _create_validation_version(
+        db,
+        receipt=receipt,
+        payload=normalized_payload,
+        allocation_workspace=allocation_workspace,
+        source="user",
+        is_valid=True,
+        errors=[],
+    )
+
+    if not payloads_equivalent(latest_validation_before.payload, normalized_payload) and receipt.status in {
+        ReceiptStatus.SYNCED.value,
+        ReceiptStatus.ERROR_SYNC.value,
+    }:
+        receipt.status = ReceiptStatus.NEEDS_REVIEW.value
+        receipt.status_reason = None
+
+    apply_semantic_duplicate_state(db, receipt=receipt, payload=normalized_payload)
+
+    # Game economy: only a type_to_organize edit (genuine user input) is a manual
+    # correction. Accepting a generated guess is not user effort → no water.
+    if candidate_set.source == "type_to_organize" and _is_manual_category_correction(
+        model_validation.payload if model_validation else None,
+        normalized_payload,
+    ):
+        now = utcnow()
+        awarded = award_water(
+            db,
+            settings,
+            units=1,
+            receipt_id=receipt.id,
+            idempotency_key=f"water:manual_correction:{receipt.id}",
+            reason="manual_category_or_split_correction",
+        )
+        if awarded > 0:
+            record_incident(
+                db,
+                incident_type="water_earned",
+                severity="info",
+                title="Water Earned",
+                message=f"Manual category correction earned {awarded} water.",
+                details={"receipt_id": receipt.id, "units": awarded},
+                idempotency_key=f"incident:water_earned:{receipt.id}:{validation.version}",
+                created_at=now,
+            )
+
+    candidate_set.chosen_index = request.index
+    db.commit()
+    db.refresh(validation)
+
+    return SaveDraftResponse(
+        validation=_to_validation_schema(validation),
+        can_sync=(
+            receipt.status != ReceiptStatus.DUPLICATE_REVIEW.value
+            and payee_sync_block_reason(normalized_payload) is None
+            and date_sync_block_reason(normalized_payload) is None
+        ),
+        lock_warnings=lock_warnings,
+    )
+
+
+@router.post("/{receipt_id}/allocation/organize", response_model=OrganizeProposalsOut)
+def organize_allocation(
+    receipt_id: str,
+    request: OrganizeAllocationRequest,
+    db: Session = Depends(db_session),
+    settings: Settings = Depends(app_settings),
+) -> OrganizeProposalsOut:
+    """Type-to-organize: turn a plain-English instruction ("party supplies to gifts",
+    "split this as a meal with two friends") into 1-3 proposed category/split
+    arrangements the detail page applies into its live draft. User-initiated, so a
+    synchronous Gemini call is acceptable. Money fields are never touched — proposals
+    carry only category/splits, each materialized to an exact sum-to-total payload +
+    re-validated. Transient: nothing is persisted (the draft autosave owns persistence)."""
+    receipt = db.get(Receipt, receipt_id)
+    if receipt is None or receipt.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    if not settings.gemini_api_key:
+        raise HTTPException(status_code=503, detail="ai_unavailable")
+
+    latest_validation = _latest_validation(db, receipt.id)
+    if latest_validation is None or not isinstance(latest_validation.payload, dict):
+        raise HTTPException(status_code=409, detail="no_validation")
+
+    latest_twin = _latest_twin(db, receipt.id)
+    twin_payload = latest_twin.payload if latest_twin and isinstance(latest_twin.payload, dict) else None
+    twin_version = latest_twin.version if latest_twin else 0
+    line_items = twin_payload.get("line_items") if isinstance(twin_payload, dict) else []
+    if not isinstance(line_items, list):
+        line_items = []
+
+    reference_data = get_cached_reference_data(db, settings)
+    categories = reference_data["categories"]
+    allowed_category_ids = {item.entity_id for item in categories}
+    allowed_account_ids = {item.entity_id for item in reference_data["accounts"]}
+    category_names = {item.entity_id: item.name for item in categories}
+    prompt_categories = [
+        Category(id=item.entity_id, name=item.name, group_name=item.group_name or "Uncategorized")
+        for item in categories
+    ]
+
+    prompt = build_organize_prompt(request.instruction, latest_validation.payload, line_items, prompt_categories)
+    analyzer = GeminiAnalyzer(
+        settings.gemini_api_key,
+        settings.gemini_model,
+        settings.gemini_max_retries,
+        model_registry_path=settings.ai_model_registry_path,
+        limits_config_path=settings.ai_limits_config_path,
+        usage_db_url=settings.ai_usage_db_url,
+    )
+    try:
+        result = analyzer.analyze_text(
+            prompt,
+            OrganizeProposal,
+            route="ynab_organize",
+            metadata={"receipt_id": receipt.id},
+            correlation_id=receipt.id,
+            limit_behavior=settings.ai_limit_behavior,
+        )
+    except Exception:
+        logger.exception("organize call failed receipt_id=%s", receipt.id)
+        raise HTTPException(status_code=502, detail="ai_error")
+
+    if not result.schema_valid or not isinstance(result.parsed_json, dict):
+        raise HTTPException(status_code=422, detail="no_arrangement")
+
+    arrangements = materialize_proposals(
+        latest_validation.payload,
+        result.parsed_json.get("proposals") or [],
+        twin_payload=twin_payload,
+        twin_version=twin_version,
+        category_names=category_names,
+        allowed_category_ids=allowed_category_ids,
+        allowed_account_ids=allowed_account_ids,
+        provenance="user_instruction",
+    )
+    if not arrangements:
+        # The model couldn't produce a valid, sum-to-total arrangement for this
+        # instruction with the available categories.
+        raise HTTPException(status_code=422, detail="no_arrangement")
+
+    return OrganizeProposalsOut(
+        proposals=[
+            CandidateArrangementOut(
+                label=str(item.get("label") or ""),
+                rationale=str(item.get("rationale") or ""),
+                confidence=float(item.get("confidence") or 0.0),
+                category_id=item.get("category_id"),
+                splits=item.get("splits") or [],
+                provenance=str(item.get("provenance") or ""),
+            )
+            for item in arrangements
+        ]
+    )
 
 
 @router.post("/{receipt_id}/allocation/recompute", response_model=AllocationRecomputeResponse)

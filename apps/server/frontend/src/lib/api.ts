@@ -19,6 +19,7 @@ import {
   GameShredResponse,
   GameWaterSpendResponse,
   GameWindow,
+  OrganizeProposalsOut,
   ReceiptDetail,
   ReceiptSummary,
   SaveDraftResponse,
@@ -114,6 +115,24 @@ export function enqueueSync(receiptId: string) {
   return request<SyncEnqueueResponse>(`/receipts/${receiptId}/sync`, {
     method: "POST",
     body: "{}",
+  });
+}
+
+/** Promote one Quick-review candidate to the active draft (category/splits only).
+ *  Returns the new validation + can_sync; the caller then enqueues /sync. */
+export function chooseCandidate(receiptId: string, version: number, index: number) {
+  return request<SaveDraftResponse>(`/receipts/${receiptId}/candidates/${version}/choose`, {
+    method: "POST",
+    body: JSON.stringify({ index }),
+  });
+}
+
+/** Type-to-organize: turn a plain-English instruction into 1-3 transient
+ *  category/split proposals the detail page applies into its draft. */
+export function organizeAllocation(receiptId: string, instruction: string) {
+  return request<OrganizeProposalsOut>(`/receipts/${receiptId}/allocation/organize`, {
+    method: "POST",
+    body: JSON.stringify({ instruction }),
   });
 }
 

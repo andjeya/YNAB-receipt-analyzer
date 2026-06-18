@@ -7,16 +7,17 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.db import SessionLocal
 from app.utils import utcnow
 from app.enums import ReceiptStatus
-from app.models import ExtractionRun, Receipt, ReceiptTwin, TimingMetric, Validation
+from app.models import ExtractionRun, Receipt, ReceiptCandidateSet, ReceiptTwin, TimingMetric, Validation
 from app.services.allocation_workspace import build_initial_allocation_workspace
 from app.services.card_mapping import lookup_account_for_card
+from app.services.category_resolution import build_candidate_arrangements, payee_category_hint_text
 from app.services.payee_memory import apply_single_category_memory, lookup_payee_memory
 from app.services.duplicates import apply_semantic_duplicate_state
 from app.services.reconciliation import run_ynab_reconciliation
@@ -373,6 +374,8 @@ class _ExtractionCtx:
     prompt_categories: list[Any]
     prompt_accounts: list[Any]
     prompt_payees: list[str]
+    category_names: dict[str, str]
+    category_hints: str
 
 
 @dataclass
@@ -384,6 +387,8 @@ class _UnifiedAttemptResult:
     ynab_critical_ok: bool
     completed_at: datetime
     duration_ms: int
+    candidate_arrangements: list[dict[str, Any]]
+    ambiguity_flags: list[dict[str, Any]]
 
 
 def _build_extraction_ctx(db: Any, receipt: Receipt, settings: Any) -> _ExtractionCtx:
@@ -403,6 +408,8 @@ def _build_extraction_ctx(db: Any, receipt: Receipt, settings: Any) -> _Extracti
         Category(id=item.entity_id, name=item.name, group_name=item.group_name or "Uncategorized")
         for item in categories
     ]
+    category_names = {item.entity_id: item.name for item in categories}
+    category_hints = payee_category_hint_text(db, settings.ynab_budget_id, category_names)
     analyzer = GeminiAnalyzer(
         settings.gemini_api_key,
         settings.gemini_model,
@@ -422,6 +429,8 @@ def _build_extraction_ctx(db: Any, receipt: Receipt, settings: Any) -> _Extracti
         prompt_categories=prompt_categories,
         prompt_accounts=[account.raw_json for account in accounts],
         prompt_payees=[payee.name for payee in payees],
+        category_names=category_names,
+        category_hints=category_hints,
     )
 
 
@@ -518,6 +527,7 @@ def _run_unified_attempt(ctx: _ExtractionCtx) -> _UnifiedAttemptResult:
         ctx.prompt_categories,
         ctx.prompt_accounts,
         ctx.prompt_payees,
+        category_hints=ctx.category_hints,
     )
     unified_started_at = utcnow()
     unified_analysis = ctx.analyzer.analyze_file(
@@ -548,6 +558,13 @@ def _run_unified_attempt(ctx: _ExtractionCtx) -> _UnifiedAttemptResult:
     unified_validation_payload: dict[str, Any] | None = None
     unified_twin_payload: dict[str, Any] | None = None
     unified_ynab_critical_ok = False
+    parsed = unified_analysis.parsed_json or {}
+    candidate_arrangements = parsed.get("candidate_arrangements") or []
+    ambiguity_flags = parsed.get("category_ambiguity_flags") or []
+    if not isinstance(candidate_arrangements, list):
+        candidate_arrangements = []
+    if not isinstance(ambiguity_flags, list):
+        ambiguity_flags = []
 
     if unified_analysis.schema_valid and unified_analysis.parsed_json:
         normalized_payload, is_valid, validation_errors = _validate_ynab_payload(
@@ -589,7 +606,76 @@ def _run_unified_attempt(ctx: _ExtractionCtx) -> _UnifiedAttemptResult:
         ynab_critical_ok=unified_ynab_critical_ok,
         completed_at=unified_completed_at,
         duration_ms=unified_analysis.duration_ms,
+        candidate_arrangements=candidate_arrangements,
+        ambiguity_flags=ambiguity_flags,
     )
+
+
+def _persist_candidate_set(
+    ctx: _ExtractionCtx,
+    *,
+    base_payload: dict[str, Any],
+    gemini_candidates: list[dict[str, Any]],
+    ambiguity_flags: list[dict[str, Any]],
+    twin_payload: dict[str, Any] | None,
+    twin_version: int,
+    base_validation_version: int,
+) -> None:
+    """Persist up-to-3 category/split candidate arrangements for a category-uncertain
+    receipt (the Quick-review population). Additive + best-effort — any failure here
+    must NOT break extraction, since candidates are an optional affordance."""
+    if not base_payload:
+        return
+    # Quick-review population: the model flagged ambiguity and/or returned alternatives.
+    if not gemini_candidates and not ambiguity_flags:
+        return
+    try:
+        arrangements = build_candidate_arrangements(
+            base_payload,
+            gemini_candidates,
+            ambiguity_flags=ambiguity_flags,
+            twin_payload=twin_payload,
+            twin_version=twin_version,
+            category_names=ctx.category_names,
+            allowed_category_ids=ctx.allowed_category_ids,
+            allowed_account_ids=ctx.allowed_account_ids,
+        )
+    except Exception:
+        logger.exception("candidate generation failed receipt_id=%s", ctx.receipt.id)
+        return
+    # Need the primary plus at least one genuine alternative to be worth a Quick review.
+    if len(arrangements) < 2:
+        return
+
+    def _insert() -> None:
+        next_version = (
+            ctx.db.scalar(
+                select(func.max(ReceiptCandidateSet.version)).where(
+                    ReceiptCandidateSet.receipt_id == ctx.receipt.id
+                )
+            )
+            or 0
+        ) + 1
+        ctx.db.add(
+            ReceiptCandidateSet(
+                receipt_id=ctx.receipt.id,
+                version=next_version,
+                source="model_topk",
+                twin_version=twin_version or None,
+                base_validation_version=base_validation_version,
+                candidates=arrangements,
+                chosen_index=None,
+            )
+        )
+
+    # Isolate in a savepoint so a (receipt_id, version) collision from a concurrent
+    # extraction pass can NEVER abort the outer extraction commit. Candidates are
+    # additive: on collision the other pass already wrote a set, so we just skip.
+    try:
+        with ctx.db.begin_nested():
+            _insert()
+    except IntegrityError:
+        logger.warning("candidate set version collision receipt_id=%s — skipping", ctx.receipt.id)
 
 
 def _finalize_unified_success(ctx: _ExtractionCtx, unified: _UnifiedAttemptResult) -> None:
@@ -624,12 +710,21 @@ def _finalize_unified_success(ctx: _ExtractionCtx, unified: _UnifiedAttemptResul
                 unified.validation_payload = _new_payload
                 workspace = _new_workspace
 
-    _create_validation(
+    model_validation = _create_validation(
         ctx.db,
         receipt=ctx.receipt,
         payload=unified.validation_payload or {},
         allocation_workspace=workspace,
         source="model",
+    )
+    _persist_candidate_set(
+        ctx,
+        base_payload=unified.validation_payload or {},
+        gemini_candidates=unified.candidate_arrangements,
+        ambiguity_flags=unified.ambiguity_flags,
+        twin_payload=twin_payload_for_workspace,
+        twin_version=twin_version,
+        base_validation_version=model_validation.version,
     )
     _set_primary_extraction_run(ctx.db, ctx.receipt.id, unified.run.id)
     unified.run.schema_errors = unified.errors

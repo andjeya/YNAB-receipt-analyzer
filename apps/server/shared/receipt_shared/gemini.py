@@ -243,8 +243,17 @@ def build_unified_prompt(
     categories: list[Any],
     accounts: list[dict[str, Any]],
     payees: list[str],
+    category_hints: str = "",
 ) -> str:
     reference_context = _build_reference_context(categories, accounts, payees)
+    if category_hints.strip():
+        reference_context = (
+            f"{reference_context}\n\n"
+            "Learned categorization habits (the user's past payee→category choices). "
+            "Prefer these when the receipt's payee matches, and use them to ground "
+            "candidate_arrangements:\n"
+            f"{category_hints}"
+        )
 
     return f"""
 You are extracting one unified JSON object from a receipt for both receipt-reality and YNAB draft use.
@@ -294,6 +303,15 @@ Unified schema:
       "confidence": number,
       "note": "string"
     }}
+  ],
+  "candidate_arrangements": [
+    {{
+      "label": "string (short, e.g. \"Groceries\" or \"Groceries + Household\")",
+      "rationale": "string (one line; cite the learned habit if relevant)",
+      "confidence": number,
+      "category_id": "string | null",
+      "splits": [{{ "category_id": "string", "amount": number, "memo": "string" }}]
+    }}
   ]
 }}
 
@@ -325,12 +343,71 @@ Rules:
    - Avoid vague-only output like "Groceries" without item detail.
    - Keep it concise (ideally <= 180 characters) while preserving useful detail.
 12. If category confidence is ambiguous (>= 0.70 across candidates), include category_ambiguity_flags.
-13. If the document is clearly a refund, return, or credit (negative running total, REFUND/RETURN/CREDIT headers, parenthesized/negative line totals throughout), set transaction_kind to "refund"; otherwise "purchase". Report all amounts (total and line totals) as POSITIVE magnitudes — do not negate them; the kind carries direction. If the receipt mixes purchases and refunds, treat it as "purchase" (mixed receipts are not yet supported).
-14. Extract card_last_four: the last 4 digits of the card used for payment, as a 4-character digit string. For a masked PAN (e.g. **** **** **** 5830, XXXXXXXXXXXX1108) use its trailing 4 digits. For Apple Pay / Google Pay / digital wallets use the device account number's last 4 if printed (stable per device-card). Set to null for cash, gift cards with no number, or when no card digits are printed. Never invent digits.
+13. When category confidence is low (you populated category_ambiguity_flags), ALSO populate candidate_arrangements with up to 3 DISTINCT whole-receipt options, most likely first. Each is a complete choice: either a single category_id (splits=[]) or 2+ splits whose amounts sum to total_amount. Make them genuinely different (e.g. all-Groceries vs a Groceries+Household split), set a one-line rationale and a 0..1 confidence, and ground them in the learned categorization habits when the payee matches. Leave candidate_arrangements=[] when the single category is obvious.
+14. If the document is clearly a refund, return, or credit (negative running total, REFUND/RETURN/CREDIT headers, parenthesized/negative line totals throughout), set transaction_kind to "refund"; otherwise "purchase". Report all amounts (total and line totals) as POSITIVE magnitudes — do not negate them; the kind carries direction. If the receipt mixes purchases and refunds, treat it as "purchase" (mixed receipts are not yet supported).
+15. Extract card_last_four: the last 4 digits of the card used for payment, as a 4-character digit string. For a masked PAN (e.g. **** **** **** 5830, XXXXXXXXXXXX1108) use its trailing 4 digits. For Apple Pay / Google Pay / digital wallets use the device account number's last 4 if printed (stable per device-card). Set to null for cash, gift cards with no number, or when no card digits are printed. Never invent digits.
 
 {reference_context}
 
 Input receipt is provided as an attached file in this request.
+""".strip()
+
+
+def build_organize_prompt(
+    instruction: str,
+    current_payload: dict[str, Any],
+    line_items: list[dict[str, Any]],
+    categories: list[Any],
+) -> str:
+    """Prompt for type-to-organize: rework the current category/splits to satisfy a
+    plain-English instruction, returning 1-3 complete proposals."""
+    category_lines = "\n".join(
+        f"- id={category.id} | group={category.group_name} | name={category.name}" for category in categories
+    )
+    item_lines = "\n".join(
+        f"- {item.get('raw_text') or item.get('translated_text') or ''}"
+        f" (type={item.get('item_type', 'product')}, total={item.get('line_total')})"
+        for item in line_items
+    ) or "- (no itemized lines available)"
+    total_amount = current_payload.get("total_amount")
+    current_category = current_payload.get("category_id")
+    current_splits = current_payload.get("splits") or []
+
+    return f"""
+You reorganize a receipt's YNAB categories/splits to match a user's instruction.
+
+User instruction: {instruction}
+
+Current total_amount: {total_amount}
+Current category_id: {current_category}
+Current splits: {current_splits}
+
+Receipt line items:
+{item_lines}
+
+Available YNAB categories:
+{category_lines}
+
+Return STRICT JSON ONLY. No markdown. No prose. Schema:
+{{
+  "proposals": [
+    {{
+      "label": "string (short, e.g. \"Gifts\" or \"Dining Out + IOU\")",
+      "rationale": "string (one line explaining the split)",
+      "confidence": number,
+      "category_id": "string | null",
+      "splits": [{{ "category_id": "string", "amount": number, "memo": "string" }}]
+    }}
+  ]
+}}
+
+Rules:
+1. Return 1 to 3 proposals, most likely first, that satisfy the instruction.
+2. Each proposal is a COMPLETE choice: either a single category_id (splits=[]) or 2+ splits whose amounts sum to total_amount.
+3. Use category_id values ONLY from the category list above.
+4. When the instruction implies a fraction (e.g. "split with two friends" → divide by the number of people), reflect it in the split amounts; amounts must sum to total_amount.
+5. If the instruction is ambiguous, offer the 2 most likely interpretations as separate proposals.
+6. Return {{"proposals": []}} only if the instruction can't be satisfied with the available categories.
 """.strip()
 
 
@@ -558,6 +635,41 @@ class GeminiAnalyzer:
         except AIProviderError as exc:
             raise RuntimeError(str(exc)) from exc
 
+        return self._build_result(response, response_schema)
+
+    def analyze_text(
+        self,
+        prompt_text: str,
+        response_schema: type[BaseModel],
+        *,
+        route: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+        limit_behavior: str = "hard_fail",
+    ) -> GeminiAnalysisResult:
+        """Text-only structured call (no receipt file). Used by type-to-organize,
+        which reasons over already-extracted line items + the user's instruction."""
+        request = AIRequest(
+            model_id=self.model,
+            prompt_text=prompt_text,
+            file_path=None,
+            mime_type=None,
+            response_schema=response_schema,
+            route=route,
+            metadata=metadata or {},
+            request_id=request_id,
+            correlation_id=correlation_id,
+            limit_behavior="soft_fail" if limit_behavior == "soft_fail" else "hard_fail",
+        )
+        try:
+            response = self._client().generate_structured(request, schema=response_schema)
+        except AIProviderError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+        return self._build_result(response, response_schema)
+
+    def _build_result(self, response: Any, response_schema: type[BaseModel] | None) -> GeminiAnalysisResult:
         if response.status == "limit_rejected":
             message = response.error.message if response.error else "AI request rejected by configured limits"
             return GeminiAnalysisResult(

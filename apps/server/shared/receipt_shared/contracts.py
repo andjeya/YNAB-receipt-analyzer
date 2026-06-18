@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 import re
 from datetime import date, datetime, time
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -40,6 +42,108 @@ class GeminiCategoryAmbiguityFlag(BaseModel):
     candidate_category_ids: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     note: str = ""
+
+
+class GeminiCandidateSplit(BaseModel):
+    """A split inside a candidate arrangement — LENIENT on purpose.
+
+    Parsed as part of UnifiedReceiptExtraction; a malformed candidate split must
+    never fail the whole extraction. Unknown keys are ignored and values coerced.
+    The worker re-distributes amounts to an exact milliunit sum and re-validates,
+    dropping anything that doesn't materialize cleanly.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    category_id: str = ""
+    amount: float = 0.0
+    memo: str = ""
+
+    @field_validator("category_id", "memo", mode="before")
+    @classmethod
+    def _coerce_str(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        return value if isinstance(value, str) else str(value)
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def _coerce_amount(cls, value: Any) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return number if math.isfinite(number) else 0.0
+
+
+class GeminiCandidateArrangement(BaseModel):
+    """One ranked alternative category/split arrangement for an uncertain receipt.
+
+    LENIENT BY CONSTRUCTION — every field has a coercing mode="before" validator so
+    NO value type can raise, and the parent's field-level sanitizer drops non-dict
+    entries. A malformed arrangement must never break the core unified extraction
+    (candidates are additive). The worker materializes each into a sum-to-total
+    payload and validates it before storing.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    label: str = ""
+    rationale: str = ""
+    confidence: float = 0.0
+    category_id: str | None = None
+    splits: list[GeminiCandidateSplit] = Field(default_factory=list)
+
+    @field_validator("label", "rationale", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        return value if isinstance(value, str) else str(value)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _coerce_confidence(cls, value: Any) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(number):
+            return 0.0
+        return min(max(number, 0.0), 1.0)
+
+    @field_validator("category_id", mode="before")
+    @classmethod
+    def _normalize_category_id(cls, value: Any) -> str | None:
+        # Coerce ANY non-string to None rather than letting the str|None type check
+        # reject it and fail the whole extraction.
+        if isinstance(value, str):
+            return value.strip() or None
+        return None
+
+    @field_validator("splits", mode="before")
+    @classmethod
+    def _sanitize_splits(cls, value: Any) -> list:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
+
+class OrganizeProposal(BaseModel):
+    """Response schema for type-to-organize: 1-3 proposed category/split
+    arrangements for a user's plain-English instruction. LENIENT like the
+    candidate models so a bad proposal never raises."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    proposals: list[GeminiCandidateArrangement] = Field(default_factory=list)
+
+    @field_validator("proposals", mode="before")
+    @classmethod
+    def _sanitize_proposals(cls, value: Any) -> list:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
 
 
 class ReceiptLineItem(BaseModel):
@@ -137,6 +241,19 @@ class UnifiedReceiptExtraction(BaseModel):
     category_id: str | None = None
     splits: list[GeminiSplit] = Field(default_factory=list)
     category_ambiguity_flags: list[GeminiCategoryAmbiguityFlag] = Field(default_factory=list)
+    # Up to 3 ranked alternative whole-receipt arrangements, populated when category
+    # confidence is low. Additive — never affects the primary category_id/splits.
+    candidate_arrangements: list[GeminiCandidateArrangement] = Field(default_factory=list)
+
+    @field_validator("candidate_arrangements", mode="before")
+    @classmethod
+    def _sanitize_candidate_arrangements(cls, value: Any) -> list:
+        # Drop anything that isn't a dict (and coerce a non-list to []) BEFORE
+        # sub-model validation, so a malformed candidates field can never fail the
+        # whole extraction — candidates are additive.
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
 
     @field_validator("card_last_four", mode="before")
     @classmethod

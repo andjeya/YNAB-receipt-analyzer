@@ -73,6 +73,7 @@ class Receipt(Base):
     )
     game_events: Mapped[list["GameEvent"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
     corrections: Mapped[list["ReceiptCorrection"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
+    candidate_sets: Mapped[list["ReceiptCandidateSet"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
 
 
 class ExtractionRun(Base):
@@ -148,6 +149,42 @@ class Validation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     receipt: Mapped[Receipt] = relationship(back_populates="validations")
+
+
+class ReceiptCandidateSet(Base):
+    """Up to three complete, sum-to-total category/split arrangements offered to
+    the user when a receipt's categorization is uncertain.
+
+    Stored as a versioned sibling of Validation/ReceiptTwin so the money path
+    (ValidationPayload) is never widened. Candidates carry ONLY category/splits +
+    their allocation workspace — never date/total/account/payee. Choosing one
+    merges its category/splits onto the CURRENT validation and re-validates; the
+    money write still happens through the normal /sync path. `twin_version` is the
+    enforced staleness guard (choosing 409s if the twin moved underneath, since the
+    total/locks it sized splits against may have changed). `base_validation_version`
+    records which draft the arrangements were derived from; it is NOT enforced —
+    promotion merges onto the *current* validation and re-validates, so it stays safe
+    even against a newer draft (and harmless edits like an account change don't block
+    the cards).
+    """
+
+    __tablename__ = "receipt_candidate_sets"
+    __table_args__ = (UniqueConstraint("receipt_id", "version", name="uq_receipt_candidate_set_receipt_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    receipt_id: Mapped[str] = mapped_column(String(36), ForeignKey("receipts.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # "model_topk" | "tier0" | "type_to_organize" — drives the game-economy rule
+    # (accepting an AI guess earns no manual-correction water; a type_to_organize
+    # edit can).
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    twin_version: Mapped[int | None] = mapped_column(Integer)
+    base_validation_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    candidates: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    chosen_index: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    receipt: Mapped[Receipt] = relationship(back_populates="candidate_sets")
 
 
 class YNABCache(Base):

@@ -36,6 +36,9 @@ class ReceiptSummary(BaseModel):
     # "confirm_date", "duplicate"). Display copy lives in the frontend. See
     # _batch_review_state.
     review_hint: str | None = None
+    # True when an unresolved category/split candidate set exists (Quick review).
+    # Additive — does not affect sync_ready.
+    has_candidates: bool = False
 
 
 class AppConfigOut(BaseModel):
@@ -71,6 +74,38 @@ class ValidationOut(BaseModel):
     is_valid: bool
     errors: list[str] | None = None
     created_at: datetime
+
+
+class CandidateArrangementOut(BaseModel):
+    label: str = ""
+    rationale: str = ""
+    confidence: float = 0.0
+    category_id: str | None = None
+    splits: list[dict[str, Any]] = Field(default_factory=list)
+    provenance: str = ""
+
+
+class ReceiptCandidateSetOut(BaseModel):
+    id: int
+    version: int
+    source: str
+    chosen_index: int | None = None
+    candidates: list[CandidateArrangementOut] = Field(default_factory=list)
+    created_at: datetime
+
+
+class ChooseCandidateRequest(BaseModel):
+    index: int = Field(ge=0)
+
+
+class OrganizeAllocationRequest(BaseModel):
+    instruction: str = Field(min_length=1, max_length=500)
+
+
+class OrganizeProposalsOut(BaseModel):
+    """Transient type-to-organize proposals (not persisted) — the detail page
+    applies a chosen one into its live draft."""
+    proposals: list[CandidateArrangementOut] = Field(default_factory=list)
 
 
 class LockedFieldsOut(BaseModel):
@@ -113,6 +148,8 @@ class ReceiptDetailOut(BaseModel):
     # — revert local edits back to the exact state YNAB holds.
     synced_validation: ValidationOut | None = None
     latest_twin: ReceiptTwinOut | None = None
+    # Latest category/split candidate set (Quick review). None when none generated.
+    candidate_set: "ReceiptCandidateSetOut | None" = None
     locked_fields: LockedFieldsOut = Field(default_factory=LockedFieldsOut)
     ingested_at: datetime
     extraction_started_at: datetime | None = None

@@ -15,6 +15,7 @@ import {
   getAppConfig,
   getReceiptDetail,
   getYnabCache,
+  organizeAllocation,
   overrideDuplicateReceipt,
   recomputeAllocationWorkspace,
   receiptFileUrl,
@@ -22,7 +23,7 @@ import {
   restoreReceipt,
   saveDraft,
 } from "@/lib/api";
-import { AllocationWorkspace, ReceiptDetail, ValidationPayloadInput } from "@/lib/types";
+import { AllocationWorkspace, type CandidateArrangement, ReceiptDetail, ValidationPayloadInput } from "@/lib/types";
 import { toDraftFromPayload } from "@/lib/validation-draft";
 import { shouldSkipPreview } from "@/lib/sync-skip";
 import { formatSignedDollarsWithDirection, formatDollarsMagnitude, signedDollars } from "@/lib/money";
@@ -646,6 +647,115 @@ function MemoCard({ draft, setDraft, setDirty }: {
           </div>
         )}
       </div>
+    </Card>
+  );
+}
+
+/**
+ * OrganizeBox — type-to-organize. The user types a plain-English instruction and
+ * Snappy returns 1-3 category/split proposals; applying one writes only
+ * category/splits into the live draft (money fields untouched), which the normal
+ * autosave then persists + re-validates server-side.
+ */
+function OrganizeBox({ receiptId, draft, setDraft, setDirty, categories }: {
+  receiptId: string;
+  draft: ValidationPayloadInput;
+  setDraft: (d: ValidationPayloadInput) => void;
+  setDirty: (v: boolean) => void;
+  categories: { entity_id: string; name: string; group_name: string | null }[];
+}) {
+  const { toast } = useToast();
+  const [instruction, setInstruction] = useState("");
+  const [proposals, setProposals] = useState<CandidateArrangement[]>([]);
+
+  const organizeMutation = useMutation({
+    mutationFn: (text: string) => organizeAllocation(receiptId, text),
+    onSuccess: (data) => {
+      setProposals(data.proposals);
+      if (data.proposals.length === 0) {
+        toast({ variant: "error", message: "Couldn't find a valid arrangement — try rephrasing." });
+      }
+    },
+    onError: (e) => {
+      const raw = e instanceof Error && e.message ? e.message : "";
+      const friendly =
+        raw.includes("no_arrangement")
+          ? "Couldn't find a valid arrangement — try rephrasing."
+          : raw.includes("ai_unavailable") || raw.includes("ai_error")
+            ? "Snappy couldn't reach the AI just now — try again."
+            : raw || "Couldn't organize that — try rephrasing.";
+      toast({ variant: "error", message: friendly });
+    },
+  });
+
+  function proposalLabel(p: CandidateArrangement): string {
+    if (p.label) return p.label;
+    if (p.splits.length > 0) {
+      return p.splits.map((s) => categories.find((c) => c.entity_id === s.category_id)?.name ?? "Category").join(" + ");
+    }
+    return categories.find((c) => c.entity_id === p.category_id)?.name ?? "Category";
+  }
+
+  function applyProposal(p: CandidateArrangement) {
+    setDraft({
+      ...draft,
+      category_id: p.splits.length > 0 ? "" : (p.category_id ?? ""),
+      splits: p.splits.map((s) => ({ category_id: s.category_id, amount: s.amount, memo: s.memo ?? "" })),
+      category_source: undefined,
+    });
+    setDirty(true);
+    setProposals([]);
+    setInstruction("");
+    toast({ variant: "success", message: "Applied — review and sync when you're ready." });
+  }
+
+  return (
+    <Card className="space-y-3 p-4">
+      <div>
+        <h2 className="font-semibold">Reorganize with a sentence</h2>
+        <p className="mt-0.5 text-xs text-ink/60">
+          e.g. &ldquo;party supplies to gifts&rdquo; or &ldquo;split this as a meal with two friends&rdquo;.
+        </p>
+      </div>
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const text = instruction.trim();
+          if (text) organizeMutation.mutate(text);
+        }}
+      >
+        <Input
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          placeholder="Tell Snappy how to categorize…"
+          aria-label="Reorganize instruction"
+          data-testid="organize-input"
+        />
+        <Button
+          type="submit"
+          variant="outline"
+          disabled={organizeMutation.isPending || !instruction.trim()}
+          data-testid="organize-submit"
+        >
+          {organizeMutation.isPending ? "Thinking…" : "Reorganize"}
+        </Button>
+      </form>
+      {proposals.length > 0 ? (
+        <div className="space-y-2" data-testid="organize-proposals">
+          {proposals.map((p, i) => (
+            <div key={i} className="flex items-start justify-between gap-3 rounded-lg border border-ink/12 bg-surface px-3 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-ink">{proposalLabel(p)}</p>
+                {p.rationale ? <p className="mt-0.5 text-xs text-ink/60">{p.rationale}</p> : null}
+              </div>
+              <Button type="button" size="sm" variant="outline" data-testid={`organize-apply-${i}`} onClick={() => applyProposal(p)}>
+                Apply
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </Card>
   );
 }
@@ -1713,6 +1823,14 @@ export function ReceiptDetailView({ receiptId }: { receiptId: string }) {
             isSplitMode={isSplitMode}
             splitTotal={splitTotal}
             onSplitAmountEdited={handleSplitAmountPinned}
+          />
+
+          <OrganizeBox
+            receiptId={receipt.id}
+            draft={draft}
+            setDraft={setDraft}
+            setDirty={setDirty}
+            categories={categories}
           />
 
           {allocationWorkspace ? (

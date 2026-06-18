@@ -12,6 +12,7 @@ import {
   Droplets,
   Flame,
   HelpCircle,
+  Layers,
   Scissors,
   Receipt,
   Search,
@@ -23,6 +24,7 @@ import {
 
 import {
   acknowledgeGameIncident,
+  chooseCandidate,
   deleteReceipt,
   enqueueSync,
   fetchYnabUpdates,
@@ -43,7 +45,7 @@ import {
   updateGameDebugSeed,
   updateGameSettings,
 } from "@/lib/api";
-import { GameForestTile, GameIncident, GameWeeklySlot } from "@/lib/types";
+import { GameForestTile, GameIncident, GameWeeklySlot, type CandidateArrangement } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { formatSignedDollars, signedDollars } from "@/lib/money";
 import { deriveSnappyPose, isStreakMilestone } from "@/lib/snappy-pose";
@@ -1221,7 +1223,7 @@ function TabBar({
 }
 
 function ReceiptListItem({
-  receipt, tile, currentWeekSlot, spendableNow, shredWindowWeeks, onShred, isShredPending, onQuickSync, isQuickSyncPending, onDelete, isDeletePending, index,
+  receipt, tile, currentWeekSlot, spendableNow, shredWindowWeeks, onShred, isShredPending, onQuickSync, isQuickSyncPending, onQuickReview, onDelete, isDeletePending, index,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   receipt: any;
@@ -1234,6 +1236,7 @@ function ReceiptListItem({
   isShredPending: boolean;
   onQuickSync: (receiptId: string) => void;
   isQuickSyncPending: boolean;
+  onQuickReview: (receiptId: string) => void;
   onDelete: (receiptId: string) => void;
   isDeletePending: boolean;
   index: number;
@@ -1376,7 +1379,25 @@ function ReceiptListItem({
                     {isShredPending ? "Shredding..." : "Shred"}
                   </Button>
                 ) : null}
-                {receipt.sync_ready ? (
+                {receipt.has_candidates && !isProcessing && receipt.status !== "synced" ? (
+                  // Category was uncertain → offer the 3-card Quick review instead of
+                  // a one-tap sync, even if the receipt is otherwise sync-ready.
+                  <Button
+                    data-testid="quick-review-button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 min-h-8 gap-1.5 border-indigo-300 bg-indigo-50 px-3 text-indigo-900 hover:bg-indigo-100"
+                    title="Quick review — Snappy has a few category options for this receipt"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onQuickReview(receipt.id);
+                    }}
+                  >
+                    <Layers className="h-3.5 w-3.5" aria-hidden="true" />
+                    Quick review
+                  </Button>
+                ) : receipt.sync_ready ? (
                   <Button
                     data-testid="quick-sync-button"
                     size="sm"
@@ -1536,6 +1557,197 @@ function QuickSyncPreview({
       totalConfirmed={receipt.latest_twin?.confirmed_sections.total ?? false}
       onConfirm={() => onConfirm(receipt.id)}
       showSkipPreviewOption={false}
+    />
+  );
+}
+
+/**
+ * QuickReviewDialog — the 3-card chooser for a category-uncertain receipt.
+ * Reuses the SAME bank-register SyncPreviewDialog (so the user always sees the
+ * truth before any write), injecting a candidate selector via extraHeader. Each
+ * option overlays only its category/splits onto the current validation; the
+ * primary "Quick sync this one" promotes that option (choose) and, when the
+ * receipt is otherwise ready, enqueues the sync. The #1 option is pre-selected.
+ */
+function QuickReviewDialog({
+  receiptId, onClose,
+}: {
+  receiptId: string | null;
+  onClose: () => void;
+}) {
+  const open = receiptId !== null;
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const router = useRouter();
+  const [selectedIndex, setSelectedIndex] = useState(0);
+
+  const detailQuery = useQuery({
+    queryKey: ["receipt", receiptId],
+    queryFn: () => getReceiptDetail(receiptId as string),
+    enabled: open,
+  });
+  const cacheQuery = useQuery({
+    queryKey: ["ynab-cache"],
+    queryFn: () => getYnabCache(),
+    staleTime: 20_000,
+    enabled: open,
+  });
+  const configQuery = useQuery({
+    queryKey: ["config"],
+    queryFn: () => getAppConfig(),
+    staleTime: 60_000,
+    enabled: open,
+  });
+
+  // Reset to the pre-selected #1 whenever a different receipt opens.
+  useEffect(() => {
+    if (open) setSelectedIndex(0);
+  }, [receiptId, open]);
+
+  const accounts = useMemo(
+    () =>
+      (cacheQuery.data ?? [])
+        .filter((item) => item.entity_type === "account")
+        .map((item) => ({
+          entity_id: String(item.entity_id ?? "").trim(),
+          name: String(item.name ?? "").trim() || "Unknown account",
+        }))
+        .filter((item) => item.entity_id.length > 0),
+    [cacheQuery.data],
+  );
+  const categories = useMemo(
+    () =>
+      (cacheQuery.data ?? [])
+        .filter((item) => item.entity_type === "category")
+        .map((item) => ({
+          entity_id: String(item.entity_id ?? "").trim(),
+          name: String(item.name ?? "").trim(),
+          group_name: item.group_name == null ? null : String(item.group_name),
+        }))
+        .filter((item) => item.entity_id.length > 0 && item.name.length > 0),
+    [cacheQuery.data],
+  );
+
+  const chooseSyncMutation = useMutation({
+    mutationFn: async ({ version, index }: { version: number; index: number }) => {
+      const res = await chooseCandidate(receiptId as string, version, index);
+      if (res.can_sync) {
+        await enqueueSync(receiptId as string);
+        return { synced: true as const };
+      }
+      return { synced: false as const };
+    },
+    onSuccess: (result) => {
+      const id = receiptId;
+      queryClient.invalidateQueries({ queryKey: ["receipts"] });
+      queryClient.invalidateQueries({ queryKey: ["receipt", id] });
+      onClose();
+      if (result.synced) {
+        queryClient.invalidateQueries({ queryKey: ["stats"] });
+        queryClient.invalidateQueries({ queryKey: ["game-dashboard"] });
+        toast({ variant: "success", title: "Sent to YNAB ✓", message: "Snappy's option is on its way." });
+      } else {
+        toast({ variant: "success", message: "Saved that option — a couple more details to confirm before syncing." });
+        if (id) router.push(`/receipts/${id}`);
+      }
+    },
+    onError: (e) => {
+      toast({ variant: "error", message: e instanceof Error && e.message ? e.message : "Couldn't apply that option" });
+    },
+  });
+
+  if (!open) return null;
+
+  const receipt = detailQuery.data;
+  const candidateSet = receipt?.candidate_set ?? null;
+  if (!receipt || !candidateSet || candidateSet.candidates.length === 0) {
+    return (
+      <Dialog open onClose={onClose} labelledById="quick-review-loading-heading">
+        <Card className="w-full max-w-sm border-0 p-4 shadow-none">
+          <h2 id="quick-review-loading-heading" className="text-sm font-semibold">Quick review</h2>
+          <p className="mt-2 text-sm text-ink/60">
+            {detailQuery.isError
+              ? "Couldn't load the options — open the full review."
+              : receipt && !candidateSet
+                ? "No options to review — open the full review."
+                : "Loading options…"}
+          </p>
+        </Card>
+      </Dialog>
+    );
+  }
+
+  const candidates = candidateSet.candidates;
+  const safeIndex = Math.min(Math.max(selectedIndex, 0), candidates.length - 1);
+  const selected = candidates[safeIndex];
+  const basePayload = (receipt.latest_validation?.payload ?? {}) as Record<string, unknown>;
+  const previewPayload = {
+    ...basePayload,
+    category_id: selected.category_id ?? "",
+    splits: selected.splits ?? [],
+  };
+  const draft = toDraftFromPayload(previewPayload, receipt.display_payee_name ?? "");
+  const config = configQuery.data;
+
+  const chips = (
+    <div>
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-ink/60">Snappy&apos;s options</p>
+      <div className="mt-2 flex flex-wrap gap-1.5" role="tablist" aria-label="Category options">
+        {candidates.map((candidate: CandidateArrangement, i: number) => (
+          <button
+            key={i}
+            type="button"
+            role="tab"
+            aria-selected={i === safeIndex}
+            data-testid={`quick-review-option-${i}`}
+            onClick={() => setSelectedIndex(i)}
+            className={cn(
+              "rounded-full border px-3 py-1 text-xs font-semibold transition",
+              i === safeIndex
+                ? "border-indigo-400 bg-indigo-100 text-indigo-900"
+                : "border-ink/15 bg-surface text-ink/70 hover:bg-cream/60",
+            )}
+          >
+            {candidate.label || `Option ${i + 1}`}
+            {i === 0 ? <span className="ml-1 text-[10px] font-normal text-indigo-700">· top pick</span> : null}
+          </button>
+        ))}
+      </div>
+      {selected.rationale ? <p className="mt-2 text-[11px] text-ink/60">{selected.rationale}</p> : null}
+      <Link
+        href={`/receipts/${receipt.id}`}
+        className="mt-2 inline-block text-[11px] font-semibold text-indigo-700 underline-offset-2 hover:underline"
+        onClick={onClose}
+      >
+        None of these? Full review →
+      </Link>
+    </div>
+  );
+
+  return (
+    <SyncPreviewDialog
+      open
+      onClose={onClose}
+      draft={draft}
+      accounts={accounts}
+      categories={categories}
+      hasSuccessfulSync={receipt.has_successful_sync}
+      mode={{
+        dryRun: config?.ynab_dry_run ?? true,
+        syncEnabled: config?.ynab_sync_enabled ?? false,
+        budgetName: config?.ynab_budget_name ?? null,
+        budgetId: config?.ynab_budget_id ?? null,
+        newFlagColor: config?.new_transaction_flag_color ?? "green",
+        updatedFlagColor: config?.updated_transaction_flag_color ?? "blue",
+      }}
+      isConfirmDisabled={false}
+      isSyncing={chooseSyncMutation.isPending}
+      dateTimeConfirmed={receipt.latest_twin?.confirmed_sections.date_time ?? false}
+      totalConfirmed={receipt.latest_twin?.confirmed_sections.total ?? false}
+      onConfirm={() => chooseSyncMutation.mutate({ version: candidateSet.version, index: safeIndex })}
+      showSkipPreviewOption={false}
+      extraHeader={chips}
+      confirmLabelOverride="Quick sync this one"
     />
   );
 }
@@ -2121,6 +2333,8 @@ export function ReceiptList() {
   // "Looks right — Sync" NEVER fires the sync directly: it opens this preview
   // (account, date, total, category splits) and only Confirm enqueues.
   const [quickSyncPreviewId, setQuickSyncPreviewId] = useState<string | null>(null);
+  // Receipt whose Quick-review (3-card category chooser) dialog is open.
+  const [quickReviewId, setQuickReviewId] = useState<string | null>(null);
 
   // Friendly label for toasts — never show raw IDs to the user.
   const receiptLabel = (receiptId: string): string => {
@@ -2352,6 +2566,7 @@ export function ReceiptList() {
               isShredPending={shredMutation.isPending}
               onQuickSync={(receiptId) => setQuickSyncPreviewId(receiptId)}
               isQuickSyncPending={quickSyncingId === receipt.id}
+              onQuickReview={(receiptId) => setQuickReviewId(receiptId)}
               onDelete={(receiptId) => deleteMutation.mutate(receiptId)}
               isDeletePending={deletingId === receipt.id}
               index={index}
@@ -2370,6 +2585,9 @@ export function ReceiptList() {
         }}
         isSyncing={quickSyncMutation.isPending}
       />
+
+      {/* Quick review — the 3-card category chooser for uncertain receipts */}
+      <QuickReviewDialog receiptId={quickReviewId} onClose={() => setQuickReviewId(null)} />
 
       {/* DebugPanel — rendered unconditionally; Dialog handles mount + restore-focus */}
       <DebugPanel
